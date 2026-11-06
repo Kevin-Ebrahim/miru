@@ -1,6 +1,8 @@
 mod app;
 mod artwork;
+mod download;
 mod model;
+mod persistence;
 mod player;
 mod provider;
 mod ui;
@@ -39,8 +41,24 @@ struct Cli {
     query: Vec<String>,
     #[arg(long)]
     dub: bool,
-    #[arg(short = 'q', long, default_value = "best")]
-    quality: String,
+    #[arg(long, conflicts_with = "dub")]
+    sub: bool,
+    /// Open watch history and continue a series
+    #[arg(short = 'c', long = "continue")]
+    resume: bool,
+    /// Print saved history as JSON
+    #[arg(long)]
+    history: bool,
+    /// Import an ani-cli ani-hsts file without modifying it
+    #[arg(long)]
+    import_history: Option<PathBuf>,
+    /// Download directly with ffmpeg instead of opening the TUI
+    #[arg(short = 'd', long, conflicts_with_all = ["play", "list", "resolve"])]
+    download: bool,
+    #[arg(long, default_value = ".")]
+    download_dir: PathBuf,
+    #[arg(short = 'q', long)]
+    quality: Option<String>,
     #[arg(long)]
     exact: bool,
     /// Executable accepting mpv options (or VLC)
@@ -102,11 +120,44 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let provider = provider::Provider::new(&cli.provider)?;
     let query = cli.query.join(" ");
-    let mode = if cli.dub { Mode::Dub } else { Mode::Sub };
     let state_dir = cli
         .state_dir
         .unwrap_or_else(|| directory("XDG_STATE_HOME", ".local/state", "ani-watch"));
-    if cli.list || cli.resolve || cli.play {
+    let store = persistence::Store::new(&state_dir);
+    if let Some(path) = &cli.import_history {
+        let text = tokio::fs::read_to_string(path)
+            .await
+            .context("Could not read ani-cli history")?;
+        let entries = persistence::import_legacy(&text);
+        ensure!(
+            !entries.is_empty(),
+            "No compatible entries found in {}",
+            path.display()
+        );
+        let library = store.update(persistence::Change::Import(entries))?;
+        println!(
+            "History now contains {} entries. Source file unchanged.",
+            library.entries.len()
+        );
+        return Ok(());
+    }
+    let library = store.load()?;
+    if cli.history {
+        println!("{}", serde_json::to_string_pretty(&library.entries)?);
+        return Ok(());
+    }
+    let mode = if cli.dub {
+        Mode::Dub
+    } else if cli.sub {
+        Mode::Sub
+    } else {
+        library.mode
+    };
+    let quality = cli
+        .quality
+        .clone()
+        .unwrap_or_else(|| library.quality.clone());
+    if cli.list || cli.resolve || cli.play || cli.download {
         ensure!(!query.trim().is_empty(), "Provide a search query");
         let mut results = provider.search(&query).await?;
         if cli.exact {
@@ -123,24 +174,53 @@ async fn main() -> Result<()> {
             .context("Selected result does not exist (--select-nth is 1-based)")?;
         let episodes = provider.episodes(anime).await?;
         let indices = model::episode_range(&cli.episode, &episodes)?;
-        if cli.play {
+        if cli.play || cli.download {
             tokio::fs::create_dir_all(&state_dir).await?;
         }
         for i in indices {
             let stream = provider.resolve(&episodes[i], mode).await?;
             if cli.resolve {
                 println!("{}", serde_json::to_string(&stream)?);
+            } else if cli.download {
+                let title = format!(
+                    "{} Episode {} {}",
+                    anime.title,
+                    episodes[i].number,
+                    mode.as_str().to_uppercase()
+                );
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                let progress = tokio::spawn(async move {
+                    while let Some(text) = rx.recv().await {
+                        eprintln!("{text}");
+                    }
+                });
+                let path = download::download(
+                    &stream,
+                    &quality,
+                    &title,
+                    &cli.download_dir,
+                    &state_dir.join("download.log"),
+                    tx,
+                )
+                .await?;
+                progress.await?;
+                println!("Saved {}", path.display());
             } else {
                 let title = format!("{} / Episode {}", anime.title, episodes[i].number);
                 let mut child = player::launch(
                     &cli.player,
                     &cli.player_arg,
                     &stream,
-                    &cli.quality,
+                    &quality,
                     &title,
                     &state_dir.join("player.log"),
                 )?;
-                let status = child.wait().await?;
+                store.update(persistence::Change::Record {
+                    anime: anime.clone(),
+                    episode: episodes[i].number.clone(),
+                    mode,
+                })?;
+                let status = tokio::select! { status = child.wait() => status?, _ = tokio::signal::ctrl_c() => { child.kill().await?; return Ok(()); } };
                 ensure!(
                     status.success(),
                     "Player failed ({status}); see {}/player.log",
@@ -157,10 +237,12 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("Could not create ani-watch state directory")?;
-    let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
+    let mut terminal = ratatui::try_init()?;
     execute!(io::stdout(), EnableBracketedPaste)?;
-    let mut picker = if matches!(cli.images, Images::Off | Images::Halfblocks) {
+    let colorless = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let images_enabled = !matches!(cli.images, Images::Off) && !colorless;
+    let mut picker = if !images_enabled || matches!(cli.images, Images::Halfblocks) {
         Picker::halfblocks()
     } else {
         Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
@@ -171,14 +253,20 @@ async fn main() -> Result<()> {
         Images::Iterm2 => picker.set_protocol_type(ProtocolType::Iterm2),
         _ => {}
     }
-    let state = app::State::new(
+    let mut state = app::State::new(
         query,
         mode,
-        cli.quality,
+        quality,
         cli.exact,
         cli.ascii,
         !cli.no_animation,
     );
+    state.history = library.entries;
+    if cli.resume {
+        state.screen = app::Screen::History;
+        state.focus = app::Focus::List;
+        state.status = "Enter continues at the next episode. / searches.".into();
+    }
     let options = app::Options {
         player: cli.player,
         player_args: cli.player_arg,
@@ -186,7 +274,8 @@ async fn main() -> Result<()> {
             .cache_dir
             .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "ani-watch/covers")),
         state_dir,
-        images: !matches!(cli.images, Images::Off),
+        images: images_enabled,
+        download_dir: cli.download_dir,
     };
     app::App::new(state, provider, options)
         .run(&mut terminal, picker)

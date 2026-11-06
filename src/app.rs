@@ -6,10 +6,10 @@ use crate::{
     ui,
 };
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use futures_util::StreamExt;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_image::picker::Picker;
 use std::{
+    collections::{BTreeSet, VecDeque},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -20,12 +20,14 @@ use unicode_segmentation::UnicodeSegmentation;
 pub enum Screen {
     Search,
     Episodes,
+    History,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Search,
     List,
+    Range,
 }
 
 #[derive(Default)]
@@ -108,6 +110,12 @@ pub struct State {
     pub focus: Focus,
     pub query: Input,
     pub results: Vec<Anime>,
+    pub results_query: String,
+    pub history: Vec<crate::persistence::Entry>,
+    pub history_selected: usize,
+    pub range: Input,
+    pub marked: BTreeSet<usize>,
+    pub downloading: bool,
     pub selected: usize,
     pub anime: Option<Anime>,
     pub episodes: Vec<Episode>,
@@ -144,6 +152,12 @@ impl State {
             focus: Focus::Search,
             query: input,
             results: vec![],
+            results_query: String::new(),
+            history: vec![],
+            history_selected: 0,
+            range: Input::default(),
+            marked: BTreeSet::new(),
+            downloading: false,
             selected: 0,
             anime: None,
             episodes: vec![],
@@ -175,7 +189,7 @@ impl State {
                 if self.exact {
                     title == query
                 } else {
-                    title.contains(&query)
+                    query == normalized(&self.results_query) || title.contains(&query)
                 }
             })
             .map(|(i, _)| i)
@@ -189,6 +203,7 @@ impl State {
                 .get(self.selected)
                 .and_then(|i| self.results.get(*i)),
             Screen::Episodes => self.anime.as_ref(),
+            Screen::History => self.history.get(self.history_selected).map(|e| &e.anime),
         }
     }
 
@@ -216,6 +231,7 @@ impl State {
         match result {
             Ok(results) => {
                 self.results = results;
+                self.results_query = self.query.text.clone();
                 self.selected = 0;
                 self.error = false;
                 self.status = if self.visible().is_empty() {
@@ -243,6 +259,9 @@ enum Message {
     Episodes(u64, Result<Vec<Episode>>),
     Resolved(u64, usize, Result<Stream>),
     Finished(u64, Result<()>),
+    Downloaded(u64, Result<PathBuf>),
+    Progress(u64, String),
+    Library(Result<crate::persistence::Library>),
 }
 
 pub struct Options {
@@ -251,6 +270,7 @@ pub struct Options {
     pub cache: PathBuf,
     pub state_dir: PathBuf,
     pub images: bool,
+    pub download_dir: PathBuf,
 }
 
 pub struct App {
@@ -265,6 +285,10 @@ pub struct App {
     search_due: Option<Instant>,
     job: u64,
     quit: bool,
+    queue: VecDeque<usize>,
+    continuation: Option<crate::persistence::Entry>,
+    save_tx: Option<mpsc::UnboundedSender<crate::persistence::Change>>,
+    save_task: Option<JoinHandle<()>>,
 }
 
 fn abort(task: &mut Option<JoinHandle<()>>) {
@@ -276,6 +300,18 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
 impl App {
     pub fn new(state: State, provider: Provider, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (save_tx, mut save_rx) = mpsc::unbounded_channel();
+        let store = crate::persistence::Store::new(&options.state_dir);
+        let notify = tx.clone();
+        let save_task = tokio::spawn(async move {
+            while let Some(change) = save_rx.recv().await {
+                let store = store.clone();
+                let result = tokio::task::spawn_blocking(move || store.update(change))
+                    .await
+                    .unwrap_or_else(|e| Err(e.into()));
+                let _ = notify.send(Message::Library(result));
+            }
+        });
         let search_due = if state.query.text.is_empty() {
             None
         } else {
@@ -293,6 +329,10 @@ impl App {
             search_due,
             job: 0,
             quit: false,
+            queue: VecDeque::new(),
+            continuation: None,
+            save_tx: Some(save_tx),
+            save_task: Some(save_task),
         }
     }
 
@@ -314,10 +354,52 @@ impl App {
         }));
     }
 
+    fn persist(&self, change: crate::persistence::Change) {
+        if let Some(tx) = &self.save_tx {
+            let _ = tx.send(change);
+        }
+    }
+
+    fn settings(&self) {
+        self.persist(crate::persistence::Change::Settings {
+            mode: self.state.mode,
+            quality: self.state.quality.clone(),
+        });
+    }
+
+    fn history(&mut self) {
+        self.stop();
+        abort(&mut self.search_task);
+        abort(&mut self.episode_task);
+        self.search_due = None;
+        self.state.search_generation += 1;
+        self.state.episode_generation += 1;
+        self.state.screen = Screen::History;
+        self.state.focus = Focus::List;
+        self.state.loading = false;
+        self.state.message(
+            "Enter continues a series. Delete removes the selected history entry. / searches.",
+            false,
+        );
+    }
+
     fn open(&mut self) {
         let Some(anime) = self.state.selected_anime().cloned() else {
             return;
         };
+        self.stop();
+        self.continuation = if self.state.screen == Screen::History {
+            self.state.history.get(self.state.history_selected).cloned()
+        } else {
+            None
+        };
+        if let Some(entry) = &self.continuation {
+            self.state.mode = entry.mode;
+        }
+        abort(&mut self.search_task);
+        self.search_due = None;
+        self.state.search_generation += 1;
+        self.state.marked.clear();
         self.state.anime = Some(anime.clone());
         self.state.screen = Screen::Episodes;
         self.state.focus = Focus::List;
@@ -337,10 +419,31 @@ impl App {
     }
 
     fn stop(&mut self) {
+        self.queue.clear();
         self.job += 1;
         abort(&mut self.play_task);
         self.state.busy = false;
         self.state.playing = None;
+    }
+
+    fn start_selection(&mut self, download: bool) {
+        let indices = if self.state.marked.is_empty() {
+            vec![self.state.episode_selected]
+        } else {
+            self.state.marked.iter().copied().collect()
+        };
+        self.stop();
+        self.state.downloading = download;
+        self.queue = indices.into();
+        if let Some(index) = self.queue.pop_front() {
+            self.play(index);
+        }
+    }
+
+    fn navigate_play(&mut self, index: usize) {
+        self.stop();
+        self.state.downloading = false;
+        self.play(index);
     }
 
     fn play(&mut self, index: usize) {
@@ -349,7 +452,9 @@ impl App {
                 .message("There are no more episodes in this direction.", false);
             return;
         };
-        self.stop();
+        self.job += 1;
+        abort(&mut self.play_task);
+        self.state.playing = None;
         self.state.busy = true;
         self.state.episode_selected = index;
         self.state.message(
@@ -383,6 +488,32 @@ impl App {
                 match result {
                     Ok(episodes) => {
                         self.state.episodes = episodes;
+                        if let Some(entry) = self.continuation.take() {
+                            if let Some(i) =
+                                crate::persistence::next_episode(&entry, &self.state.episodes)
+                            {
+                                self.state.episode_selected = i;
+                                self.state.message(
+                                    format!(
+                                        "Continue at episode {}. Enter to play.",
+                                        self.state.episodes[i].number
+                                    ),
+                                    false,
+                                );
+                            } else {
+                                self.state.episode_selected = self
+                                    .state
+                                    .episodes
+                                    .iter()
+                                    .position(|e| e.number == entry.episode)
+                                    .unwrap_or(0);
+                                self.state.message(
+                                    "No newer episode found. Select an episode to replay.",
+                                    false,
+                                );
+                            }
+                            return;
+                        }
                         self.state.message(
                             "Enter to play. D changes language; Q changes quality.",
                             false,
@@ -398,7 +529,44 @@ impl App {
                         self.state.anime.as_ref().unwrap().title,
                         self.state.episodes[index].number
                     );
-                    let log = self.options.state_dir.join("player.log");
+                    let log = self.options.state_dir.join(if self.state.downloading {
+                        "download.log"
+                    } else {
+                        "player.log"
+                    });
+                    if self.state.downloading {
+                        let title = format!("{title} {}", self.state.mode.as_str().to_uppercase());
+                        let dir = self.options.download_dir.clone();
+                        let quality = self.state.quality.clone();
+                        let tx = self.tx.clone();
+                        self.state.message(
+                            format!(
+                                "Downloading episode {} / x cancels",
+                                self.state.episodes[index].number
+                            ),
+                            false,
+                        );
+                        self.play_task = Some(tokio::spawn(async move {
+                            let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+                            let task = crate::download::download(
+                                &stream,
+                                &quality,
+                                &title,
+                                &dir,
+                                &log,
+                                progress_tx,
+                            );
+                            tokio::pin!(task);
+                            let result = loop {
+                                tokio::select! {
+                                    result = &mut task => break result,
+                                    Some(text) = progress_rx.recv() => { let _ = tx.send(Message::Progress(job, text)); }
+                                }
+                            };
+                            let _ = tx.send(Message::Downloaded(job, result));
+                        }));
+                        return;
+                    }
                     match player::launch(
                         &self.options.player,
                         &self.options.player_args,
@@ -409,6 +577,11 @@ impl App {
                     ) {
                         Ok(mut child) => {
                             self.state.playing = Some(index);
+                            self.persist(crate::persistence::Change::Record {
+                                anime: self.state.anime.clone().unwrap(),
+                                episode: self.state.episodes[index].number.clone(),
+                                mode: self.state.mode,
+                            });
                             let (variant, fallback) = stream.select(&self.state.quality);
                             self.state.message(
                                 format!(
@@ -447,7 +620,46 @@ impl App {
                     self.state.message(format!("{err:#}"), true);
                 }
             },
+            Message::Library(result) => match result {
+                Ok(library) => {
+                    self.state.history = library.entries;
+                    self.state.history_selected = self
+                        .state
+                        .history_selected
+                        .min(self.state.history.len().saturating_sub(1));
+                }
+                Err(err) => self
+                    .state
+                    .message(format!("History was not saved: {err:#}"), true),
+            },
+            Message::Progress(job, text) if job == self.job => self.state.message(
+                format!("{text} / {} queued / x cancel", self.queue.len()),
+                false,
+            ),
+            Message::Downloaded(job, result) if job == self.job => {
+                self.state.busy = false;
+                match result {
+                    Ok(path) => {
+                        self.state
+                            .message(format!("Saved {}", path.display()), false);
+                        if let Some(i) = self.queue.pop_front() {
+                            self.play(i);
+                        }
+                    }
+                    Err(err) => {
+                        self.queue.clear();
+                        self.state.message(format!("{err:#}"), true);
+                    }
+                }
+            }
             Message::Finished(job, result) if job == self.job => {
+                if result.is_ok()
+                    && let Some(i) = self.queue.pop_front()
+                {
+                    self.play(i);
+                    return;
+                }
+                self.queue.clear();
                 self.state.busy = false;
                 match result {
                     Ok(()) => self
@@ -478,6 +690,32 @@ impl App {
             self.state.help = true;
             return;
         }
+        if self.state.focus == Focus::Range {
+            match key.code {
+                KeyCode::Esc => self.state.focus = Focus::List,
+                KeyCode::Enter => {
+                    match crate::model::episode_range(&self.state.range.text, &self.state.episodes)
+                    {
+                        Ok(indices) => {
+                            self.state.marked = indices.into_iter().collect();
+                            self.state.focus = Focus::List;
+                            self.state.message(
+                                format!(
+                                    "{} episodes marked / Enter play / d download",
+                                    self.state.marked.len()
+                                ),
+                                false,
+                            );
+                        }
+                        Err(err) => self.state.message(err.to_string(), true),
+                    }
+                }
+                _ => {
+                    self.state.range.edit(key);
+                }
+            }
+            return;
+        }
         if self.state.focus == Focus::Search {
             match key.code {
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
@@ -503,6 +741,7 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.state.help = true,
             KeyCode::Char('/') => {
+                self.stop();
                 self.state.screen = Screen::Search;
                 self.state.focus = Focus::Search;
                 self.state.episode_generation += 1;
@@ -515,8 +754,38 @@ impl App {
                 self.state.message("Choose a series or / to search.", false);
             }
             KeyCode::Esc => self.state.focus = Focus::Search,
+            KeyCode::Char('h') => self.history(),
+            KeyCode::Delete if self.state.screen == Screen::History => {
+                if let Some(entry) = self.state.history.get(self.state.history_selected) {
+                    self.persist(crate::persistence::Change::Remove {
+                        id: entry.anime.id.clone(),
+                        mode: entry.mode,
+                    });
+                }
+            }
+            KeyCode::Char(':') if self.state.screen == Screen::Episodes => {
+                self.state.focus = Focus::Range;
+                self.state.range.set(String::new());
+            }
+            KeyCode::Char(' ') | KeyCode::Tab if self.state.screen == Screen::Episodes => {
+                let i = self.state.episode_selected;
+                if !self.state.marked.remove(&i) && i < self.state.episodes.len() {
+                    self.state.marked.insert(i);
+                }
+                self.state.message(
+                    format!(
+                        "{} marked / Enter play / d download / : range",
+                        self.state.marked.len()
+                    ),
+                    false,
+                );
+            }
+            KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
+                self.start_selection(true)
+            }
             KeyCode::Char('D') => {
                 self.state.mode.toggle();
+                self.settings();
                 self.state.message(
                     format!(
                         "{} selected. Press Enter or r to play in this language.",
@@ -532,6 +801,7 @@ impl App {
                     .position(|q| *q == self.state.quality)
                     .unwrap_or(0);
                 self.state.quality = choices[(index + 1) % choices.len()].into();
+                self.settings();
                 self.state.message(
                     "Quality applies on the next launch. Press r to replay.",
                     false,
@@ -541,16 +811,16 @@ impl App {
                 self.state.exact = !self.state.exact;
                 self.state.selected = 0;
             }
-            KeyCode::Enter if self.state.screen == Screen::Search => self.open(),
-            KeyCode::Enter if self.state.screen == Screen::Episodes => {
-                self.play(self.state.episode_selected)
+            KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
+                self.open()
             }
+            KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
             KeyCode::Char('x') => {
                 self.stop();
                 self.state.message("Playback stopped.", false);
             }
             KeyCode::Char('n') if self.state.screen == Screen::Episodes => {
-                self.play(self.state.playing.unwrap_or(self.state.episode_selected) + 1)
+                self.navigate_play(self.state.playing.unwrap_or(self.state.episode_selected) + 1)
             }
             KeyCode::Char('p') if self.state.screen == Screen::Episodes => {
                 if let Some(i) = self
@@ -559,13 +829,13 @@ impl App {
                     .unwrap_or(self.state.episode_selected)
                     .checked_sub(1)
                 {
-                    self.play(i);
+                    self.navigate_play(i);
                 } else {
                     self.state.message("Already at the first episode.", false);
                 }
             }
             KeyCode::Char('r') if self.state.screen == Screen::Episodes => {
-                self.play(self.state.playing.unwrap_or(self.state.episode_selected))
+                self.navigate_play(self.state.playing.unwrap_or(self.state.episode_selected))
             }
             KeyCode::Char('R') => {
                 if self.state.screen == Screen::Search {
@@ -575,13 +845,15 @@ impl App {
                 }
             }
             code => {
-                let len = if self.state.screen == Screen::Search {
-                    self.state.visible().len()
-                } else {
-                    self.state.episodes.len()
+                let len = match self.state.screen {
+                    Screen::Search => self.state.visible().len(),
+                    Screen::History => self.state.history.len(),
+                    Screen::Episodes => self.state.episodes.len(),
                 };
                 let selected = if self.state.screen == Screen::Search {
                     &mut self.state.selected
+                } else if self.state.screen == Screen::History {
+                    &mut self.state.history_selected
                 } else {
                     &mut self.state.episode_selected
                 };
@@ -607,41 +879,63 @@ impl App {
     ) -> Result<()> {
         let mut art = Artwork::new(picker, self.options.cache.clone(), self.options.images);
         let (art_tx, mut art_rx) = mpsc::unbounded_channel();
-        let mut events = EventStream::new();
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        // Keep all terminal reads on this thread. EventStream races with the cursor
+        // queries performed by Ratatui 0.30.2 during clear/autoresize.
+        let mut tick = tokio::time::interval(Duration::from_millis(16));
+        let mut animation = Instant::now();
+        let mut dirty = true;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
         while !self.quit {
             if self.search_due.is_some_and(|at| Instant::now() >= at) {
                 self.search();
+                dirty = true;
             }
-            let size = terminal.size()?;
-            let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-            let cover = ui::cover_area(area);
-            let url = if self.state.help {
-                None
-            } else {
-                self.state.selected_anime().and_then(|a| a.cover.as_deref())
-            };
-            art.request(url, cover.as_size(), self.provider.clone(), art_tx.clone());
-            if art.clear {
-                art.clear_graphics()?;
-                terminal.clear()?;
-            }
-            terminal.draw(|frame| ui::render(frame, &self.state, &art))?;
-            tokio::select! {
-                _ = tick.tick() => { if self.state.animate { self.state.frame = self.state.frame.wrapping_add(1); } }
-                event = events.next() => match event {
-                    Some(Ok(Event::Key(key))) => self.key(key),
-                    Some(Ok(Event::Paste(text))) if self.state.focus == Focus::Search => {
-                        for c in text.chars().filter(|c| !c.is_control()).take(512) { self.state.query.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)); }
-                        self.state.invalidate_search(); abort(&mut self.search_task); self.search_due = Some(Instant::now() + Duration::from_millis(300));
+            while crossterm::event::poll(Duration::ZERO)? {
+                dirty = true;
+                match crossterm::event::read()? {
+                    Event::Key(key) => self.key(key),
+                    Event::Paste(text) if self.state.focus == Focus::Search => {
+                        for c in text.chars().filter(|c| !c.is_control()).take(512) {
+                            self.state
+                                .query
+                                .edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+                        }
+                        self.state.invalidate_search();
+                        abort(&mut self.search_task);
+                        self.search_due = Some(Instant::now() + Duration::from_millis(300));
                     }
-                    Some(Err(err)) => return Err(err.into()), None => break, _ => {}
-                },
-                Some(message) = self.rx.recv() => self.message(message),
-                Some(message) = art_rx.recv() => art.accept(message),
+                    _ => {}
+                }
+            }
+            if dirty {
+                let size = terminal.size()?;
+                let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                let cover = ui::cover_area(area);
+                let url = if self.state.help {
+                    None
+                } else {
+                    self.state.selected_anime().and_then(|a| a.cover.as_deref())
+                };
+                art.request(url, cover.as_size(), self.provider.clone(), art_tx.clone());
+                if art.clear {
+                    art.clear_graphics()?;
+                    terminal.clear()?;
+                }
+                terminal.draw(|frame| ui::render(frame, &self.state, &art))?;
+                dirty = false;
+            }
+            tokio::select! {
+                _ = tick.tick() => {
+                    if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
+                        animation = Instant::now();
+                        self.state.frame = self.state.frame.wrapping_add(1);
+                        dirty = self.state.loading || self.state.busy || art.protocol.is_none();
+                    }
+                }
+                Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
+                Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
                 _ = terminate.recv() => self.quit = true,
                 _ = hangup.recv() => self.quit = true,
                 _ = tokio::signal::ctrl_c() => self.quit = true,
@@ -650,6 +944,15 @@ impl App {
         self.stop();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
+        self.save_tx.take();
+        if let Some(task) = self.save_task.take() {
+            task.await?;
+        }
+        while let Ok(message) = self.rx.try_recv() {
+            if let Message::Library(Err(err)) = message {
+                return Err(err);
+            }
+        }
         Ok(())
     }
 }

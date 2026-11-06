@@ -64,7 +64,7 @@ pub fn cover_area(area: Rect) -> Rect {
 }
 
 fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
-    Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
         .border_type(if ascii {
             BorderType::Plain
@@ -81,7 +81,21 @@ fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
             accent()
         } else {
             Style::default().bold()
-        }))
+        }));
+    if ascii {
+        block.border_set(ratatui::symbols::border::Set {
+            top_left: "+",
+            top_right: "+",
+            bottom_left: "+",
+            bottom_right: "+",
+            vertical_left: "|",
+            vertical_right: "|",
+            horizontal_top: "-",
+            horizontal_bottom: "-",
+        })
+    } else {
+        block
+    }
 }
 
 pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
@@ -120,6 +134,7 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
                 match state.screen {
                     Screen::Search => "  DISCOVER   /   Search the catalogue",
                     Screen::Episodes => "  DISCOVER   /   Series   /   Episodes",
+                    Screen::History => "  LIBRARY   /   Continue watching",
                 },
                 muted(),
             ),
@@ -127,7 +142,9 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
         header,
     );
 
-    let search_title = if state.focus == Focus::Search {
+    let search_title = if state.focus == Focus::Range {
+        " Range / 1-3, 5 or 0--1 / Enter marks "
+    } else if state.focus == Focus::Search {
         " Search / typing "
     } else {
         " Search / press / to edit "
@@ -138,26 +155,29 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
             if state.exact { "[EXACT] " } else { "" }
         ),
         state.ascii,
-        state.focus == Focus::Search,
+        matches!(state.focus, Focus::Search | Focus::Range),
     );
     let inner = search_block.inner(search);
+    let input = if state.focus == Focus::Range {
+        &state.range
+    } else {
+        &state.query
+    };
     let (text, cursor) = input_window(
-        &state.query.text,
-        state.query.cursor,
+        &input.text,
+        input.cursor,
         inner.width.saturating_sub(1) as usize,
     );
     frame.render_widget(search_block, search);
     frame.render_widget(
-        Paragraph::new(
-            if state.query.text.is_empty() && state.focus != Focus::Search {
-                "Search anime..."
-            } else {
-                &text
-            },
-        ),
+        Paragraph::new(if input.text.is_empty() && state.focus == Focus::List {
+            "Search anime..."
+        } else {
+            &text
+        }),
         inner,
     );
-    if state.focus == Focus::Search && !state.help {
+    if matches!(state.focus, Focus::Search | Focus::Range) && !state.help {
         frame.set_cursor_position((inner.x + cursor as u16, inner.y));
     }
 
@@ -183,16 +203,22 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
             .wrap(Wrap { trim: true }),
         status,
     );
-    let keys = if state.screen == Screen::Search {
+    let keys = if state.screen == Screen::History {
         if area.width >= 72 {
-            " / Search   Enter Episodes   D SUB/DUB   Q Quality   ? Help   q Quit"
+            " Enter Continue   / Search   Delete Remove   ? Help   q Quit"
         } else {
-            " / Search  Enter Select  ? Help  q Quit"
+            " Enter Continue  / Search  ? Help"
         }
-    } else if area.width >= 72 {
-        " Enter Play   n/p Next/Prev   r Replay   x Stop   Esc Back   ? Help"
+    } else if state.screen == Screen::Search {
+        if area.width >= 90 {
+            " / Search   Enter Episodes   h History   D SUB/DUB   Q Quality   ? Help   q Quit"
+        } else {
+            " / Search  Enter Select  ? Help"
+        }
+    } else if area.width >= 90 {
+        " Enter Play  d Download  : Range  Tab Mark  n/p Next/Prev  ? Help"
     } else {
-        " Enter Play  n/p Next/Prev  Esc Back  ? Help"
+        " Enter Play  Esc Back  ? Help"
     };
     let navigation = if state.ascii {
         " Up/Down Navigate"
@@ -217,6 +243,8 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
 fn render_list(frame: &mut Frame, state: &State, area: Rect) {
     let count = if state.screen == Screen::Search {
         state.visible().len()
+    } else if state.screen == Screen::History {
+        state.history.len()
     } else {
         state.episodes.len()
     };
@@ -224,6 +252,8 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
         " {} / {:02} ",
         if state.screen == Screen::Search {
             "Results"
+        } else if state.screen == Screen::History {
+            "History"
         } else {
             "Episodes"
         },
@@ -233,14 +263,18 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if count == 0 {
-        let title = if state.loading {
+        let title = if state.screen == Screen::History {
+            "Your watch shelf"
+        } else if state.loading {
             "Searching for a story"
         } else if state.query.text.is_empty() {
             "A story starts here"
         } else {
             "Nothing here yet"
         };
-        let hint = if state.loading {
+        let hint = if state.screen == Screen::History {
+            "Play an episode to add it here."
+        } else if state.loading {
             "You can keep typing."
         } else if state.query.text.is_empty() {
             "Type a title above."
@@ -270,13 +304,34 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
                 ])
             })
             .collect()
+    } else if state.screen == Screen::History {
+        state
+            .history
+            .iter()
+            .map(|entry| {
+                ListItem::new(vec![
+                    Line::styled(entry.anime.title.clone(), Style::default().bold()),
+                    Line::styled(
+                        format!(
+                            "Last played {} / {}",
+                            entry.episode,
+                            entry.mode.as_str().to_uppercase()
+                        ),
+                        muted(),
+                    ),
+                    Line::raw(""),
+                ])
+            })
+            .collect()
     } else {
         state
             .episodes
             .iter()
             .enumerate()
             .map(|(i, ep)| {
-                let mark = if Some(i) == state.playing {
+                let mark = if state.marked.contains(&i) {
+                    if state.ascii { "* " } else { "✓ " }
+                } else if Some(i) == state.playing {
                     if state.ascii { "> " } else { "▶ " }
                 } else {
                     "  "
@@ -290,6 +345,8 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
     };
     let selected = if state.screen == Screen::Search {
         state.selected
+    } else if state.screen == Screen::History {
+        state.history_selected
     } else {
         state.episode_selected
     };
@@ -320,7 +377,11 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: R
         let hint = if art.error.is_some() {
             "Browsing is still available."
         } else if state.selected_anime().is_some_and(|a| a.cover.is_some()) {
-            "Preparing cover..."
+            if art.enabled {
+                "Preparing cover..."
+            } else {
+                "Artwork disabled / text mode"
+            }
         } else {
             "A little space for imagination."
         };
@@ -392,7 +453,7 @@ fn render_help(frame: &mut Frame, state: &State) {
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text = "ANI / WATCH\n\n/                 Edit search (300 ms debounce)\nEnter             Browse series / play episode\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\nCtrl+E            Toggle exact title matching\nD                 Toggle SUB / DUB\nQ                 Cycle quality (best to worst)\nn / p / r         Next / previous / replay\nx                 Stop player / cancel resolving\nR                 Retry current request\nEsc               Back / leave search input\nq or Ctrl+C       Quit and stop owned player\n\nSearch stays live while covers load.\nPlayer controls also work in the player window.\nUse --ascii, --no-animation, or --images off\nfor a quieter interface. Colors use your palette.";
+    let text = "ANI / WATCH\n\n/                 Edit search (300 ms debounce)\nEnter             Browse series / play episode\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\nCtrl+E            Toggle exact title matching\nD                 Toggle SUB / DUB\nQ                 Cycle quality (best to worst)\nh                 Watch history / continue\nTab or Space      Mark episodes\n:                 Enter ranges (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop player / cancel resolving\nR                 Retry current request\nEsc               Back / leave search input\nq or Ctrl+C       Quit and stop owned player\n\nSearch stays live while covers load.\nPlayer controls also work in the player window.\nUse --ascii, --no-animation, or --images off\nfor a quieter interface. Colors use your palette.";
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
 }
 

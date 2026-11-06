@@ -20,6 +20,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 pub struct ArtResult {
     pub generation: u64,
     pub result: Result<Protocol>,
+    pub image_id: u32,
 }
 
 pub struct Artwork {
@@ -34,7 +35,9 @@ pub struct Artwork {
     cache: PathBuf,
     task: Option<tokio::task::JoinHandle<()>>,
     pub clear: bool,
-    enabled: bool,
+    pub enabled: bool,
+    active_id: Option<u32>,
+    pending_delete: Vec<u32>,
 }
 
 impl Artwork {
@@ -57,6 +60,8 @@ impl Artwork {
             task: None,
             clear: false,
             enabled,
+            active_id: None,
+            pending_delete: vec![],
         }
     }
 
@@ -75,6 +80,9 @@ impl Artwork {
         }
         self.generation += 1;
         self.key = key.clone();
+        if let Some(id) = self.active_id.take() {
+            self.pending_delete.push(id);
+        }
         self.protocol = None;
         self.error = None;
         self.clear = true;
@@ -84,6 +92,13 @@ impl Artwork {
         let Some((url, size)) = key else { return };
         let generation = self.generation;
         let picker = self.picker.clone();
+        let seed = format!(
+            "{}-{generation}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        );
+        let digest = Sha256::digest(seed.as_bytes());
+        let image_id = u32::from_be_bytes([0, digest[0], digest[1], digest[2]]).max(1);
         let cache = self.cache.clone();
         let decoded = self.decoded.clone();
         let permits = self.permits.clone();
@@ -96,7 +111,19 @@ impl Artwork {
                     img
                 } else {
                     let path = cache.join(format!("{:x}", Sha256::digest(url.as_bytes())));
-                    let disk = tokio::fs::read(&path).await.ok();
+                    let disk = match tokio::fs::metadata(&path).await {
+                        Ok(meta)
+                            if meta.len() <= 12 * 1024 * 1024
+                                && meta
+                                    .modified()
+                                    .ok()
+                                    .and_then(|t| t.elapsed().ok())
+                                    .is_some_and(|age| age.as_secs() < 30 * 86400) =>
+                        {
+                            tokio::fs::read(&path).await.ok()
+                        }
+                        _ => None,
+                    };
                     let bytes = match disk {
                         Some(b) => b,
                         None => provider.bytes(&url, None, 12 * 1024 * 1024).await?,
@@ -124,7 +151,8 @@ impl Artwork {
                             let mut temp =
                                 tempfile::NamedTempFile::new_in(path_copy.parent().unwrap())?;
                             temp.write_all(&bytes)?;
-                            temp.persist(path_copy)?;
+                            temp.persist(&path_copy)?;
+                            prune_cache(path_copy.parent().unwrap());
                             Ok(())
                         })
                         .await;
@@ -136,18 +164,35 @@ impl Artwork {
                 tokio::task::spawn_blocking(move || {
                     let _permit = permit;
                     // Library handles native graphics and aspect-ratio fitting. Rendering only blits.
-                    picker
-                        .new_protocol(
-                            (*img).clone(),
-                            size,
-                            Resize::Scale(Some(FilterType::Lanczos3)),
+                    let resize = Resize::Scale(Some(FilterType::Lanczos3));
+                    if picker.protocol_type() == ProtocolType::Kitty {
+                        // Use the library encoder with an owned ID so cleanup only deletes our
+                        // image, never graphics belonging to the shell or another pane.
+                        let fit = resize.size_for(&img, picker.font_size(), size);
+                        let resized = resize.resize(&img, picker.font_size(), fit, None);
+                        ratatui_image::protocol::kitty::Kitty::new(
+                            resized,
+                            fit,
+                            image_id,
+                            picker.tmux_detected(),
+                            true,
                         )
+                        .map(Protocol::Kitty)
                         .map_err(anyhow::Error::from)
+                    } else {
+                        picker
+                            .new_protocol((*img).clone(), size, resize)
+                            .map_err(anyhow::Error::from)
+                    }
                 })
                 .await?
             }
             .await;
-            let _ = tx.send(ArtResult { generation, result });
+            let _ = tx.send(ArtResult {
+                generation,
+                result,
+                image_id,
+            });
         }));
     }
 
@@ -157,6 +202,9 @@ impl Artwork {
         }
         match message.result {
             Ok(protocol) => {
+                if matches!(protocol, Protocol::Kitty(_)) {
+                    self.active_id = Some(message.image_id);
+                }
                 self.protocol = Some(protocol);
                 self.error = None;
             }
@@ -168,12 +216,10 @@ impl Artwork {
 
     pub fn clear_graphics(&mut self) -> io::Result<()> {
         if self.clear {
-            if self.picker.protocol_type() == ProtocolType::Kitty {
-                // The library uses virtual placements. Delete their backing data as well, so
-                // old covers cannot survive a redraw, resize, empty search or alternate-screen exit.
-                write!(io::stdout(), "\x1b_Ga=d,d=A,q=2\x1b\\")?;
-                io::stdout().flush()?;
+            for id in self.pending_delete.drain(..) {
+                write!(io::stdout(), "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
             }
+            io::stdout().flush()?;
             self.clear = false;
         }
         Ok(())
@@ -185,7 +231,63 @@ impl Drop for Artwork {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+        if let Some(id) = self.active_id.take() {
+            self.pending_delete.push(id);
+        }
         self.clear = true;
         let _ = self.clear_graphics();
+    }
+}
+
+fn prune_cache(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            if name.len() != 64 || !name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            let metadata = entry.metadata().ok()?;
+            Some((entry.path(), metadata.len(), metadata.modified().ok()?))
+        })
+        .collect();
+    files.sort_by_key(|(_, _, at)| *at);
+    let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
+    let mut count = files.len();
+    for (path, size, _) in files {
+        if count <= 128 && total <= 128 * 1024 * 1024 {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(size);
+            count -= 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stale_art_and_failures_never_replace_current_cover() {
+        let mut art = Artwork::new(Picker::halfblocks(), PathBuf::new(), false);
+        art.generation = 3;
+        art.accept(ArtResult {
+            generation: 2,
+            result: Err(anyhow::anyhow!("stale failure")),
+            image_id: 1,
+        });
+        assert!(art.error.is_none());
+        art.accept(ArtResult {
+            generation: 3,
+            result: Err(anyhow::anyhow!("failed download")),
+            image_id: 2,
+        });
+        assert!(art.error.is_some());
+        assert!(art.protocol.is_none());
     }
 }
