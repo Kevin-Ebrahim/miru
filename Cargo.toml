@@ -1,0 +1,34 @@
+[package]
+name = "ani-watch"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "A terminal-native anime browser"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+lru = "0.16"
+ratatui = "0.30.2"
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json"] }
+scraper = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "process", "fs", "io-util"] }
+unicode-segmentation = "1"
+unicode-width = "0.2"
+url = { version = "2", features = ["serde"] }
+
+[[bin]]
+name = "ani-watch"
+path = "src/main.rs"
