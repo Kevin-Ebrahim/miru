@@ -110,7 +110,11 @@ fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(
+            io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate,
+            DisableBracketedPaste
+        );
         ratatui::restore();
     }
 }
@@ -194,15 +198,13 @@ async fn main() -> Result<()> {
                         eprintln!("{text}");
                     }
                 });
-                let path = download::download(
-                    &stream,
-                    &quality,
-                    &title,
-                    &cli.download_dir,
-                    &state_dir.join("download.log"),
-                    tx,
-                )
-                .await?;
+                let log = state_dir.join("download.log");
+                let download =
+                    download::download(&stream, &quality, &title, &cli.download_dir, &log, tx);
+                let path = tokio::select! {
+                    result = download => result?,
+                    _ = tokio::signal::ctrl_c() => { eprintln!("Download cancelled."); return Ok(()); }
+                };
                 progress.await?;
                 println!("Saved {}", path.display());
             } else {
@@ -237,9 +239,20 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("Could not create ani-watch state directory")?;
+    // Register before entering raw mode, including the capability-query startup window.
+    let signals = app::shutdown_signals()?;
     let _guard = TerminalGuard;
     let mut terminal = ratatui::try_init()?;
     execute!(io::stdout(), EnableBracketedPaste)?;
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(
+            io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate,
+            DisableBracketedPaste
+        );
+        original_hook(info);
+    }));
     let colorless = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let images_enabled = !matches!(cli.images, Images::Off) && !colorless;
     let mut picker = if !images_enabled || matches!(cli.images, Images::Halfblocks) {
@@ -278,6 +291,6 @@ async fn main() -> Result<()> {
         download_dir: cli.download_dir,
     };
     app::App::new(state, provider, options)
-        .run(&mut terminal, picker)
+        .run(&mut terminal, picker, signals)
         .await
 }

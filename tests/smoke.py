@@ -10,6 +10,7 @@ import hashlib
 import http.server
 import json
 import pathlib
+import signal
 import shutil
 import subprocess
 import sys
@@ -40,12 +41,19 @@ def main():
             '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",DEFAULT=YES,URI="audio.m3u8"\n'
             '#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=128x96,AUDIO="a"\nvideo.m3u8\n')
 
+        slow = threading.Event()
+        segment_requested = threading.Event()
+        release_segment = threading.Event()
+
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_):
                 pass
 
             def do_GET(self):
                 path = urllib.parse.urlparse(self.path).path
+                if path.endswith(".ts") and slow.is_set():
+                    segment_requested.set()
+                    release_segment.wait(timeout=10)
                 base = f"http://127.0.0.1:{self.server.server_port}"
                 if path == "/search":
                     body = '<div class="film_list-wrap"><div class="flw-item"><h3 class="film-name"><a title="Smoke &amp; Test" href="/smoke-1">Smoke</a></h3></div></div>'
@@ -61,7 +69,10 @@ def main():
                     blob = base64.b64encode(bytes(b ^ key[i % len(key)] for i, b in enumerate(config))).decode()
                     body = f'<script>window.__P="{blob}";</script>'
                 else:
-                    return super().do_GET()
+                    try:
+                        return super().do_GET()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
                 data = body.encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
@@ -93,7 +104,21 @@ def main():
             missing = subprocess.run(common + ["--resolve", "--dub", "Smoke"], capture_output=True, text=True, timeout=40)
             assert missing.returncode != 0 and "No DUB source" in missing.stderr
             assert json.loads(run(common + ["--history"]).stdout) == history
-            print("PASS: HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, no-clobber, missing DUB")
+            slow.set()
+            cancel_dir = root / "cancelled"
+            cancelling = subprocess.Popen(common + ["--download", "Smoke", "--download-dir", str(cancel_dir)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                assert segment_requested.wait(timeout=10), "Download never reached media transfer"
+                cancelling.send_signal(signal.SIGINT)
+                _, stderr = cancelling.communicate(timeout=5)
+                assert cancelling.returncode == 0 and "cancelled" in stderr
+                assert not list(cancel_dir.iterdir()), "Cancellation left partial media behind"
+            finally:
+                release_segment.set()
+                if cancelling.poll() is None:
+                    cancelling.kill()
+                    cancelling.wait()
+            print("PASS: cancellation, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, no-clobber, missing DUB")
         finally:
             server.shutdown()
             server.server_close()

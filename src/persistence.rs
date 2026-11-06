@@ -176,6 +176,70 @@ pub fn next_episode(entry: &Entry, episodes: &[Episode]) -> Option<usize> {
 mod tests {
     use super::*;
     #[test]
+    fn independent_writers_do_not_lose_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    store
+                        .update(Change::Record {
+                            anime: Anime {
+                                id: format!("show-{i}"),
+                                ..Default::default()
+                            },
+                            episode: "1".into(),
+                            mode: Mode::Sub,
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert_eq!(store.load().unwrap().entries.len(), 8);
+    }
+    #[test]
+    fn continue_handles_specials_finished_and_missing_episodes() {
+        let entry = Entry {
+            anime: Anime::default(),
+            episode: "1".into(),
+            mode: Mode::Sub,
+            watched_at: 0,
+        };
+        let episodes: Vec<_> = ["1", "1.5"]
+            .iter()
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        assert_eq!(next_episode(&entry, &episodes), Some(1));
+        assert_eq!(
+            next_episode(
+                &Entry {
+                    episode: "1.5".into(),
+                    ..entry.clone()
+                },
+                &episodes
+            ),
+            None
+        );
+        assert_eq!(
+            next_episode(
+                &Entry {
+                    episode: "99".into(),
+                    ..entry
+                },
+                &episodes
+            ),
+            None
+        );
+    }
+    #[test]
     fn roundtrip_separates_languages_and_preserves_settings() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());

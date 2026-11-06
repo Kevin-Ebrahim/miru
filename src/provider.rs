@@ -129,7 +129,13 @@ impl Provider {
             .iter()
             .find(|s| s.default)
             .or_else(|| config.subtitles.iter().find(|s| s.lang == "en"))
-            .map(|s| embed.join(&s.src).map(String::from))
+            .map(|s| {
+                embed
+                    .join(&s.src)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|u| http_url(u.as_str()))
+                    .map(String::from)
+            })
             .transpose()?;
         Ok(Stream {
             variants,
@@ -210,6 +216,9 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
     ensure!(
         !results.is_empty()
             || page.contains("film_list-wrap")
+            || document
+                .select(&selector(".film_list p"))
+                .any(|p| { normalized(&p.text().collect::<String>()) == "no animes found." })
             || page.contains("No results")
             || page.contains("no-results"),
         "Search markup changed. Check the provider or update the parser"
@@ -324,7 +333,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<(Vec<Variant>, Option<
             && line.contains("DEFAULT=YES")
         {
             if let Some(cap) = uri.captures(line) {
-                audio = Some(master.join(&cap[1])?.to_string());
+                audio = Some(http_url(master.join(&cap[1])?.as_str())?.to_string());
             }
         } else if line.starts_with("#EXT-X-STREAM-INF:") {
             height = Some(
@@ -339,7 +348,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<(Vec<Variant>, Option<
         {
             variants.push(Variant {
                 height: h,
-                url: master.join(line)?.to_string(),
+                url: http_url(master.join(line)?.as_str())?.to_string(),
             });
         }
     }
@@ -375,6 +384,17 @@ mod tests {
         );
         assert_eq!(results[1].title, "日本語 & English");
         assert!(results[1].cover.is_none());
+    }
+    #[test]
+    fn empty_live_search_is_not_a_markup_error() {
+        assert!(
+            parse_search(
+                include_str!("../tests/fixtures/empty-search.html"),
+                &Url::parse("https://example.org").unwrap()
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
     #[test]
     fn changed_search_markup_is_an_error() {

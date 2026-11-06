@@ -124,26 +124,19 @@ impl Artwork {
                         }
                         _ => None,
                     };
-                    let bytes = match disk {
-                        Some(b) => b,
-                        None => provider.bytes(&url, None, 12 * 1024 * 1024).await?,
+                    let (img, bytes) = if let Some(bytes) = disk {
+                        match decode_image(bytes, permits.clone()).await {
+                            Ok(decoded) => decoded,
+                            Err(_) => {
+                                let _ = tokio::fs::remove_file(&path).await;
+                                let bytes = provider.bytes(&url, None, 12 * 1024 * 1024).await?;
+                                decode_image(bytes, permits.clone()).await?
+                            }
+                        }
+                    } else {
+                        let bytes = provider.bytes(&url, None, 12 * 1024 * 1024).await?;
+                        decode_image(bytes, permits.clone()).await?
                     };
-                    let permit = permits.clone().acquire_owned().await?;
-                    let (img, bytes) = tokio::task::spawn_blocking(move || -> Result<_> {
-                        let _permit = permit;
-                        let mut reader =
-                            ImageReader::new(io::Cursor::new(&bytes)).with_guessed_format()?;
-                        let mut limits = image::Limits::default();
-                        limits.max_image_width = Some(4096);
-                        limits.max_image_height = Some(4096);
-                        limits.max_alloc = Some(96 * 1024 * 1024);
-                        reader.limits(limits);
-                        Ok((
-                            Arc::new(reader.decode().context("Cover could not be decoded")?),
-                            bytes,
-                        ))
-                    })
-                    .await??;
                     if tokio::fs::create_dir_all(&cache).await.is_ok() {
                         // Atomic cache writes; a failed cache write must never hide an image.
                         let path_copy = path.clone();
@@ -237,6 +230,31 @@ impl Drop for Artwork {
         self.clear = true;
         let _ = self.clear_graphics();
     }
+}
+
+async fn decode_image(
+    bytes: Vec<u8>,
+    permits: Arc<Semaphore>,
+) -> Result<(Arc<DynamicImage>, Vec<u8>)> {
+    let permit = permits.acquire_owned().await?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut reader = ImageReader::new(io::Cursor::new(&bytes)).with_guessed_format()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(4096);
+        limits.max_image_height = Some(4096);
+        limits.max_alloc = Some(96 * 1024 * 1024);
+        reader.limits(limits);
+        let image = reader.decode().context("Cover could not be decoded")?;
+        // Bound the decoded LRU independently of encoded file size.
+        let image = if image.width() > 1600 || image.height() > 2400 {
+            image.resize(1600, 2400, FilterType::Lanczos3)
+        } else {
+            image
+        };
+        Ok((Arc::new(image), bytes))
+    })
+    .await?
 }
 
 fn prune_cache(dir: &std::path::Path) {

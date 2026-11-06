@@ -17,7 +17,8 @@ use unicode_width::UnicodeWidthStr;
 
 const ACCENT: Color = Color::Cyan;
 fn muted() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
+    // Default foreground remains readable on both light and dark backgrounds.
+    Style::default().fg(Color::Reset)
 }
 fn accent() -> Style {
     Style::default().fg(ACCENT).bold()
@@ -59,8 +60,12 @@ pub fn cover_area(area: Rect) -> Rect {
         panel.x + 2,
         panel.y + 1,
         panel.width.saturating_sub(4),
-        panel.height.saturating_sub(8),
+        panel.height.saturating_sub(metadata_rows(panel) + 2),
     )
+}
+
+fn metadata_rows(panel: Rect) -> u16 {
+    if panel.height < 19 { 3 } else { 6 }
 }
 
 fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
@@ -74,7 +79,7 @@ fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
         .border_style(if focused {
             Style::default().fg(ACCENT)
         } else {
-            muted()
+            Style::default().fg(Color::DarkGray)
         })
         .padding(Padding::horizontal(1))
         .title(Line::from(title).style(if focused {
@@ -132,9 +137,16 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
             header_text,
             Line::styled(
                 match state.screen {
-                    Screen::Search => "  DISCOVER   /   Search the catalogue",
-                    Screen::Episodes => "  DISCOVER   /   Series   /   Episodes",
-                    Screen::History => "  LIBRARY   /   Continue watching",
+                    Screen::Search => "  DISCOVER   /   Search the catalogue".to_string(),
+                    Screen::Episodes => format!(
+                        "  SERIES / {}",
+                        state
+                            .anime
+                            .as_ref()
+                            .map(|a| a.title.as_str())
+                            .unwrap_or("Episodes")
+                    ),
+                    Screen::History => "  LIBRARY   /   Continue watching".to_string(),
                 },
                 muted(),
             ),
@@ -288,10 +300,19 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
         state
             .visible()
             .iter()
-            .map(|i| {
+            .enumerate()
+            .map(|(position, i)| {
+                let selected = position == state.selected;
                 let anime = &state.results[*i];
                 ListItem::new(vec![
-                    Line::styled(anime.title.clone(), Style::default().bold()),
+                    Line::styled(
+                        anime.title.clone(),
+                        if selected {
+                            Style::default().bold().reversed()
+                        } else {
+                            Style::default().bold()
+                        },
+                    ),
                     Line::styled(
                         if anime.info.is_empty() {
                             "Series".into()
@@ -308,9 +329,17 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
         state
             .history
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(position, entry)| {
                 ListItem::new(vec![
-                    Line::styled(entry.anime.title.clone(), Style::default().bold()),
+                    Line::styled(
+                        entry.anime.title.clone(),
+                        if position == state.history_selected {
+                            Style::default().bold().reversed()
+                        } else {
+                            Style::default().bold()
+                        },
+                    ),
                     Line::styled(
                         format!(
                             "Last played {} / {}",
@@ -337,7 +366,14 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
                     "  "
                 };
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!("{mark}{:>5}  ", ep.number), accent()),
+                    Span::styled(
+                        format!("{mark}{:>5}  ", ep.number),
+                        if i == state.episode_selected {
+                            Style::default().bold()
+                        } else {
+                            accent()
+                        },
+                    ),
                     Span::raw(ep.title.clone()),
                 ]))
             })
@@ -352,7 +388,11 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
     };
     let list = List::new(items)
         .highlight_symbol(if state.ascii { "> " } else { "▸ " })
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD));
+        .highlight_style(if state.screen == Screen::Episodes {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            Style::default()
+        });
     let mut selection = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, inner, &mut selection);
 }
@@ -401,20 +441,23 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: R
     if let Some(anime) = state.selected_anime() {
         let metadata = Rect::new(
             panel_area.x + 2,
-            panel_area.bottom().saturating_sub(7),
+            panel_area
+                .bottom()
+                .saturating_sub(metadata_rows(panel_area) + 1),
             panel_area.width.saturating_sub(4),
-            6.min(panel_area.height),
+            metadata_rows(panel_area).min(panel_area.height),
         );
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::styled(anime.title.clone(), Style::default().bold()),
-                Line::styled(anime.info.clone(), accent()),
+        let mut details = vec![
+            Line::styled(anime.title.clone(), Style::default().bold()),
+            Line::styled(anime.info.clone(), accent()),
+        ];
+        if metadata_rows(panel_area) > 3 {
+            details.extend([
                 Line::raw(""),
                 Line::styled(anime.description.clone(), muted()),
-            ])
-            .wrap(Wrap { trim: true }),
-            metadata,
-        );
+            ]);
+        }
+        frame.render_widget(Paragraph::new(details).wrap(Wrap { trim: true }), metadata);
     }
 }
 
@@ -449,12 +492,17 @@ fn empty_art(frame: &mut Frame, area: Rect, title: &str, hint: &str, tick: usize
 
 fn render_help(frame: &mut Frame, state: &State) {
     let area = frame.area();
-    let block = panel(" Field guide / Esc to return ".into(), state.ascii, true);
+    let block = panel(" Help / Up,Down scroll / Esc ".into(), state.ascii, true);
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let text = "ANI / WATCH\n\n/                 Edit search (300 ms debounce)\nEnter             Browse series / play episode\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\nCtrl+E            Toggle exact title matching\nD                 Toggle SUB / DUB\nQ                 Cycle quality (best to worst)\nh                 Watch history / continue\nTab or Space      Mark episodes\n:                 Enter ranges (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop player / cancel resolving\nR                 Retry current request\nEsc               Back / leave search input\nq or Ctrl+C       Quit and stop owned player\n\nSearch stays live while covers load.\nPlayer controls also work in the player window.\nUse --ascii, --no-animation, or --images off\nfor a quieter interface. Colors use your palette.";
-    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(
+        Paragraph::new(format!("{text}\n\nCurrent status:\n{}", state.status))
+            .wrap(Wrap { trim: false })
+            .scroll((state.help_scroll, 0)),
+        inner,
+    );
 }
 
 pub fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {

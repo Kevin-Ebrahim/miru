@@ -6,6 +6,7 @@ use crate::{
     ui,
 };
 use anyhow::Result;
+use crossterm::SynchronizedUpdate;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_image::picker::Picker;
 use std::{
@@ -116,6 +117,7 @@ pub struct State {
     pub range: Input,
     pub marked: BTreeSet<usize>,
     pub downloading: bool,
+    pub art_revision: u64,
     pub selected: usize,
     pub anime: Option<Anime>,
     pub episodes: Vec<Episode>,
@@ -129,6 +131,7 @@ pub struct State {
     pub status: String,
     pub error: bool,
     pub help: bool,
+    pub help_scroll: u16,
     pub frame: usize,
     pub ascii: bool,
     pub animate: bool,
@@ -158,6 +161,7 @@ impl State {
             range: Input::default(),
             marked: BTreeSet::new(),
             downloading: false,
+            art_revision: 0,
             selected: 0,
             anime: None,
             episodes: vec![],
@@ -171,6 +175,7 @@ impl State {
             status: "Find your next story. Type a title to begin.".into(),
             error: false,
             help: false,
+            help_scroll: 0,
             frame: 0,
             ascii,
             animate,
@@ -230,9 +235,16 @@ impl State {
         self.loading = false;
         match result {
             Ok(results) => {
+                let selected_id = self.selected_anime().map(|a| a.id.clone());
                 self.results = results;
                 self.results_query = self.query.text.clone();
-                self.selected = 0;
+                self.selected = selected_id
+                    .and_then(|id| {
+                        self.visible()
+                            .iter()
+                            .position(|i| self.results[*i].id == id)
+                    })
+                    .unwrap_or(0);
                 self.error = false;
                 self.status = if self.visible().is_empty() {
                     "No matches. Try another title or turn off exact matching (Ctrl+E).".into()
@@ -284,6 +296,8 @@ pub struct App {
     play_task: Option<JoinHandle<()>>,
     search_due: Option<Instant>,
     job: u64,
+    job_mode: Mode,
+    job_quality: String,
     quit: bool,
     queue: VecDeque<usize>,
     continuation: Option<crate::persistence::Entry>,
@@ -295,6 +309,15 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
     if let Some(task) = task.take() {
         task.abort();
     }
+}
+
+pub fn shutdown_signals() -> Result<[tokio::signal::unix::Signal; 3]> {
+    use tokio::signal::unix::{SignalKind, signal};
+    Ok([
+        signal(SignalKind::interrupt())?,
+        signal(SignalKind::terminate())?,
+        signal(SignalKind::hangup())?,
+    ])
 }
 
 impl App {
@@ -312,7 +335,7 @@ impl App {
                 let _ = notify.send(Message::Library(result));
             }
         });
-        let search_due = if state.query.text.is_empty() {
+        let search_due = if state.query.text.is_empty() || state.screen != Screen::Search {
             None
         } else {
             Some(Instant::now())
@@ -328,6 +351,8 @@ impl App {
             play_task: None,
             search_due,
             job: 0,
+            job_mode: Mode::Sub,
+            job_quality: "best".into(),
             quit: false,
             queue: VecDeque::new(),
             continuation: None,
@@ -466,7 +491,9 @@ impl App {
             false,
         );
         let job = self.job;
-        let mode = self.state.mode;
+        self.job_mode = self.state.mode;
+        self.job_quality = self.state.quality.clone();
+        let mode = self.job_mode;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
         self.play_task = Some(tokio::spawn(async move {
@@ -535,9 +562,9 @@ impl App {
                         "player.log"
                     });
                     if self.state.downloading {
-                        let title = format!("{title} {}", self.state.mode.as_str().to_uppercase());
+                        let title = format!("{title} {}", self.job_mode.as_str().to_uppercase());
                         let dir = self.options.download_dir.clone();
-                        let quality = self.state.quality.clone();
+                        let quality = self.job_quality.clone();
                         let tx = self.tx.clone();
                         self.state.message(
                             format!(
@@ -571,7 +598,7 @@ impl App {
                         &self.options.player,
                         &self.options.player_args,
                         &stream,
-                        &self.state.quality,
+                        &self.job_quality,
                         &title,
                         &log,
                     ) {
@@ -580,13 +607,14 @@ impl App {
                             self.persist(crate::persistence::Change::Record {
                                 anime: self.state.anime.clone().unwrap(),
                                 episode: self.state.episodes[index].number.clone(),
-                                mode: self.state.mode,
+                                mode: self.job_mode,
                             });
-                            let (variant, fallback) = stream.select(&self.state.quality);
+                            let (variant, fallback) = stream.select(&self.job_quality);
                             self.state.message(
                                 format!(
-                                    "Playing episode {} / {}p{} / x stop",
+                                    "Playing episode {} / {} / {}p{} / x stop",
                                     self.state.episodes[index].number,
+                                    self.job_mode.as_str().to_uppercase(),
                                     variant.height,
                                     if fallback {
                                         " (requested quality unavailable)"
@@ -681,8 +709,22 @@ impl App {
             return;
         }
         if self.state.help {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter) {
-                self.state.help = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
+                KeyCode::Char('q') => self.quit = true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_add(1).min(40)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_add(8).min(40)
+                }
+                KeyCode::PageUp => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_sub(8)
+                }
+                _ => {}
             }
             return;
         }
@@ -742,12 +784,16 @@ impl App {
             KeyCode::Char('?') => self.state.help = true,
             KeyCode::Char('/') => {
                 self.stop();
+                abort(&mut self.episode_task);
+                self.state.loading = false;
+                self.state.message("Type a title to search.", false);
                 self.state.screen = Screen::Search;
                 self.state.focus = Focus::Search;
                 self.state.episode_generation += 1;
             }
             KeyCode::Esc if self.state.screen == Screen::Episodes => {
                 self.stop();
+                abort(&mut self.episode_task);
                 self.state.screen = Screen::Search;
                 self.state.episode_generation += 1;
                 self.state.loading = false;
@@ -838,6 +884,7 @@ impl App {
                 self.navigate_play(self.state.playing.unwrap_or(self.state.episode_selected))
             }
             KeyCode::Char('R') => {
+                self.state.art_revision += 1;
                 if self.state.screen == Screen::Search {
                     self.search();
                 } else {
@@ -876,6 +923,7 @@ impl App {
         &mut self,
         terminal: &mut ratatui::DefaultTerminal,
         picker: Picker,
+        signals: [tokio::signal::unix::Signal; 3],
     ) -> Result<()> {
         let mut art = Artwork::new(picker, self.options.cache.clone(), self.options.images);
         let (art_tx, mut art_rx) = mpsc::unbounded_channel();
@@ -884,9 +932,8 @@ impl App {
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         let mut animation = Instant::now();
         let mut dirty = true;
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        let mut art_revision = 0;
+        let [mut interrupt, mut terminate, mut hangup] = signals;
         while !self.quit {
             if self.search_due.is_some_and(|at| Instant::now() >= at) {
                 self.search();
@@ -918,12 +965,19 @@ impl App {
                 } else {
                     self.state.selected_anime().and_then(|a| a.cover.as_deref())
                 };
-                art.request(url, cover.as_size(), self.provider.clone(), art_tx.clone());
-                if art.clear {
-                    art.clear_graphics()?;
-                    terminal.clear()?;
+                if art_revision != self.state.art_revision {
+                    art.request(None, cover.as_size(), self.provider.clone(), art_tx.clone());
+                    art_revision = self.state.art_revision;
                 }
-                terminal.draw(|frame| ui::render(frame, &self.state, &art))?;
+                art.request(url, cover.as_size(), self.provider.clone(), art_tx.clone());
+                std::io::stdout().sync_update(|_| -> Result<()> {
+                    if art.clear {
+                        art.clear_graphics()?;
+                        terminal.clear()?;
+                    }
+                    terminal.draw(|frame| ui::render(frame, &self.state, &art))?;
+                    Ok(())
+                })??;
                 dirty = false;
             }
             tokio::select! {
@@ -938,7 +992,7 @@ impl App {
                 Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
                 _ = terminate.recv() => self.quit = true,
                 _ = hangup.recv() => self.quit = true,
-                _ = tokio::signal::ctrl_c() => self.quit = true,
+                _ = interrupt.recv() => self.quit = true,
             }
         }
         self.stop();
@@ -968,6 +1022,106 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn anime(id: &str, title: &str) -> Anime {
+        Anime {
+            id: id.into(),
+            title: title.into(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn provider_alias_matches_remain_visible_and_cached_refresh_keeps_selection() {
+        let mut state = State::new(
+            "sousou".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        let results = vec![anime("1", "Frieren"), anime("2", "Another English title")];
+        state.accept_search(0, Ok(results.clone()));
+        assert_eq!(state.visible(), [0, 1]);
+        state.selected = 1;
+        state.accept_search(0, Ok(results));
+        assert_eq!(state.selected, 1);
+        state.exact = true;
+        assert!(state.visible().is_empty());
+    }
+    #[tokio::test]
+    async fn navigation_discards_stale_episode_and_playback_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        let options = Options {
+            player: "does-not-exist".into(),
+            player_args: vec![],
+            cache: dir.path().join("cache"),
+            state_dir: dir.path().into(),
+            images: false,
+            download_dir: dir.path().join("downloads"),
+        };
+        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::List;
+        app.state.episode_generation = 3;
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.message(Message::Episodes(
+            3,
+            Ok(vec![Episode {
+                id: "1".into(),
+                number: "1".into(),
+                title: "stale".into(),
+            }]),
+        ));
+        assert_eq!(app.state.screen, Screen::Search);
+        assert!(app.state.episodes.is_empty());
+        let old_job = app.job;
+        app.stop();
+        app.message(Message::Resolved(
+            old_job,
+            999,
+            Ok(Stream {
+                variants: vec![],
+                referer: String::new(),
+                audio: None,
+                subtitle: None,
+            }),
+        ));
+        assert!(!app.state.busy);
+        assert!(app.state.playing.is_none());
+    }
+    #[tokio::test]
+    async fn range_entry_marks_actual_episode_order_without_launching() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.focus = Focus::Range;
+        state.episodes = ["1", "1.5", "2", "3"]
+            .iter()
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        state.range.set("1-2".into());
+        let options = Options {
+            player: "does-not-exist".into(),
+            player_args: vec![],
+            cache: dir.path().join("cache"),
+            state_dir: dir.path().into(),
+            images: false,
+            download_dir: dir.path().join("downloads"),
+        };
+        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.state.marked.iter().copied().collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(app.state.focus, Focus::List);
+        assert!(!app.state.busy);
+    }
     #[test]
     fn stale_search_cannot_overwrite_new_query_or_empty_state() {
         let mut state = State::new("old".into(), Mode::Sub, "best".into(), false, false, false);

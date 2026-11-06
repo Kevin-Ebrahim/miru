@@ -15,7 +15,10 @@ pub fn filename(title: &str) -> String {
         .chars()
         .filter(|c| !c.is_control())
         .map(|c| if "<>:\"/\\|?*".contains(c) { '_' } else { c })
-        .take(160)
+        .scan(0, |bytes, c| {
+            *bytes += c.len_utf8();
+            (*bytes <= 180).then_some(c)
+        })
         .collect();
     let name = name.trim_matches(['.', ' ']);
     if name.is_empty() {
@@ -138,5 +141,6 @@ mod tests {
             assert_eq!(Path::new(&filename(title)).components().count(), 1);
         }
         assert_eq!(filename("日本語: episode 1"), "日本語_ episode 1");
+        assert!(filename(&"日本語".repeat(100)).len() <= 180);
     }
 }
