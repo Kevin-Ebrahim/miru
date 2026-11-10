@@ -270,7 +270,7 @@ pub struct State {
     pub frame: usize,
     pub ascii: bool,
     pub colorless: bool,
-    pub background: Option<(u8, u8, u8)>,
+    pub palette: crate::palette::Palette,
     pub synopses: LruCache<String, Synopsis>,
     pub animate: bool,
     pub activity: Option<Activity>,
@@ -337,7 +337,7 @@ impl State {
             frame: 0,
             ascii,
             colorless: false,
-            background: None,
+            palette: crate::palette::Palette::terminal(false),
             synopses: LruCache::new(NonZeroUsize::new(32).unwrap()),
             animate,
             activity: None,
@@ -1502,7 +1502,10 @@ impl App {
         terminal: &mut ratatui::DefaultTerminal,
         picker: Picker,
         signals: [tokio::signal::unix::Signal; 3],
+        theme: crate::theme::ThemeSource,
     ) -> Result<()> {
+        self.state.palette = theme.load(self.state.colorless).await;
+        let mut theme_tick = tokio::time::interval(Duration::from_secs(1));
         let mut art = Artwork::new(picker, self.options.cache.clone(), self.options.images);
         let (art_tx, mut art_rx) = mpsc::unbounded_channel();
         // Keep all terminal reads on this thread. EventStream races with the cursor
@@ -1590,6 +1593,13 @@ impl App {
                 dirty = false;
             }
             tokio::select! {
+                _ = theme_tick.tick() => {
+                    let palette = theme.load(self.state.colorless).await;
+                    if palette != self.state.palette {
+                        self.state.palette = palette;
+                        dirty = true;
+                    }
+                }
                 _ = tick.tick() => {
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
                         animation = Instant::now();

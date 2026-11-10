@@ -7,6 +7,7 @@ mod persistence;
 mod player;
 mod provider;
 mod scene;
+mod theme;
 mod ui;
 
 use anyhow::{Context, Result, ensure};
@@ -16,7 +17,7 @@ use crossterm::{
     execute,
 };
 use model::{Mode, normalized};
-use ratatui_image::picker::{Capability, Picker, ProtocolType, cap_parser::QueryStdioOptions};
+use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
 use std::{
     io::{self, IsTerminal},
     path::PathBuf,
@@ -71,6 +72,9 @@ struct Cli {
     player_arg: Vec<String>,
     #[arg(long, value_enum, default_value = "auto")]
     images: Images,
+    /// Follow the desktop palette when available, or use terminal colors only
+    #[arg(long, value_enum, default_value = "auto", env = "ANI_WATCH_THEME")]
+    theme: theme::ThemeMode,
     #[arg(long)]
     ascii: bool,
     #[arg(long)]
@@ -102,6 +106,7 @@ struct Cli {
 
 fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
     std::env::var_os(env)
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into())).join(fallback)
@@ -283,10 +288,6 @@ async fn main() -> Result<()> {
         !cli.no_animation,
     );
     state.colorless = colorless;
-    state.background = picker.capabilities().iter().find_map(|cap| match cap {
-        Capability::Background(r, g, b) => Some((*r, *g, *b)),
-        _ => None,
-    });
     state.history = library.entries;
     if cli.resume {
         state.screen = app::Screen::History;
@@ -304,6 +305,11 @@ async fn main() -> Result<()> {
         download_dir: cli.download_dir,
     };
     app::App::new(state, provider, options)
-        .run(&mut terminal, picker, signals)
+        .run(
+            &mut terminal,
+            picker,
+            signals,
+            theme::ThemeSource::new(cli.theme, colorless),
+        )
         .await
 }

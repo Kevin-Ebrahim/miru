@@ -131,13 +131,24 @@ codes to identify the image. If your launcher exports it unintentionally, use
 `env -u NO_COLOR ./target/release/ani-watch` for native images. `--ascii` changes
 interface borders and indicators; it does not transliterate anime titles.
 
-The interface keeps the terminal's font, text size, default foreground and canvas.
+The interface keeps the terminal's font and text size. By default, `--theme auto`
+uses Omarchy's active `colors.toml`, including its foreground, background, accent,
+surface and status colors. Focus uses the theme accent; selections use a tint of
+that accent. It checks `$XDG_STATE_HOME/omarchy/current/theme`
+(normally `~/.local/state/omarchy/current/theme`), then the older
+`$XDG_CONFIG_HOME/omarchy/current/theme` location. Changes appear within about a
+second while the app is open, including when images are disabled. Text and focus
+colors are adjusted only where needed for readable contrast.
+
+Without a usable desktop palette, or over SSH, the app uses the terminal's default
+foreground/background and ANSI colors. These follow the terminal's own palette;
+selection uses reverse video. Use `--theme terminal` or `ANI_WATCH_THEME=terminal`
+when the terminal has a different theme from the desktop. This mode leaves panel
+backgrounds at the terminal default. `NO_COLOR` takes precedence over both modes.
+
 Body text is regular; headings and focused controls use bold. Heavy panel borders
-become double borders in focus. Cyan identifies focus and keys, green marks success
-and playback, amber indicates pending work, and red identifies errors. Symbols and
-labels carry the same meaning without color. When the terminal reports its background
-during image detection, the app selects readable light or dark accents and a tinted
-selection; otherwise it uses ANSI colors and reverse-video selection.
+become double borders in focus. Symbols and labels preserve meaning even in
+monochrome themes.
 Home and Search show a list on the left and the selected anime's aspect-preserving
 cover, title and details on the right. Episodes use a wider list and a smaller
 cover, without a persistent search field. A separate activity strip shows the

@@ -7,7 +7,7 @@ use crate::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
@@ -19,7 +19,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 fn palette(state: &State) -> Palette {
-    Palette::terminal(state.background, state.colorless)
+    if state.colorless {
+        Palette::terminal(true)
+    } else {
+        state.palette
+    }
 }
 fn muted(state: &State) -> Style {
     Style::default().fg(palette(state).secondary)
@@ -200,7 +204,11 @@ fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
 pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
     frame.render_widget(
-        Block::default().style(Style::default().fg(Color::Reset).bg(Color::Reset)),
+        Block::default().style(
+            Style::default()
+                .fg(palette(state).text)
+                .bg(palette(state).canvas),
+        ),
         area,
     );
     if area.width < 32 || area.height < 12 {
@@ -1122,7 +1130,11 @@ fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
 
 fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
-    let block = panel(" Help / Up,Down scroll / Esc ".into(), state, true);
+    let block = panel(" Help / Up,Down scroll / Esc ".into(), state, true).style(
+        Style::default()
+            .fg(palette(state).text)
+            .bg(palette(state).canvas),
+    );
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1318,6 +1330,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn help_keeps_the_desktop_canvas_and_text_after_clearing() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.palette = Palette::themed(
+            &crate::theme::Theme::parse(
+                "background = '#faf0e0'\nforeground = '#202030'\naccent = '#604080'",
+            )
+            .unwrap(),
+            false,
+        );
+        state.help = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+        terminal.draw(|f| render(f, &mut state, &art)).unwrap();
+        let cell = &terminal.backend().buffer()[(2, 2)];
+        assert_eq!(cell.bg, state.palette.canvas);
+        assert_eq!(cell.fg, state.palette.text);
     }
 
     #[test]

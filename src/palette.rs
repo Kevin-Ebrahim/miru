@@ -1,7 +1,8 @@
 use ratatui::style::{Color, Style};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
+    pub canvas: Color,
     pub surface: Color,
     pub text: Color,
     pub focus: Color,
@@ -14,90 +15,81 @@ pub struct Palette {
 }
 
 impl Palette {
-    pub fn terminal(background: Option<(u8, u8, u8)>, colorless: bool) -> Self {
-        if colorless {
-            return Self {
-                surface: Color::Reset,
-                text: Color::Reset,
-                focus: Color::Reset,
-                secondary: Color::Reset,
-                border: Color::Reset,
-                success: Color::Reset,
-                pending: Color::Reset,
-                error: Color::Reset,
-                selection: Style::default().reversed(),
-            };
+    pub fn terminal(colorless: bool) -> Self {
+        Self {
+            canvas: Color::Reset,
+            surface: Color::Reset,
+            text: Color::Reset,
+            focus: if colorless { Color::Reset } else { Color::Blue },
+            secondary: Color::Reset,
+            border: Color::Reset,
+            success: if colorless {
+                Color::Reset
+            } else {
+                Color::Green
+            },
+            pending: if colorless {
+                Color::Reset
+            } else {
+                Color::Yellow
+            },
+            error: if colorless { Color::Reset } else { Color::Red },
+            selection: Style::default().reversed(),
         }
-        let Some(background) = background else {
-            return Self {
-                surface: Color::Reset,
-                text: Color::Reset,
-                focus: Color::Cyan,
-                secondary: Color::Reset,
-                border: Color::Reset,
-                success: Color::Green,
-                pending: Color::Yellow,
-                error: Color::LightRed,
-                selection: Style::default().reversed(),
-            };
-        };
-        let dark = luminance(background) < 0.35;
-        let (focus, secondary, border, success, pending, error, selected_fg, selected_bg) = if dark
-        {
-            (
-                (136, 192, 208),
-                (174, 187, 204),
-                (88, 100, 116),
-                (163, 211, 156),
-                (235, 203, 139),
-                (255, 154, 162),
-                (227, 248, 255),
-                (36, 73, 91),
-            )
-        } else {
-            (
-                (0, 102, 117),
-                (71, 85, 105),
-                (130, 139, 152),
-                (35, 105, 54),
-                (125, 80, 0),
-                (170, 35, 52),
-                (18, 55, 67),
-                (214, 238, 242),
-            )
-        };
-        let blend = |base: u8, tint: u8| ((u16::from(base) * 92 + u16::from(tint) * 8) / 100) as u8;
-        let mut surface = (
-            blend(background.0, focus.0),
-            blend(background.1, focus.1),
-            blend(background.2, focus.2),
-        );
-        let foreground = if contrast((255, 255, 255), background) > contrast((0, 0, 0), background)
-        {
+    }
+
+    pub fn themed(theme: &crate::theme::Theme, colorless: bool) -> Self {
+        if colorless {
+            return Self::terminal(true);
+        }
+        let background = theme.background;
+        let mut surface = theme
+            .surface
+            .unwrap_or_else(|| mix(background, theme.foreground, 6));
+        let endpoint = if contrast((255, 255, 255), background) > contrast((0, 0, 0), background) {
             (255, 255, 255)
         } else {
             (0, 0, 0)
         };
-        if contrast(foreground, surface) < 4.5 {
+        if contrast(endpoint, surface) < 4.5 {
             surface = background;
         }
         let backgrounds = [background, surface];
+        let muted = theme
+            .muted
+            .unwrap_or_else(|| mix(background, theme.foreground, 65));
+        let selected_bg = mix(background, theme.accent, 25);
         Self {
+            canvas: rgb(background),
             surface: rgb(surface),
-            text: readable(
-                if dark { (224, 228, 234) } else { (30, 38, 48) },
+            text: readable(theme.foreground, &backgrounds, 4.5),
+            focus: readable(theme.accent, &backgrounds, 4.5),
+            secondary: readable(muted, &backgrounds, 4.5),
+            border: readable(
+                theme
+                    .muted
+                    .unwrap_or_else(|| mix(background, theme.foreground, 40)),
                 &backgrounds,
-                4.5,
+                3.0,
             ),
-            focus: readable(focus, &backgrounds, 4.5),
-            secondary: readable(secondary, &backgrounds, 4.5),
-            border: readable(border, &backgrounds, 3.0),
-            success: readable(success, &backgrounds, 4.5),
-            pending: readable(pending, &backgrounds, 4.5),
-            error: readable(error, &backgrounds, 4.5),
-            selection: Style::default().fg(rgb(selected_fg)).bg(rgb(selected_bg)),
+            success: readable(theme.success, &backgrounds, 4.5),
+            pending: readable(theme.pending, &backgrounds, 4.5),
+            error: readable(theme.error, &backgrounds, 4.5),
+            selection: Style::default()
+                .fg(readable(theme.foreground, &[selected_bg], 4.5))
+                .bg(rgb(selected_bg)),
         }
     }
+}
+
+fn mix(base: crate::theme::Rgb, tint: crate::theme::Rgb, percent: u16) -> crate::theme::Rgb {
+    let blend =
+        |a: u8, b: u8| ((u16::from(a) * (100 - percent) + u16::from(b) * percent) / 100) as u8;
+    (
+        blend(base.0, tint.0),
+        blend(base.1, tint.1),
+        blend(base.2, tint.2),
+    )
 }
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
@@ -168,7 +160,19 @@ mod tests {
         .into_iter()
         .chain((0..=255).map(|v| (v, v, v)))
         {
-            let p = Palette::terminal(Some(background), false);
+            let p = Palette::themed(
+                &crate::theme::Theme {
+                    background,
+                    foreground: (230, 230, 230),
+                    accent: (180, 120, 200),
+                    surface: None,
+                    muted: None,
+                    success: (60, 180, 90),
+                    pending: (200, 160, 20),
+                    error: (200, 60, 60),
+                },
+                false,
+            );
             for bg in [background, channels(p.surface)] {
                 for c in [p.text, p.focus, p.secondary, p.success, p.pending, p.error] {
                     assert!(contrast(channels(c), bg) >= 4.5);
