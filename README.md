@@ -23,7 +23,7 @@ the highlighted anime's cover. Enter opens its episodes with the next episode
 selected; Enter again plays it. History records launches, not completed viewing.
 
 Press `/` to search. Type a title, press Enter to focus the results, then Enter
-to browse episodes. `H` returns Home, `h` opens full history, and Esc retraces
+to browse episodes. `H` returns Home, Alt+h opens full history, and Esc retraces
 your navigation, preserving queries, selections and scroll positions. `i` opens
 full cover/details, including in compact terminals. Highlighting a series loads
 its full synopsis automatically in the preview and caches it for Details.
@@ -45,13 +45,15 @@ outside the terminal input loop.
 | `/` | Open or edit catalogue search |
 | `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
 | Enter | Focus results / browse series / play episode(s) |
+| → / `l` | Browse series / play episode(s), outside text input |
 | ↑ ↓ or `j` `k` | Navigate |
-| Page Up / Page Down | Move ten items, or scroll ten lines in details |
-| Home / End or `g` / `G` | First / last item; Home / End also scroll details |
-| Ctrl+E | Toggle normalized exact title matching |
+| Page Up / Page Down, Ctrl+d/u, Ctrl+f/b | Move ten items, or scroll ten lines |
+| Ctrl+n / Ctrl+p | Next / previous item, outside text input |
+| Home / End or `g` / `G` | First / last item or line; `gg` also works |
+| Alt+e | Toggle normalized exact title matching |
 | `D` | Toggle SUB / DUB |
 | `Q` | Cycle best, 1080p, 720p, 480p, 360p, worst |
-| `h` | Open watch history |
+| Alt+h | Open watch history |
 | Tab / Space in episodes | Mark or unmark an episode |
 | `:` in episodes | Enter a range; Enter marks it |
 | `d` in episodes | Download marked episodes, or the highlighted episode |
@@ -62,10 +64,29 @@ outside the terminal input loop.
 | Delete in history | Remove the highlighted history entry |
 | `?` or F1 | Help; ↑/↓ scroll the guide |
 | Esc | Leave input / return to the previous screen / close help or details |
-| `q` outside text input, or Ctrl+C anywhere | Quit and stop owned jobs |
+| ← / `h` / Backspace outside input | Return to the previous screen / close help or details |
+| `q` outside text input | Close Help/Details, otherwise quit and stop owned jobs |
+| Ctrl+C | Quit and stop owned jobs from anywhere |
 
-While typing a search, printable keys are text. The other single-letter shortcuts
-apply after leaving the input. F1, F5, F6 and Ctrl+C also work while typing.
+Search and range inputs use Readline-style editing:
+
+| Key | Action |
+| --- | --- |
+| Ctrl+a / Ctrl+e | Start / end of line |
+| ← / →, Ctrl+b / Ctrl+f | Previous / next character |
+| Alt+b / Alt+f, Ctrl+← / Ctrl+→ | Previous / next word |
+| Ctrl+u / Ctrl+k | Cut before / after the cursor |
+| Ctrl+w | Cut the previous whitespace-delimited word |
+| Alt+Backspace / Alt+d | Cut the previous / next word |
+| Ctrl+y | Restore the last cut in this input |
+| Ctrl+h / Ctrl+d | Delete the previous / next character |
+| Ctrl+g / Esc | Leave the input |
+| Ctrl+j / Ctrl+m / Enter | Accept the input |
+
+While typing, printable keys stay text. F1, F5, F6, Alt+h and Ctrl+C also
+work while typing; Alt+e toggles exact matching in Search. History moved from
+`h` to Alt+h so `h` can go back; exact matching moved from Ctrl+e to Alt+e
+so Ctrl+e can move to the end of the input.
 The footer shows the actions available for the current focus; F1 lists all
 shortcuts. At 120 columns and above, navigation and language/quality controls
 move to the top toolbar, alongside the search input on Search. Secondary actions

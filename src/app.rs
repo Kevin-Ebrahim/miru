@@ -80,61 +80,160 @@ impl Activity {
 pub struct Input {
     pub text: String,
     pub cursor: usize,
+    killed: String,
 }
 impl Input {
     pub fn set(&mut self, text: String) {
         self.cursor = text.len();
         self.text = text;
     }
-    pub fn edit(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.text.clear();
-                self.cursor = 0;
+    fn previous_character(&self) -> usize {
+        self.text[..self.cursor]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(i, _)| i)
+    }
+
+    fn next_character(&self) -> usize {
+        self.cursor
+            + self.text[self.cursor..]
+                .graphemes(true)
+                .next()
+                .map_or(0, str::len)
+    }
+
+    fn previous_word(&self, whitespace_only: bool) -> usize {
+        let mut start = self.cursor;
+        let mut in_word = false;
+        for (i, g) in self.text[..self.cursor].grapheme_indices(true).rev() {
+            let word = if whitespace_only {
+                !g.chars().all(char::is_whitespace)
+            } else {
+                g.chars().any(char::is_alphanumeric)
+            };
+            if in_word && !word {
+                break;
             }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && !c.is_control() =>
-            {
-                if self.text.len() >= 512 {
+            in_word |= word;
+            start = i;
+        }
+        start
+    }
+
+    fn next_word(&self) -> usize {
+        let mut end = self.cursor;
+        let mut in_word = false;
+        for (i, g) in self.text[self.cursor..].grapheme_indices(true) {
+            let word = g.chars().any(char::is_alphanumeric);
+            if in_word && !word {
+                break;
+            }
+            in_word |= word;
+            end = self.cursor + i + g.len();
+        }
+        end
+    }
+
+    fn kill(&mut self, start: usize, end: usize) -> bool {
+        if start == end {
+            return false;
+        }
+        self.killed = self.text[start..end].to_owned();
+        self.text.replace_range(start..end, "");
+        self.cursor = start;
+        true
+    }
+
+    pub fn edit(&mut self, mut key: KeyEvent) -> bool {
+        if ![
+            KeyModifiers::NONE,
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ]
+        .contains(&key.modifiers)
+        {
+            return false;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Left => {
+                    self.cursor = self.previous_word(false);
+                    return false;
+                }
+                KeyCode::Right => {
+                    self.cursor = self.next_word();
+                    return false;
+                }
+                KeyCode::Char('a') => {
+                    self.cursor = 0;
+                    return false;
+                }
+                KeyCode::Char('e') => {
+                    self.cursor = self.text.len();
+                    return false;
+                }
+                KeyCode::Char('b') => {
+                    self.cursor = self.previous_character();
+                    return false;
+                }
+                KeyCode::Char('f') => {
+                    self.cursor = self.next_character();
+                    return false;
+                }
+                KeyCode::Char('u') => return self.kill(0, self.cursor),
+                KeyCode::Char('k') => return self.kill(self.cursor, self.text.len()),
+                KeyCode::Char('w') => return self.kill(self.previous_word(true), self.cursor),
+                KeyCode::Char('y') => {
+                    if self.killed.is_empty() || self.text.len() + self.killed.len() > 512 {
+                        return false;
+                    }
+                    self.text.insert_str(self.cursor, &self.killed);
+                    self.cursor += self.killed.len();
+                    return true;
+                }
+                KeyCode::Char('h') => key.code = KeyCode::Backspace,
+                KeyCode::Char('d') => key.code = KeyCode::Delete,
+                _ => return false,
+            }
+        } else if key.modifiers.contains(KeyModifiers::ALT) {
+            match key.code {
+                KeyCode::Char('b') => {
+                    self.cursor = self.previous_word(false);
+                    return false;
+                }
+                KeyCode::Char('f') => {
+                    self.cursor = self.next_word();
+                    return false;
+                }
+                KeyCode::Char('d') => return self.kill(self.cursor, self.next_word()),
+                KeyCode::Backspace => return self.kill(self.previous_word(false), self.cursor),
+                _ => return false,
+            }
+        }
+        match key.code {
+            KeyCode::Char(c) if !c.is_control() => {
+                if self.text.len() + c.len_utf8() > 512 {
                     return false;
                 }
                 self.text.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
             }
             KeyCode::Backspace if self.cursor > 0 => {
-                let start = self.text[..self.cursor]
-                    .grapheme_indices(true)
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
+                let start = self.previous_character();
                 self.text.replace_range(start..self.cursor, "");
                 self.cursor = start;
             }
             KeyCode::Delete if self.cursor < self.text.len() => {
-                let n = self.text[self.cursor..]
-                    .graphemes(true)
-                    .next()
-                    .unwrap()
-                    .len();
-                self.text.replace_range(self.cursor..self.cursor + n, "");
+                self.text
+                    .replace_range(self.cursor..self.next_character(), "");
             }
             KeyCode::Left => {
-                self.cursor = self.text[..self.cursor]
-                    .grapheme_indices(true)
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
+                self.cursor = self.previous_character();
                 return false;
             }
-            KeyCode::Right if self.cursor < self.text.len() => {
-                self.cursor += self.text[self.cursor..]
-                    .graphemes(true)
-                    .next()
-                    .unwrap()
-                    .len();
+            KeyCode::Right => {
+                self.cursor = self.next_character();
                 return false;
             }
             KeyCode::Home => {
@@ -1244,18 +1343,85 @@ impl App {
         }
     }
 
-    fn key(&mut self, key: KeyEvent) {
+    fn key(&mut self, mut key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
+        }
+        // Modified navigation must not fall through to playback/download shortcuts.
+        let editing = !self.state.help && !self.state.details && self.state.focus != Focus::List;
+        if editing && key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                _ => {}
+            }
+        }
+        if !editing && key.modifiers == KeyModifiers::CONTROL {
+            key.code = match key.code {
+                KeyCode::Char('n') => KeyCode::Down,
+                KeyCode::Char('p') => KeyCode::Up,
+                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
+                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
+                _ => return,
+            };
+            key.modifiers = KeyModifiers::NONE;
+        }
+        if key.modifiers == KeyModifiers::ALT {
+            match key.code {
+                KeyCode::Char('h') if !self.state.help => {
+                    self.history();
+                    return;
+                }
+                KeyCode::Char('e')
+                    if !self.state.help
+                        && !self.state.details
+                        && self.state.focus != Focus::Range =>
+                {
+                    self.state.exact = !self.state.exact;
+                    self.state.selected = 0;
+                    return;
+                }
+                _ if !editing => return,
+                _ => {}
+            }
+        }
+        if !editing
+            && key.modifiers.intersects(
+                KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER
+                    | KeyModifiers::HYPER
+                    | KeyModifiers::META,
+            )
+        {
+            return;
+        }
+        if key.modifiers == KeyModifiers::SHIFT
+            && let KeyCode::Char(c) = key.code
+        {
+            key.code = KeyCode::Char(c.to_ascii_uppercase());
+        }
+        if !editing
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            key.code = match key.code {
+                KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => KeyCode::Esc,
+                KeyCode::Char('l') | KeyCode::Right if !self.state.details && !self.state.help => {
+                    KeyCode::Enter
+                }
+                _ => key.code,
+            };
         }
         if self.state.help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
-                KeyCode::Char('q') => self.quit = true,
+                KeyCode::Char('q') => self.state.help = false,
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.state.help_scroll = self.state.help_scroll.saturating_add(1)
                 }
@@ -1301,9 +1467,9 @@ impl App {
                 KeyCode::PageUp => {
                     self.state.details_scroll = self.state.details_scroll.saturating_sub(10)
                 }
-                KeyCode::Home => self.state.details_scroll = 0,
-                KeyCode::End => self.state.details_scroll = u16::MAX,
-                KeyCode::Char('q') => self.quit = true,
+                KeyCode::Home | KeyCode::Char('g') => self.state.details_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.state.details_scroll = u16::MAX,
+                KeyCode::Char('q') => self.state.details = false,
                 KeyCode::Char('x') => self.stop(),
                 KeyCode::Char('y') => self.copy_requested = true,
                 _ => {}
@@ -1339,10 +1505,6 @@ impl App {
                     self.state.focus = Focus::List;
                 }
                 KeyCode::Esc => self.state.focus = Focus::List,
-                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.state.exact = !self.state.exact;
-                    self.state.selected = 0;
-                }
                 _ => {
                     if self.state.query.edit(key) {
                         self.state.invalidate_search();
@@ -1363,7 +1525,6 @@ impl App {
             }
             KeyCode::Esc => self.back(),
             KeyCode::Char('H') => self.home(),
-            KeyCode::Char('h') => self.history(),
             KeyCode::Char('i') if self.state.selected_anime().is_some() => {
                 self.state.message("", false);
                 self.state.details = true;
@@ -1422,10 +1583,6 @@ impl App {
                     },
                     false,
                 );
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.state.exact = !self.state.exact;
-                self.state.selected = 0;
             }
             KeyCode::Enter
                 if matches!(
@@ -2171,6 +2328,125 @@ mod tests {
         assert!(!state.accept_search(old + 1, Ok(vec![Anime::default()])));
         assert!(state.results.is_empty());
     }
+    #[test]
+    fn readline_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let alt = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+        let mut input = Input::default();
+        input.set("one 日本 e\u{301}clair!".into());
+        assert!(!input.edit(ctrl('a')));
+        assert_eq!(input.cursor, 0);
+        input.edit(alt('f'));
+        assert_eq!(input.cursor, 3);
+        input.edit(alt('f'));
+        assert_eq!(&input.text[..input.cursor], "one 日本");
+        assert!(input.edit(ctrl('u')));
+        assert_eq!(input.text, " e\u{301}clair!");
+        assert!(input.edit(ctrl('y')));
+        assert_eq!(input.text, "one 日本 e\u{301}clair!");
+        input.edit(ctrl('k'));
+        assert_eq!(input.text, "one 日本");
+        input.edit(ctrl('y'));
+        input.edit(alt('b'));
+        assert_eq!(&input.text[..input.cursor], "one 日本 ");
+        input.edit(ctrl('f'));
+        assert_eq!(&input.text[..input.cursor], "one 日本 e\u{301}");
+        input.edit(ctrl('b'));
+        input.edit(ctrl('d'));
+        assert_eq!(input.text, "one 日本 clair!");
+        input.edit(ctrl('e'));
+        input.edit(ctrl('w'));
+        assert_eq!(input.text, "one 日本 ");
+        input.edit(ctrl('y'));
+        input.edit(alt('b'));
+        input.edit(alt('d'));
+        assert_eq!(input.text, "one 日本 !");
+        input.edit(ctrl('y'));
+        input.edit(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(input.text, "one 日本 !");
+        input.edit(ctrl('h'));
+        assert_eq!(input.text, "one 日本!");
+        assert!(!input.edit(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )));
+        assert_eq!(input.text, "one 日本!");
+        input.edit(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(input.cursor, 4);
+        input.edit(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(&input.text[..input.cursor], "one 日本");
+    }
+
+    #[tokio::test]
+    async fn vim_navigation_and_readline_keys_do_not_trigger_media_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        let mut app = test_app(state, dir.path());
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT));
+        assert_eq!(app.state.screen, Screen::History);
+        app.key(key('h'));
+        assert_eq!(app.state.screen, Screen::Home);
+        app.history();
+        app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT));
+        assert_eq!(app.state.screen, Screen::Home);
+        app.state.screen = Screen::Episodes;
+        app.state.episodes = (1..=30)
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        app.key(ctrl('d'));
+        assert_eq!(app.state.episode_selected, 10);
+        app.key(ctrl('n'));
+        assert_eq!(app.state.episode_selected, 11);
+        app.key(ctrl('p'));
+        assert_eq!(app.state.episode_selected, 10);
+        app.key(ctrl('u'));
+        assert_eq!(app.state.episode_selected, 0);
+        app.key(ctrl('r'));
+        for code in [KeyCode::Enter, KeyCode::Char('D'), KeyCode::Char('d')] {
+            app.key(KeyEvent::new(code, KeyModifiers::ALT | KeyModifiers::SHIFT));
+        }
+        assert_eq!(app.state.mode, Mode::Sub);
+        assert!(app.state.activity.is_none());
+        app.state.details = true;
+        app.key(key('G'));
+        assert_eq!(app.state.details_scroll, u16::MAX);
+        app.key(key('g'));
+        assert_eq!(app.state.details_scroll, 0);
+        app.key(key('q'));
+        assert!(!app.state.details && !app.quit);
+        app.state.help = true;
+        app.key(key('q'));
+        assert!(!app.state.help && !app.quit);
+        app.key(key('/'));
+        app.state.query.set("hello world".into());
+        app.key(ctrl('a'));
+        app.key(ctrl('e'));
+        assert_eq!(app.state.query.cursor, 11);
+        assert!(!app.state.exact);
+        app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT));
+        assert!(app.state.exact);
+        app.key(ctrl('g'));
+        assert_eq!(app.state.focus, Focus::List);
+        app.state.accept_search(
+            app.state.search_generation,
+            Ok(vec![anime("series", "hello world")]),
+        );
+        app.key(key('l'));
+        assert_eq!(app.state.screen, Screen::Episodes);
+        app.key(key('h'));
+        assert_eq!(app.state.screen, Screen::Search);
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.state.screen, Screen::Episodes);
+        app.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.state.screen, Screen::Search);
+    }
+
     #[test]
     fn input_edits_graphemes_without_splitting_utf8() {
         let mut input = Input::default();

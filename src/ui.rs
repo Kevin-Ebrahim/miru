@@ -370,7 +370,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         for (screen, key, label) in [
             (Screen::Home, "H", "Home"),
-            (Screen::History, "h", "History"),
+            (Screen::History, "Alt+h", "History"),
             (Screen::Search, "/", "Search"),
         ] {
             if screen == Screen::History && state.history.is_empty() && state.screen != screen {
@@ -501,7 +501,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         vec![
             "Enter Results".into(),
             "Esc Done".into(),
-            "Ctrl+E Exact".into(),
+            "Alt+e Exact".into(),
         ]
     } else if state.focus == Focus::Range {
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
@@ -577,7 +577,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
             global.push("H Home".into());
         }
         if state.screen != Screen::History && !state.history.is_empty() {
-            global.push("h History".into());
+            global.push("Alt+h History".into());
         }
         global.extend(["D SUB/DUB".into(), "Q Quality".into()]);
     }
@@ -599,7 +599,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         global.retain(|hint| {
             !matches!(
                 hint.as_str(),
-                "H Home" | "h History" | "D SUB/DUB" | "Q Quality"
+                "H Home" | "Alt+h History" | "D SUB/DUB" | "Q Quality"
             )
         });
         let action = primary.remove(0);
@@ -655,7 +655,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         );
         for hint in &mut global {
             if hint == "Ctrl+C Quit" {
-                *hint = "q Quit".into();
+                *hint = if state.details { "q Close" } else { "q Quit" }.into();
             }
         }
     }
@@ -799,7 +799,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             (
                 "No matches",
                 if state.exact {
-                    "Ctrl+E Turn off exact match"
+                    "Alt+e Turn off exact match"
                 } else {
                     "Try another title"
                 },
@@ -1314,7 +1314,7 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nDrag in text      Select and copy panel text\ny outside input   Copy selection or full text\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
+    let text = "H                 Home\n/                 Search\nAlt+h             History\nEnter / l / Right Episodes / play (Enter accepts input)\nUp/Down or j/k     Navigate or scroll\nCtrl+n/p          Next / previous item\nPgUp/PgDn         Jump ten items or lines\nCtrl+d/u, Ctrl+f/b Jump ten items or lines\nHome/End or g/G    First / last item or line\ni                 Series details\nDrag in text      Select and copy panel text\ny outside input   Copy selection or full text\nAlt+e             Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc / h / Left    Back (Esc leaves input)\nF1                Help, including while typing\nq                 Close Help/Details; otherwise quit\nCtrl+C            Quit from anywhere\n\nText editing\nCtrl+a/e          Start / end of line\nCtrl+b/f          Previous / next character\nAlt+b/f, Ctrl+arrows Previous / next word\nCtrl+u/k          Cut to start / end of line\nCtrl+w            Cut previous whitespace word\nAlt+Backspace/d   Cut previous / next word\nCtrl+y            Restore last cut\nCtrl+h/d          Backspace / delete character\nCtrl+g            Leave input\nCtrl+j/m          Accept input\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
     let job = state
         .activity
         .as_ref()

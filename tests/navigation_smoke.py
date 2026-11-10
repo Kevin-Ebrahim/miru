@@ -224,7 +224,7 @@ while not (root / str(os.getpid())).exists():
             wait_for(lambda: len(launches()) == 1)
             first = launches()[0]
             assert "--force-media-title=Original Series / Episode 1" in first["args"], first
-            send(b"Hh/\x1b\x1b")  # Home, history, search, and back must leave the player alive.
+            send(b"H\x1bh/\x1b\x1b")  # Home, history, search, and back must leave the player alive.
             assert alive(first["pid"]), "Browsing stopped the player"
             send(b"DQ")  # New defaults cannot mutate the active queue.
             (root / str(first["pid"])).touch()
@@ -243,7 +243,7 @@ while not (root / str(os.getpid())).exists():
             pump()
             send(b"D \x1b[B d")  # SUB, mark two episodes, download.
             wait_for(media_requested.is_set)
-            send(b"Hh/")
+            send(b"H\x1bh/")
             release_media.set()
             wait_for(lambda: len(list((root / "downloads").glob("*.mkv"))) == 2)
             assert all("Other Series" in file.name for file in (root / "downloads").glob("*.mkv"))
