@@ -50,7 +50,7 @@ fn inline_search(state: &State, width: u16) -> bool {
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     let gap = u16::from(area.height >= 20);
     let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
-        Constraint::Length(1 + u16::from(area.height >= 24)),
+        Constraint::Length(1),
         Constraint::Length(gap),
         Constraint::Length(
             if !state.details
@@ -88,8 +88,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 area.width as usize,
                 (state.details || state.selected_anime().is_some()).then_some("Drag Select"),
             )
-            .len() as u16
-                + u16::from(area.height >= 24),
+            .len() as u16,
         ),
     ])
     .areas(area);
@@ -299,11 +298,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     );
     let hint_rows = hints.len() as u16;
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette(state).surface)),
-        footer,
-    );
-    frame.render_widget(
-        Paragraph::new(hints).style(Style::default().bg(palette(state).surface).bold()),
+        Paragraph::new(hints).style(Style::default().bold()),
         Rect::new(
             footer.x,
             footer.bottom().saturating_sub(hint_rows),
@@ -347,16 +342,13 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
         },
     )];
     frame.render_widget(
-        Paragraph::new(heading).style(Style::default().bg(palette(state).surface).bold()),
+        Paragraph::new(heading).style(Style::default().bold()),
         header,
     );
 }
 
 fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
-    let bar = Style::default()
-        .fg(palette(state).text)
-        .bg(palette(state).surface)
-        .bold();
+    let bar = Style::default().fg(palette(state).text).bold();
     frame.render_widget(Block::default().style(bar), area);
     let shortcuts = state.focus == Focus::List && !state.details;
     let settings = if shortcuts {
@@ -426,10 +418,6 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
             field.y,
             field.width.saturating_sub(label.len() as u16),
             1,
-        );
-        frame.render_widget(
-            Block::default().style(Style::default().bg(palette(state).canvas)),
-            field,
         );
         frame.render_widget(Paragraph::new(label).style(accent(state)), field);
         let (text, cursor) = input_window(

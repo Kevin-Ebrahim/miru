@@ -71,7 +71,8 @@ shortcuts. At 120 columns and above, navigation and language/quality controls
 move to the top toolbar, alongside the search input on Search. Secondary actions
 sit at the bottom left, with Help, Quit and the primary action on the right.
 The footer controls use one row when everything fits and wrap when needed.
-Taller terminals give both bars extra height, with labels at the outer edges.
+The controls sit directly on the terminal canvas, separated from the panels by
+a blank row when there is room.
 The episode panel border includes the selected anime title. Narrower
 terminals retain the separate search field and compact shortcut rows.
 Loading and error feedback stays with the affected view.
