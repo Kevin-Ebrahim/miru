@@ -15,7 +15,7 @@ crossterm = "0.29"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 lru = "0.16"
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "json"] }

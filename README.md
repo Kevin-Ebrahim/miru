@@ -224,7 +224,8 @@ terminal restoration for q, Ctrl+C, SIGTERM and SIGHUP. It is not a graphics tes
 `tests/navigation_smoke.py` uses a local provider, controllable player process and
 generated one-second clip (requires ffmpeg) to verify Home continuation, navigation
 during resolution/playback/downloads, queue ownership across series, correct
-history, fixed queue language, and explicit stop.
+history, fixed queue language, explicit stop, cached refresh failures, and partial
+download recovery without repeating saved episodes.
 
 Implementation references: [Ratatui](https://ratatui.rs/),
 [ratatui-image](https://docs.rs/ratatui-image/11.1.0/ratatui_image/),

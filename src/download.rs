@@ -44,7 +44,7 @@ pub async fn download(
     let destination = dir.join(format!("{}.mkv", filename(title)));
     ensure!(
         !destination.exists(),
-        "{} already exists; choose another download directory or remove it explicitly",
+        "File already exists: {}. Choose another download directory or remove it explicitly",
         destination.display()
     );
     let temporary = tempfile::Builder::new()

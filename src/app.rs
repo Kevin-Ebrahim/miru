@@ -1011,17 +1011,19 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.help_scroll = self.state.help_scroll.saturating_add(1).min(40)
+                    self.state.help_scroll = self.state.help_scroll.saturating_add(1)
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.state.help_scroll = self.state.help_scroll.saturating_sub(1)
                 }
                 KeyCode::PageDown => {
-                    self.state.help_scroll = self.state.help_scroll.saturating_add(8).min(40)
+                    self.state.help_scroll = self.state.help_scroll.saturating_add(10)
                 }
                 KeyCode::PageUp => {
-                    self.state.help_scroll = self.state.help_scroll.saturating_sub(8)
+                    self.state.help_scroll = self.state.help_scroll.saturating_sub(10)
                 }
+                KeyCode::Home | KeyCode::Char('g') => self.state.help_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.state.help_scroll = u16::MAX,
                 _ => {}
             }
             return;
