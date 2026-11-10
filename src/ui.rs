@@ -63,12 +63,13 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 2
             },
         ),
-        Constraint::Length(
-            state
-                .activity
-                .as_ref()
-                .map_or(0, |a| if a.message.is_empty() { 1 } else { 2 }),
-        ),
+        Constraint::Length(state.activity.as_ref().map_or(0, |a| {
+            if a.message.is_empty() && a.quality_note.is_empty() {
+                1
+            } else {
+                2
+            }
+        })),
         Constraint::Length(key_hints(state, area.width as usize).len() as u16),
     ])
     .areas(area)
@@ -922,10 +923,17 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
         );
         format!("{prefix}{title}{suffix}")
     };
+    let message = if activity.quality_note.is_empty() || activity.phase == JobPhase::Failed {
+        activity.message.clone()
+    } else if activity.message.is_empty() {
+        activity.quality_note.clone()
+    } else {
+        format!("{} / {}", activity.quality_note, activity.message)
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(format!(" {heading}"), Style::default().fg(color)),
-            Line::raw(format!(" {}", ellipsize(&activity.message, width, state))),
+            Line::raw(format!(" {}", ellipsize(&message, width, state))),
         ]),
         area,
     );
@@ -975,8 +983,8 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
         .as_ref()
         .map(|a| {
             format!(
-                "\n\nActivity: {} / Episode {}\n{}",
-                a.anime.title, a.episodes[a.index].number, a.message
+                "\n\nActivity: {} / Episode {}\n{}\n{}",
+                a.anime.title, a.episodes[a.index].number, a.quality_note, a.message
             )
         })
         .unwrap_or_default();
@@ -1227,6 +1235,7 @@ mod tests {
                 remaining: [2].into(),
                 mode: Mode::Dub,
                 quality: "720p".into(),
+                quality_note: String::new(),
                 kind: JobKind::Download,
                 phase: JobPhase::Failed,
                 message: format!(
@@ -1267,6 +1276,19 @@ mod tests {
             let text = render_text(&mut state, 32, 12);
             for label in ["Ep 1234", "DUB", "166 left"] {
                 assert!(text.contains(label), "{text}");
+            }
+            state.activity.as_mut().unwrap().quality_note = "720p (1080p unavailable)".into();
+            state.activity.as_mut().unwrap().message = "Saved /tmp/episode.mkv".into();
+            state.activity.as_mut().unwrap().phase = JobPhase::Finished;
+            for (w, h) in [(32, 12), (80, 24)] {
+                let text = render_text(&mut state, w, h);
+                assert!(text.contains("720p (1080p unavailable)"), "{text}");
+                state.help = true;
+                state.help_scroll = u16::MAX;
+                let text = render_text(&mut state, w, h);
+                assert!(text.contains("1080p unavailable"), "{text}");
+                assert!(text.contains("Saved /tmp/episode.mkv"), "{text}");
+                state.help = false;
             }
         }
     }

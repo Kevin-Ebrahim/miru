@@ -55,6 +55,7 @@ pub struct Activity {
     pub remaining: VecDeque<usize>,
     pub mode: Mode,
     pub quality: String,
+    pub quality_note: String,
     pub kind: JobKind,
     pub phase: JobPhase,
     pub message: String,
@@ -639,15 +640,21 @@ impl App {
             if let Some(i) = crate::persistence::next_episode(&entry, &self.state.episodes) {
                 self.state.episode_selected = i;
                 self.state.message("", false);
-            } else {
-                self.state.episode_selected = self
-                    .state
-                    .episodes
-                    .iter()
-                    .position(|e| e.number == entry.episode)
-                    .unwrap_or(0);
+            } else if let Some(i) = self
+                .state
+                .episodes
+                .iter()
+                .position(|e| e.number == entry.episode)
+            {
+                self.state.episode_selected = i;
                 self.state.message(
                     "No newer episode. Enter replays the last played episode.",
+                    false,
+                );
+            } else {
+                self.state.episode_selected = 0;
+                self.state.message(
+                    "Last played episode is unavailable. Select an episode.",
                     false,
                 );
             }
@@ -750,6 +757,7 @@ impl App {
             remaining: indices,
             mode: self.state.mode,
             quality: self.state.quality.clone(),
+            quality_note: String::new(),
             kind: if download {
                 JobKind::Download
             } else {
@@ -778,6 +786,7 @@ impl App {
         activity.index = index;
         activity.phase = JobPhase::Resolving;
         activity.message.clear();
+        activity.quality_note.clear();
         self.job += 1;
         abort(&mut self.play_task);
         let job = self.job;
@@ -879,6 +888,12 @@ impl App {
                 let episode = &activity.episodes[activity.index];
                 let title = format!("{} / Episode {}", activity.anime.title, episode.number);
                 let quality = activity.quality.clone();
+                let (variant, fallback) = stream.select(&quality);
+                activity.quality_note = if fallback {
+                    format!("{}p ({quality} unavailable)", variant.height)
+                } else {
+                    format!("{}p", variant.height)
+                };
                 let log = self
                     .options
                     .state_dir
@@ -924,16 +939,7 @@ impl App {
                 ) {
                     Ok(mut child) => {
                         activity.phase = JobPhase::Running;
-                        let (variant, fallback) = stream.select(&quality);
-                        activity.message = format!(
-                            "{}p{}",
-                            variant.height,
-                            if fallback {
-                                " (requested quality unavailable)"
-                            } else {
-                                ""
-                            }
-                        );
+                        activity.message.clear();
                         let change = crate::persistence::Change::Record {
                             anime: activity.anime.clone(),
                             episode: episode.number.clone(),
@@ -998,6 +1004,33 @@ impl App {
                 self.finish(result, "Player closed".into());
             }
             _ => {}
+        }
+    }
+
+    fn paste(&mut self, text: &str) {
+        if self.state.help || self.state.details || self.state.focus == Focus::List {
+            return;
+        }
+        let input = if self.state.focus == Focus::Range {
+            &mut self.state.range
+        } else {
+            &mut self.state.query
+        };
+        let mut changed = false;
+        for c in text.chars().take(512) {
+            let c = if c.is_whitespace() {
+                ' '
+            } else if c.is_control() {
+                continue;
+            } else {
+                c
+            };
+            changed |= input.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        if changed && self.state.focus == Focus::Search {
+            self.state.invalidate_search();
+            abort(&mut self.search_task);
+            self.search_due = Some(Instant::now() + Duration::from_millis(300));
         }
     }
 
@@ -1274,16 +1307,7 @@ impl App {
                 dirty = true;
                 match crossterm::event::read()? {
                     Event::Key(key) => self.key(key),
-                    Event::Paste(text) if self.state.focus == Focus::Search => {
-                        for c in text.chars().filter(|c| !c.is_control()).take(512) {
-                            self.state
-                                .query
-                                .edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-                        }
-                        self.state.invalidate_search();
-                        abort(&mut self.search_task);
-                        self.search_due = Some(Instant::now() + Duration::from_millis(300));
-                    }
+                    Event::Paste(text) => self.paste(&text),
                     _ => {}
                 }
             }
@@ -1380,7 +1404,7 @@ mod tests {
     #[tokio::test]
     async fn home_and_history_continuations_play_the_highlighted_episode_without_old_marks() {
         for screen in [Screen::Home, Screen::History] {
-            for (last, expected) in [("1", "2"), ("3", "3")] {
+            for (last, expected) in [("1", "2"), ("3", "3"), ("9", "1")] {
                 let dir = tempfile::tempdir().unwrap();
                 let mut state =
                     State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
@@ -1404,6 +1428,10 @@ mod tests {
                 let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
                 app.key(enter);
                 assert!(app.state.marked.is_empty());
+                if last == "9" {
+                    assert!(app.state.status.contains("unavailable"));
+                    assert!(!app.state.status.contains("replays"));
+                }
                 assert_eq!(
                     app.state.episodes[app.state.episode_selected].number,
                     expected
@@ -1415,6 +1443,115 @@ mod tests {
                 assert_eq!(activity.mode, Mode::Dub);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn paste_targets_only_the_visible_input_and_preserves_range_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new("fox".into(), Mode::Sub, "best".into(), false, false, false);
+        let mut app = test_app(state, dir.path());
+        let generation = app.state.search_generation;
+        for (help, details, focus) in [
+            (true, false, Focus::Search),
+            (false, true, Focus::Search),
+            (false, false, Focus::List),
+        ] {
+            app.state.help = help;
+            app.state.details = details;
+            app.state.focus = focus;
+            app.paste("xyz");
+            assert_eq!(app.state.query.text, "fox");
+            assert_eq!(app.state.search_generation, generation);
+        }
+        app.state.help = false;
+        app.state.details = false;
+        app.state.focus = Focus::Search;
+        app.paste(" 日本\n語");
+        assert_eq!(app.state.query.text, "fox 日本 語");
+        assert!(app.state.search_generation > generation);
+        app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::Range;
+        app.state.episodes = (1..=5)
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        app.paste("1-3,\n5\t");
+        assert_eq!(app.state.range.text, "1-3, 5 ");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.state.marked.iter().copied().collect::<Vec<_>>(),
+            [0, 1, 2, 4]
+        );
+        assert!(app.state.activity.is_none());
+        app.state.focus = Focus::Range;
+        app.state.range.set(String::new());
+        app.state.episodes = (1..=13)
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        app.paste("1\n3");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.state.marked.iter().copied().collect::<Vec<_>>(), [0, 2]);
+    }
+
+    #[tokio::test]
+    async fn download_fallback_remains_available_after_progress_and_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            String::new(),
+            Mode::Sub,
+            "1080p".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::Episodes;
+        state.anime = Some(anime("series", "Series"));
+        state.episodes = vec![Episode {
+            id: "1".into(),
+            number: "1".into(),
+            title: "First".into(),
+        }];
+        let mut app = test_app(state, dir.path());
+        app.start_selection(true);
+        abort(&mut app.play_task);
+        let job = app.job;
+        app.message(Message::Resolved(
+            job,
+            Ok(Stream {
+                variants: vec![crate::model::Variant {
+                    height: 720,
+                    url: "http://127.0.0.1:9/video".into(),
+                }],
+                referer: String::new(),
+                audio: None,
+                subtitle: None,
+            }),
+        ));
+        assert_eq!(
+            app.state.activity.as_ref().unwrap().quality_note,
+            "720p (1080p unavailable)"
+        );
+        app.message(Message::Progress(job, "Downloaded through 00:00:01".into()));
+        assert!(
+            app.state
+                .activity
+                .as_ref()
+                .unwrap()
+                .quality_note
+                .contains("1080p unavailable")
+        );
+        app.message(Message::Downloaded(job, Ok(dir.path().join("episode.mkv"))));
+        let activity = app.state.activity.as_ref().unwrap();
+        assert_eq!(activity.phase, JobPhase::Finished);
+        assert_eq!(activity.quality_note, "720p (1080p unavailable)");
+        assert!(activity.message.contains("Saved"));
     }
 
     #[tokio::test]
