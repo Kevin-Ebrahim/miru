@@ -2,6 +2,7 @@ mod app;
 mod artwork;
 mod download;
 mod model;
+mod palette;
 mod persistence;
 mod player;
 mod provider;
@@ -15,7 +16,7 @@ use crossterm::{
     execute,
 };
 use model::{Mode, normalized};
-use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::picker::{Capability, Picker, ProtocolType, cap_parser::QueryStdioOptions};
 use std::{
     io::{self, IsTerminal},
     path::PathBuf,
@@ -259,7 +260,11 @@ async fn main() -> Result<()> {
     let mut picker = if !images_enabled || matches!(cli.images, Images::Halfblocks) {
         Picker::halfblocks()
     } else {
-        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+        Picker::from_query_stdio_with_options(QueryStdioOptions {
+            terminal_background_color_osc: true,
+            ..Default::default()
+        })
+        .unwrap_or_else(|_| Picker::halfblocks())
     };
     match cli.images {
         Images::Kitty => picker.set_protocol_type(ProtocolType::Kitty),
@@ -276,6 +281,10 @@ async fn main() -> Result<()> {
         !cli.no_animation,
     );
     state.colorless = colorless;
+    state.background = picker.capabilities().iter().find_map(|cap| match cap {
+        Capability::Background(r, g, b) => Some((*r, *g, *b)),
+        _ => None,
+    });
     state.history = library.entries;
     if cli.resume {
         state.screen = app::Screen::History;

@@ -8,7 +8,9 @@ use crate::{
 use anyhow::Result;
 use crossterm::SynchronizedUpdate;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use lru::LruCache;
 use ratatui_image::picker::Picker;
+use std::num::NonZeroUsize;
 use std::{
     collections::{BTreeSet, VecDeque},
     path::PathBuf,
@@ -139,6 +141,12 @@ impl Input {
     }
 }
 
+pub enum Synopsis {
+    Loading,
+    Ready(String),
+    Failed(String),
+}
+
 pub struct State {
     pub screen: Screen,
     pub focus: Focus,
@@ -172,6 +180,8 @@ pub struct State {
     pub frame: usize,
     pub ascii: bool,
     pub colorless: bool,
+    pub background: Option<(u8, u8, u8)>,
+    pub synopses: LruCache<String, Synopsis>,
     pub animate: bool,
     pub activity: Option<Activity>,
 }
@@ -229,6 +239,8 @@ impl State {
             frame: 0,
             ascii,
             colorless: false,
+            background: None,
+            synopses: LruCache::new(NonZeroUsize::new(32).unwrap()),
             animate,
             activity: None,
         }
@@ -336,6 +348,7 @@ impl State {
 }
 
 enum Message {
+    Synopsis(u64, String, Result<String>),
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
     Resolved(u64, Result<Stream>),
@@ -386,6 +399,8 @@ pub struct App {
     rx: mpsc::UnboundedReceiver<Message>,
     search_task: Option<JoinHandle<()>>,
     episode_task: Option<JoinHandle<()>>,
+    synopsis_task: Option<JoinHandle<()>>,
+    synopsis_generation: u64,
     play_task: Option<JoinHandle<()>>,
     search_due: Option<Instant>,
     job: u64,
@@ -439,6 +454,8 @@ impl App {
             rx,
             search_task: None,
             episode_task: None,
+            synopsis_task: None,
+            synopsis_generation: 0,
             play_task: None,
             search_due,
             job: 0,
@@ -659,8 +676,36 @@ impl App {
         }));
     }
 
+    fn load_synopsis(&mut self, force: bool) {
+        let Some(anime) = self.state.selected_anime().cloned() else {
+            return;
+        };
+        if !force
+            && matches!(
+                self.state.synopses.get(&anime.id),
+                Some(Synopsis::Ready(_) | Synopsis::Failed(_))
+            )
+        {
+            return;
+        }
+        abort(&mut self.synopsis_task);
+        self.synopsis_generation += 1;
+        let generation = self.synopsis_generation;
+        self.state.synopses.put(anime.id.clone(), Synopsis::Loading);
+        let provider = self.provider.clone();
+        let tx = self.tx.clone();
+        self.synopsis_task = Some(tokio::spawn(async move {
+            let result = provider.synopsis(&anime).await;
+            let _ = tx.send(Message::Synopsis(generation, anime.id, result));
+        }));
+    }
+
     fn retry(&mut self) {
         self.state.art_revision += 1;
+        if self.state.details {
+            self.load_synopsis(true);
+            return;
+        }
         match self.state.screen {
             Screen::Search => self.search(),
             Screen::Episodes => self.load_episodes(),
@@ -765,6 +810,15 @@ impl App {
 
     fn message(&mut self, message: Message) {
         match message {
+            Message::Synopsis(generation, id, result) if generation == self.synopsis_generation => {
+                self.state.synopses.put(
+                    id,
+                    match result {
+                        Ok(text) => Synopsis::Ready(text),
+                        Err(err) => Synopsis::Failed(format!("{err:#}")),
+                    },
+                );
+            }
             Message::Search(generation, result) => {
                 self.state.accept_search(generation, result);
             }
@@ -989,6 +1043,14 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.state.details_scroll = self.state.details_scroll.saturating_sub(1)
                 }
+                KeyCode::PageDown => {
+                    self.state.details_scroll = self.state.details_scroll.saturating_add(10)
+                }
+                KeyCode::PageUp => {
+                    self.state.details_scroll = self.state.details_scroll.saturating_sub(10)
+                }
+                KeyCode::Home => self.state.details_scroll = 0,
+                KeyCode::End => self.state.details_scroll = u16::MAX,
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('x') => self.stop(),
                 _ => {}
@@ -1057,6 +1119,7 @@ impl App {
             KeyCode::Char('i') if self.state.selected_anime().is_some() => {
                 self.state.details = true;
                 self.state.details_scroll = 0;
+                self.load_synopsis(false);
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
                 if let Some(entry) = self.state.history.get(self.state.history_selected) {
@@ -1262,6 +1325,7 @@ impl App {
         self.stop();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
+        abort(&mut self.synopsis_task);
         self.save_tx.take();
         if let Some(task) = self.save_task.take() {
             task.await?;
@@ -1277,6 +1341,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        abort(&mut self.synopsis_task);
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         abort(&mut self.play_task);
@@ -1313,7 +1378,7 @@ mod tests {
         assert!(state.visible().is_empty());
     }
     #[tokio::test]
-    async fn navigation_discards_stale_episode_and_playback_messages() {
+    async fn navigation_discards_stale_episode_playback_and_synopsis_messages() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         let options = Options {
@@ -1351,6 +1416,18 @@ mod tests {
             }),
         ));
         assert!(app.state.activity.is_none());
+        app.synopsis_generation = 2;
+        app.message(Message::Synopsis(1, "old".into(), Ok("Stale text".into())));
+        assert!(app.state.synopses.is_empty());
+        app.message(Message::Synopsis(
+            2,
+            "current".into(),
+            Ok("Full text".into()),
+        ));
+        assert!(
+            matches!(app.state.synopses.peek("current"), Some(Synopsis::Ready(s)) if s == "Full text")
+        );
+        assert!(app.state.synopses.peek("old").is_none());
     }
     #[tokio::test]
     async fn range_entry_marks_actual_episode_order_without_launching() {

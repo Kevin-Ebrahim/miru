@@ -59,6 +59,8 @@ def main():
                     return
                 if path == "/search":
                     body = '<div class="flw-item"><h3 class="film-name"><a title="Other Series" href="/other-2">Other Series</a></h3></div>'
+                elif path == "/original-1":
+                    body = '<div class="film-description"><div class="text">A complete synopsis beyond the search snippet.</div></div>'
                 elif path.startswith("/api/theme/episode/list/"):
                     series = path.rsplit("/", 1)[-1]
                     body = json.dumps({"html": ''.join(
@@ -122,13 +124,16 @@ while not (root / str(os.getpid())).exists():
             "--provider", f"http://127.0.0.1:{server.server_port}/",
         ], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         pending = bytearray()
+        output = bytearray()
 
         def pump(seconds=0.15):
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
                 if select.select([master], [], [], 0.02)[0]:
                     try:
-                        pending.extend(os.read(master, 65536))
+                        chunk = os.read(master, 65536)
+                        pending.extend(chunk)
+                        output.extend(chunk)
                     except (BlockingIOError, OSError):
                         continue
                     while b"\x1b[6n" in pending:
@@ -161,6 +166,14 @@ while not (root / str(os.getpid())).exists():
 
         try:
             pump(0.5)
+            send(b"i")
+            wait_for(lambda: b"A complete synopsis beyond" in output)
+            send(b"\x1b")
+            send(b"i")
+            assert requests.count("/original-1") == 1, "Reopening details should reuse the full synopsis"
+            send(b"\x1b[15~")  # F5 explicitly refreshes the synopsis.
+            wait_for(lambda: requests.count("/original-1") == 2)
+            send(b"\x1b")
             send(b"\r")  # Home -> episodes; last played 0 selects episode 1.
             wait_for(lambda: "/api/theme/episode/list/1" in requests)
             pump()
@@ -200,7 +213,7 @@ while not (root / str(os.getpid())).exists():
             assert json.loads((root / "library.json").read_text())["entries"] == history
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: Home continuation, navigation during resolution/playback/download, queue ownership, fixed language, correct history, explicit stop")
+            print("PASS: full synopsis loading/cache/retry, Home continuation, navigation during resolution/playback/download, queue ownership, fixed language, correct history, explicit stop")
         finally:
             release.set()
             release_media.set()

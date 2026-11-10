@@ -1,6 +1,7 @@
 use crate::{
-    app::{Focus, JobKind, JobPhase, Screen, State},
+    app::{Focus, JobKind, JobPhase, Screen, State, Synopsis},
     artwork::Artwork,
+    palette::Palette,
     scene::Dusk,
 };
 use ratatui::{
@@ -16,12 +17,17 @@ use ratatui_image::Image;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACCENT: Color = Color::Cyan;
-fn muted() -> Style {
-    Style::default()
+fn palette(state: &State) -> Palette {
+    Palette::terminal(state.background, state.colorless)
 }
-fn accent() -> Style {
-    Style::default().fg(ACCENT).bold()
+fn muted(state: &State) -> Style {
+    Style::default().fg(palette(state).secondary)
+}
+fn accent(state: &State) -> Style {
+    Style::default().fg(palette(state).focus).bold()
+}
+fn symbol<'a>(state: &State, unicode: &'a str, ascii: &'a str) -> &'a str {
+    if state.ascii { ascii } else { unicode }
 }
 
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
@@ -82,24 +88,28 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
         return (Rect::default(), Rect::default());
     }
     let inner = area.inner(Margin::new(2, 1));
-    if inner.height < 6 {
+    if inner.height < 6 || (state.details && inner.height < 10 && inner.width < 72) {
         return (Rect::default(), inner);
     }
-    let metadata_height = if state.details {
-        (inner.height / 2).max(3)
-    } else if inner.height >= 25 {
-        10
-    } else if inner.height >= 16 {
-        7
+    if state.details && inner.width >= 72 {
+        let cover_width = (inner.width / 3).min(32);
+        let text_width = inner.width.saturating_sub(cover_width + 3).min(78);
+        let left = inner.x + inner.width.saturating_sub(cover_width + text_width + 3) / 2;
+        return (
+            Rect::new(left, inner.y, cover_width, inner.height.min(26)),
+            Rect::new(left + cover_width + 3, inner.y, text_width, inner.height),
+        );
+    }
+    let image_height = if state.details {
+        (inner.height / 3).min(8)
     } else {
-        4
+        (inner.height * 2 / 5).min(if state.screen == Screen::Episodes {
+            12
+        } else {
+            16
+        })
     };
-    let image_height = inner.height.saturating_sub(metadata_height + 1);
-    let image_height = if state.screen == Screen::Episodes && !state.details {
-        image_height.min(12)
-    } else {
-        image_height
-    };
+
     let cover = Rect::new(inner.x, inner.y, inner.width, image_height);
     let metadata = Rect::new(
         inner.x,
@@ -117,22 +127,28 @@ pub fn cover_area(state: &State, area: Rect) -> Rect {
     preview_regions(state, panels(state, area).1).0
 }
 
-fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
+fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if ascii {
+        .border_type(if state.ascii {
             BorderType::Plain
+        } else if focused {
+            BorderType::Double
         } else {
-            BorderType::Rounded
+            BorderType::Thick
         })
-        .border_style(Style::default().fg(if focused { ACCENT } else { Color::DarkGray }))
+        .border_style(if focused {
+            accent(state)
+        } else {
+            Style::default().fg(palette(state).border)
+        })
         .padding(Padding::horizontal(1))
         .title(Line::from(title).style(if focused {
-            accent()
+            accent(state)
         } else {
             Style::default().bold()
         }));
-    if ascii {
+    if state.ascii {
         block.border_set(ratatui::symbols::border::Set {
             top_left: "+",
             top_right: "+",
@@ -140,8 +156,8 @@ fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
             bottom_right: "+",
             vertical_left: "|",
             vertical_right: "|",
-            horizontal_top: "-",
-            horizontal_bottom: "-",
+            horizontal_top: if focused { "=" } else { "-" },
+            horizontal_bottom: if focused { "=" } else { "-" },
         })
     } else {
         block
@@ -187,7 +203,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(" ani / watch", accent()),
+                Span::styled(" ani / watch", accent(state)),
                 Span::raw(format!(
                     "   {location}   {} / {}",
                     state.mode.as_str().to_uppercase(),
@@ -227,7 +243,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
                 state.status
             ))
             .style(if state.error {
-                Style::default().fg(Color::Red)
+                Style::default().fg(palette(state).error)
             } else {
                 Style::default()
             })
@@ -260,7 +276,7 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
                 ""
             }
         ),
-        state.ascii,
+        state,
         state.focus != Focus::List,
     );
     let inner = block.inner(area);
@@ -281,7 +297,7 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
-fn fit_hints(hints: &[String], width: usize) -> String {
+fn fit_hints(hints: &[String], width: usize, state: &State) -> Line<'static> {
     let mut line = String::from(" ");
     for hint in hints {
         let separator = if line.len() == 1 { "" } else { "   " };
@@ -290,7 +306,16 @@ fn fit_hints(hints: &[String], width: usize) -> String {
             line.push_str(hint);
         }
     }
-    line
+    let mut spans = vec![Span::raw(" ")];
+    for (i, hint) in line.trim().split("   ").enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+        }
+        let (key, label) = hint.split_once(' ').unwrap_or((hint, ""));
+        spans.push(Span::styled(key.to_owned(), accent(state)));
+        spans.push(Span::raw(format!(" {label}")));
+    }
+    Line::from(spans)
 }
 
 fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
@@ -315,9 +340,9 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
         };
         vec![
             format!("Enter Play{suffix}"),
+            "Esc Back".into(),
             format!("d Download{suffix}"),
             "Space Mark".into(),
-            "Esc Back".into(),
             ": Range".into(),
             "i Details".into(),
         ]
@@ -351,8 +376,8 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
         ]);
     }
     vec![
-        Line::raw(fit_hints(&primary, width)),
-        Line::raw(fit_hints(&global, width)),
+        fit_hints(&primary, width, state),
+        fit_hints(&global, width, state),
     ]
 }
 
@@ -369,11 +394,15 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
     };
     let title = if state.marked.is_empty() || state.screen != Screen::Episodes {
-        format!(" {label} / {count} ")
+        format!(" {} {label} / {count} ", symbol(state, "≡", "#"))
     } else {
-        format!(" {label} / {count} / {} marked ", state.marked.len())
+        format!(
+            " {} {label} / {count} / {} marked ",
+            symbol(state, "≡", "#"),
+            state.marked.len()
+        )
     };
-    let block = panel(title, state.ascii, state.focus == Focus::List);
+    let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if let Some(error) = &state.request_error {
@@ -385,7 +414,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::raw(""),
-                Line::styled(title, Style::default().fg(Color::Red).bold()),
+                Line::styled(title, Style::default().fg(palette(state).error).bold()),
                 Line::raw(""),
                 Line::raw(error.clone()),
                 Line::raw(""),
@@ -429,11 +458,15 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .map(|entry| {
                 ListItem::new(vec![
                     Line::styled(entry.anime.title.clone(), Style::default().bold()),
-                    Line::raw(format!(
-                        "Last played: {} / {}",
-                        entry.episode,
-                        entry.mode.as_str().to_uppercase()
-                    )),
+                    Line::styled(
+                        format!(
+                            "{} Last played: {} / {}",
+                            symbol(state, "↳", ">"),
+                            entry.episode,
+                            entry.mode.as_str().to_uppercase()
+                        ),
+                        muted(state),
+                    ),
                     Line::raw(""),
                 ])
             })
@@ -444,7 +477,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 let anime = &state.results[*i];
                 ListItem::new(vec![
                     Line::styled(anime.title.clone(), Style::default().bold()),
-                    Line::raw(anime.info.clone()),
+                    Line::styled(anime.info.clone(), muted(state)),
                     Line::raw(""),
                 ])
             })
@@ -468,23 +501,24 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 } else {
                     " "
                 };
-                ListItem::new(Line::raw(format!(
-                    "{mark}{indicator} {:>4}  {}",
-                    ep.number, ep.title
-                )))
+                ListItem::new(Line::from(vec![
+                    Span::styled(mark, Style::default().fg(palette(state).success)),
+                    Span::styled(indicator, Style::default().fg(palette(state).success)),
+                    Span::raw(format!(" {:>4}  {}", ep.number, ep.title)),
+                ]))
             })
             .collect(),
     };
     let list = List::new(items)
         .highlight_symbol(if state.ascii { "> " } else { "▸ " })
-        .highlight_style(Style::default().reversed().bold());
+        .highlight_style(palette(state).selection);
     let mut selection = ListState::default().with_selected(Some(selected));
     *selection.offset_mut() = state.list_offsets[state.screen as usize];
     frame.render_stateful_widget(list, inner, &mut selection);
     state.list_offsets[state.screen as usize] = selection.offset();
 }
 
-fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
+fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
     let block = panel(
         if state.details {
             " Series details / Esc back "
@@ -492,7 +526,7 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
             " Selected series "
         }
         .into(),
-        state.ascii,
+        state,
         state.details,
     );
     frame.render_widget(block, area);
@@ -533,10 +567,18 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
         };
         empty_art(frame, state, cover, label, "", false);
     }
-    let mut details = vec![
-        Line::styled(anime.title.clone(), Style::default().bold()),
-        Line::raw(anime.info.clone()),
-    ];
+    let mut details = Vec::new();
+    let mut push = |text: &str, style: Style| {
+        details.extend(
+            wrap_prose(text, metadata.width as usize)
+                .into_iter()
+                .map(|line| Line::styled(line, style)),
+        );
+    };
+    push(&anime.title, Style::default().bold());
+    if !anime.info.is_empty() {
+        push(&anime.info, muted(state));
+    }
     let entry = match state.screen {
         Screen::Home => state.history.get(state.home_selected),
         Screen::History => state.history.get(state.history_selected),
@@ -546,40 +588,126 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
             .find(|e| e.anime.id == anime.id && e.mode == state.mode),
     };
     if let Some(entry) = entry {
-        details.push(Line::raw(format!(
-            "Last played: episode {} / {}",
-            entry.episode,
-            entry.mode.as_str().to_uppercase()
-        )));
+        push(
+            &format!(
+                "{} Last played: episode {} / {}",
+                symbol(state, "↳", ">"),
+                entry.episode,
+                entry.mode.as_str().to_uppercase()
+            ),
+            muted(state),
+        );
     }
     if state.screen == Screen::Episodes
         && let Some(ep) = state.episodes.get(state.episode_selected)
     {
-        details.push(Line::raw(""));
-        details.push(Line::styled(
-            format!("Episode {} / {}", ep.number, ep.title),
-            accent(),
-        ));
+        push("", Style::default());
+        push(
+            &format!("Episode {} / {}", ep.number, ep.title),
+            accent(state),
+        );
     }
-    if !anime.description.is_empty() {
-        details.push(Line::raw(""));
-        details.push(Line::raw(anime.description.clone()));
-    }
-    if !state.details {
-        details.push(Line::raw(""));
-        details.push(Line::raw("i Full details"));
-    }
-    frame.render_widget(
-        Paragraph::new(details).wrap(Wrap { trim: true }).scroll((
-            if state.details {
-                state.details_scroll
-            } else {
-                0
-            },
-            0,
-        )),
-        metadata,
+    push("", Style::default());
+    push("Synopsis", accent(state));
+    let synopsis = state.synopses.peek(&anime.id);
+    let description = if let Some(Synopsis::Ready(text)) = synopsis {
+        text.as_str()
+    } else {
+        anime.description.as_str()
+    };
+    push(
+        if description.is_empty() {
+            "No synopsis available."
+        } else {
+            description
+        },
+        Style::default(),
     );
+    if state.details {
+        match synopsis {
+            Some(Synopsis::Loading) => {
+                push("", Style::default());
+                push(
+                    "Loading full synopsis...",
+                    Style::default().fg(palette(state).pending),
+                );
+            }
+            Some(Synopsis::Failed(_)) => {
+                push("", Style::default());
+                push(
+                    "! Full synopsis unavailable / F5 Retry",
+                    Style::default().fg(palette(state).error),
+                );
+            }
+            _ => {}
+        }
+    }
+    let reading = Rect::new(
+        metadata.x,
+        metadata.y,
+        metadata.width,
+        metadata.height.saturating_sub(1),
+    );
+    let max_scroll = details
+        .len()
+        .saturating_sub(reading.height as usize)
+        .min(u16::MAX as usize) as u16;
+    if state.details {
+        state.details_scroll = state.details_scroll.min(max_scroll);
+    }
+    let scroll = if state.details {
+        state.details_scroll
+    } else {
+        0
+    };
+    frame.render_widget(Paragraph::new(details).scroll((scroll, 0)), reading);
+    if metadata.height > 0 {
+        let hint = if state.details && max_scroll > 0 {
+            format!(
+                "{} Scroll / {}/{}",
+                symbol(state, "↑↓", "Up/Down"),
+                usize::from(scroll) + 1,
+                usize::from(max_scroll) + 1
+            )
+        } else if !state.details {
+            "i Full synopsis / details".into()
+        } else {
+            "Esc Back".into()
+        };
+        frame.render_widget(
+            Paragraph::new(hint).style(muted(state)),
+            Rect::new(metadata.x, metadata.bottom() - 1, metadata.width, 1),
+        );
+    }
+}
+
+fn wrap_prose(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![];
+    }
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.width() + 1 + word.width() > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            for grapheme in word.graphemes(true) {
+                if grapheme.width() > width {
+                    continue;
+                }
+                if line.width() + grapheme.width() > width {
+                    lines.push(std::mem::take(&mut line));
+                }
+                line.push_str(grapheme);
+            }
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
@@ -593,6 +721,15 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
         JobPhase::Finished => "Finished",
         JobPhase::Failed => "Failed",
     };
+    let (indicator, color) = match activity.phase {
+        JobPhase::Resolving => (symbol(state, "…", "..."), palette(state).pending),
+        JobPhase::Running if activity.kind == JobKind::Download => {
+            (symbol(state, "↓", "v"), palette(state).pending)
+        }
+        JobPhase::Running => (symbol(state, "▶", ">"), palette(state).success),
+        JobPhase::Finished => (symbol(state, "✓", "+"), palette(state).success),
+        JobPhase::Failed => ("!", palette(state).error),
+    };
     let episode = &activity.episodes[activity.index];
     let queue = if activity.remaining.is_empty() {
         String::new()
@@ -603,16 +740,12 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
         Paragraph::new(vec![
             Line::styled(
                 format!(
-                    " {phase}: {} / Ep {} / {}{queue}",
+                    " {indicator} {phase}: {} / Ep {} / {}{queue}",
                     activity.anime.title,
                     episode.number,
                     activity.mode.as_str().to_uppercase()
                 ),
-                if activity.phase == JobPhase::Failed {
-                    Style::default().fg(Color::Red)
-                } else {
-                    accent()
-                },
+                Style::default().fg(color),
             ),
             Line::raw(format!(" {}", activity.message)),
         ]),
@@ -622,7 +755,7 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
 
 fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
     let area = frame.area();
-    let block = panel(" Help / Up,Down scroll / Esc ".into(), state.ascii, true);
+    let block = panel(" Help / Up,Down scroll / Esc ".into(), state, true);
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -637,10 +770,19 @@ fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
             )
         })
         .unwrap_or_default();
+    let synopsis_error = state
+        .selected_anime()
+        .and_then(|a| state.synopses.peek(&a.id))
+        .and_then(|synopsis| match synopsis {
+            Synopsis::Failed(message) => Some(message.as_str()),
+            _ => None,
+        })
+        .map(|message| format!("\n\nSynopsis: {message}"))
+        .unwrap_or_default();
     let cover = art.error.as_deref().unwrap_or(&art.label);
     frame.render_widget(
         Paragraph::new(format!(
-            "{text}\n\nCurrent status:\n{}{job}\n\nCovers: {cover}",
+            "{text}\n\nCurrent status:\n{}{job}\n\nCovers: {cover}{synopsis_error}",
             state.status
         ))
         .wrap(Wrap { trim: false })
@@ -656,7 +798,10 @@ fn empty_art(
     hint: &str,
     show_scene: bool,
 ) {
-    let lines = vec![Line::styled(title, accent()), Line::styled(hint, muted())];
+    let lines = vec![
+        Line::styled(title, accent(state)),
+        Line::styled(hint, muted(state)),
+    ];
     let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
     // These short captions need at most two rows each in a scene-sized panel.
     // Reserve an extra row for each wrapped line without an unstable Ratatui API.
@@ -844,5 +989,82 @@ mod tests {
         let (text, cursor) = input_window("ab日本語", "ab日本語".len(), 5);
         assert_eq!(text, "本語");
         assert_eq!(cursor, 4);
+    }
+
+    #[test]
+    fn details_show_full_synopsis_and_clamp_scroll_across_sizes() {
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(
+            0,
+            Ok(vec![Anime {
+                id: "series-1".into(),
+                title: "A long journey".into(),
+                description: "A truncated snippet...".into(),
+                ..Default::default()
+            }]),
+        );
+        state.details = true;
+        let full = format!(
+            "{}THE END",
+            "The journey continues across a changing world. ".repeat(36)
+        );
+        state.synopses.put("series-1".into(), Synopsis::Ready(full));
+        for (w, h) in [(180, 45), (80, 24), (60, 40), (40, 18), (32, 12)] {
+            state.details_scroll = 0;
+            let text = render_text(&mut state, w, h);
+            assert!(text.contains("Synopsis"), "{w}x{h}");
+            assert!(!text.contains("truncated snippet"));
+            let (_, reading) = preview_regions(&state, panels(&state, Rect::new(0, 0, w, h)).1);
+            assert!(reading.width <= 78);
+            state.details_scroll = u16::MAX;
+            let end = render_text(&mut state, w, h);
+            assert!(end.contains("THE END"), "{w}x{h}");
+            assert!(state.details_scroll < u16::MAX);
+        }
+    }
+
+    #[test]
+    fn prose_wraps_unicode_without_losing_paragraphs_or_splitting_graphemes() {
+        assert_eq!(
+            wrap_prose("one two\n\n日本語 e\u{301}", 6),
+            ["one", "two", "", "日本語", "e\u{301}"]
+        );
+        assert_eq!(wrap_prose("abcdefgh", 3), ["abc", "def", "gh"]);
+        assert!(wrap_prose("日本", 1).iter().all(|line| line.width() <= 1));
+    }
+
+    #[test]
+    fn focus_has_a_stronger_border_and_plain_mode_keeps_non_color_cues() {
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(
+            0,
+            Ok(vec![Anime {
+                title: "Series".into(),
+                ..Default::default()
+            }]),
+        );
+        state.focus = Focus::List;
+        let text = render_text(&mut state, 120, 40);
+        assert!(text.contains('╔') && text.contains('═'));
+        assert!(text.contains('┏') && text.contains('━'));
+        state.ascii = true;
+        state.colorless = true;
+        let text = render_text(&mut state, 120, 40);
+        assert!(text.is_ascii());
+        assert!(text.contains("==") && text.contains("--") && text.contains("> Series"));
     }
 }

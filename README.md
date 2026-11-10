@@ -25,8 +25,10 @@ selected; Enter again plays it. History records launches, not completed viewing.
 Press `/` to search. Type a title, press Enter to focus the results, then Enter
 to browse episodes. `H` returns Home, `h` opens full history, and Esc retraces
 your navigation, preserving queries, selections and scroll positions. `i` opens
-full cover/details, including in compact terminals. Browsing leaves playback
-and downloads running; `x` stops the current job or dismisses its result.
+full cover/details, including in compact terminals. This view fetches the full
+synopsis instead of the provider's shortened search snippet; F5 retries it.
+Browsing leaves playback and downloads running; `x` stops the current job or
+dismisses its result.
 Network requests, cover downloads, image decoding, and image encoding run
 outside the terminal input loop.
 
@@ -39,8 +41,8 @@ outside the terminal input loop.
 | `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
 | Enter | Focus results / browse series / play episode(s) |
 | ↑ ↓ or `j` `k` | Navigate |
-| Page Up / Page Down | Move ten items |
-| Home / End or `g` / `G` | First / last item |
+| Page Up / Page Down | Move ten items, or scroll ten lines in details |
+| Home / End or `g` / `G` | First / last item; Home / End also scroll details |
 | Ctrl+E | Toggle normalized exact title matching |
 | `D` | Toggle SUB / DUB |
 | `Q` | Cycle best, 1080p, 720p, 480p, 360p, worst |
@@ -120,7 +122,13 @@ codes to identify the image. If your launcher exports it unintentionally, use
 `env -u NO_COLOR ./target/release/ani-watch` for native images. `--ascii` changes
 interface borders and indicators; it does not transliterate anime titles.
 
-Interface colors come from the terminal palette, with its default foreground/background.
+The interface keeps the terminal's font, text size, default foreground and canvas.
+Body text is regular; headings and focused controls use bold. Heavy panel borders
+become double borders in focus. Cyan identifies focus and keys, green marks success
+and playback, amber indicates pending work, and red identifies errors. Symbols and
+labels carry the same meaning without color. When the terminal reports its background
+during image detection, the app selects readable light or dark accents and a tinted
+selection; otherwise it uses ANSI colors and reverse-video selection.
 Home and Search show a list on the left and the selected anime's aspect-preserving
 cover, title and details on the right. Episodes use a wider list and a smaller
 cover, without a persistent search field. A separate activity strip shows the
@@ -130,6 +138,9 @@ and marked batches have distinct indicators.
 At 72 columns and above, sufficiently tall terminals show both panels. Narrow,
 tall terminals stack them; shorter terminals prioritize the list, with the full
 preview available through `i`. Below 32 × 12 the app displays a resize hint.
+Full details place the cover beside a reading column on wide screens and above
+the text on narrow screens. The synopsis uses the remaining height, wraps to a
+readable width, and scrolls with arrows, Page Up/Down, or Home/End.
 Help and full series details are scrollable. Provider failures have their own
 retry state, separate from a successful search with no matches. Failed or missing
 covers leave the selected title and details visible with a quiet placeholder.

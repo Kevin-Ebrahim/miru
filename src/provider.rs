@@ -102,6 +102,15 @@ impl Provider {
         Ok(results)
     }
 
+    pub async fn synopsis(&self, anime: &Anime) -> Result<String> {
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("Invalid provider base URL"))?
+            .pop_if_empty()
+            .push(&anime.id);
+        parse_synopsis(&self.text(url.as_str(), None).await?)
+    }
+
     pub async fn episodes(&self, anime: &Anime) -> Result<Vec<Episode>> {
         let id = anime.id.rsplit('-').next().context("Missing anime ID")?;
         ensure!(
@@ -224,6 +233,45 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
         "Search markup changed. Check the provider or update the parser"
     );
     Ok(results)
+}
+
+pub fn parse_synopsis(page: &str) -> Result<String> {
+    fn prose(element: scraper::ElementRef<'_>, text: &mut String) {
+        for node in element.children() {
+            if let Some(value) = node.value().as_text() {
+                text.extend(
+                    value
+                        .chars()
+                        .map(|c| if c.is_whitespace() { ' ' } else { c }),
+                );
+            } else if let Some(child) = scraper::ElementRef::wrap(node) {
+                let block = matches!(child.value().name(), "p" | "div" | "br");
+                if block {
+                    text.push('\n');
+                }
+                prose(child, text);
+                if block {
+                    text.push('\n');
+                }
+            }
+        }
+    }
+    let document = Html::parse_document(page);
+    let description = document
+        .select(&selector(".film-description .text"))
+        .next()
+        .map(|node| {
+            let mut text = String::new();
+            prose(node, &mut text);
+            text.lines()
+                .map(clean)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .filter(|text| !text.is_empty())
+        .context("Full synopsis unavailable from this provider")?;
+    Ok(description)
 }
 
 fn html_response(response: &str) -> Result<String> {
@@ -369,6 +417,24 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<(Vec<Variant>, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_synopsis_keeps_paragraphs_and_inline_text_without_marketing_metadata() {
+        let text = parse_synopsis(
+            r#"<meta name="description" content="Watch now!">
+            <div class="film-description"><div class="text"><p>A <em>long</em> journey &amp;
+            an unexpected friend.</p><p>A second chapter<br>ends here.</p></div></div>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            "A long journey & an unexpected friend.\n\nA second chapter\n\nends here."
+        );
+        assert!(parse_synopsis("<meta name=description content='Watch now!'>").is_err());
+        assert!(
+            parse_synopsis("<div class=film-description><div class=text> </div></div>").is_err()
+        );
+    }
+
     #[test]
     fn search_handles_entities_missing_art_and_sidebar() {
         let results = parse_search(
