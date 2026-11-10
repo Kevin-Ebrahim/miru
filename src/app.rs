@@ -64,6 +64,10 @@ impl Activity {
     pub fn active(&self) -> bool {
         matches!(self.phase, JobPhase::Resolving | JobPhase::Running)
     }
+
+    pub fn retryable(&self) -> bool {
+        self.phase == JobPhase::Failed
+    }
 }
 
 #[derive(Clone, Default)]
@@ -187,6 +191,11 @@ pub struct State {
 }
 
 impl State {
+    pub fn request_blocks_list(&self) -> bool {
+        self.request_error.is_some()
+            && (self.screen != Screen::Episodes || self.episodes.is_empty())
+    }
+
     pub fn new(
         query: String,
         mode: Mode,
@@ -704,6 +713,14 @@ impl App {
         self.state.activity = None;
     }
 
+    fn retry_activity(&mut self) {
+        if let Some(activity) = &self.state.activity
+            && activity.retryable()
+        {
+            self.play(activity.index);
+        }
+    }
+
     fn start_selection(&mut self, download: bool) {
         let indices: VecDeque<_> = if self.state.marked.is_empty() {
             [self.state.episode_selected].into()
@@ -785,7 +802,6 @@ impl App {
                 }
             }
             Err(err) => {
-                activity.remaining.clear();
                 activity.phase = JobPhase::Failed;
                 activity.message = format!("{err:#}");
             }
@@ -1016,6 +1032,10 @@ impl App {
         }
         if key.code == KeyCode::F(5) {
             self.retry();
+            return;
+        }
+        if key.code == KeyCode::F(6) {
+            self.retry_activity();
             return;
         }
         if self.state.details {

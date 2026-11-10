@@ -53,13 +53,14 @@ outside the terminal input loop.
 | `n` / `p` / `r` | Next / previous / replay |
 | `x` | Stop the owned player/download queue, or dismiss its result |
 | F5 or `R` | Retry the current view and artwork; F5 also works while typing |
+| F6 | Retry the failed episode and remaining queue, keeping its original settings |
 | Delete in history | Remove the highlighted history entry |
 | `?` or F1 | Help; ↑/↓ scroll the guide |
 | Esc | Leave input / return to the previous screen / close help or details |
 | `q` outside text input, or Ctrl+C anywhere | Quit and stop owned jobs |
 
 While typing a search, printable keys are text. The other single-letter shortcuts
-apply after leaving the input. F1, F5 and Ctrl+C also work while typing.
+apply after leaving the input. F1, F5, F6 and Ctrl+C also work while typing.
 The footer shows the actions available for the current focus; F1 lists all
 shortcuts. Loading and error feedback stays with the affected view.
 
@@ -70,6 +71,8 @@ Each queue keeps its selected series, episodes, language and quality while you
 browse elsewhere. Language and quality changes apply to your next play/download
 selection; they do not change an existing queue. Missing resolutions fall back to
 best with a notice. SUB and DUB history are tracked separately.
+After a queue fails, F6 retries from the failed episode without repeating completed
+episodes. Failed episode refreshes keep the cached list and selection visible.
 
 ## Script-friendly operations
 

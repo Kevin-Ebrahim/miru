@@ -46,7 +46,9 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         ),
         Constraint::Min(1),
         Constraint::Length(
-            if state.status.is_empty() || state.request_error.is_some() {
+            if state.request_blocks_list()
+                || (state.status.is_empty() && state.request_error.is_none())
+            {
                 0
             } else {
                 2
@@ -228,18 +230,22 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         }
     }
     if status.height > 0 {
+        let (text, error) = if let Some(error) = &state.request_error {
+            (format!(" ! Refresh failed / F5 Retry\n {error}"), true)
+        } else {
+            (
+                format!(" {}{}", if state.error { "! " } else { "" }, state.status),
+                state.error,
+            )
+        };
         frame.render_widget(
-            Paragraph::new(format!(
-                " {}{}",
-                if state.error { "! " } else { "" },
-                state.status
-            ))
-            .style(if state.error {
-                Style::default().fg(palette(state).error)
-            } else {
-                Style::default()
-            })
-            .wrap(Wrap { trim: true }),
+            Paragraph::new(text)
+                .style(if error {
+                    Style::default().fg(palette(state).error)
+                } else {
+                    Style::default()
+                })
+                .wrap(Wrap { trim: true }),
             status,
         );
     }
@@ -319,7 +325,7 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
         ]
     } else if state.focus == Focus::Range {
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
-    } else if state.request_error.is_some() {
+    } else if state.request_blocks_list() {
         vec!["F5 Retry".into(), "/ Search".into(), "Esc Back".into()]
     } else if state.screen == Screen::Episodes && state.episodes.is_empty() {
         let mut hints = vec!["Esc Back".into(), "i Details".into()];
@@ -395,6 +401,9 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
         }
         global.extend(["D SUB/DUB".into(), "Q Quality".into()]);
     }
+    if state.activity.as_ref().is_some_and(|a| a.retryable()) {
+        global.insert(0, "F6 Retry remaining".into());
+    }
     vec![
         fit_hints(&primary, width, state),
         fit_hints(&global, width, state),
@@ -425,10 +434,15 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             "/ Loading... "
         });
     }
+    if state.request_error.is_some() && !state.request_blocks_list() {
+        title.push_str("/ Cached ");
+    }
     let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if let Some(error) = &state.request_error {
+    if let Some(error) = &state.request_error
+        && state.request_blocks_list()
+    {
         let title = if state.screen == Screen::Search {
             "Search unavailable"
         } else {
@@ -753,7 +767,7 @@ fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
+    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
     let job = state
         .activity
         .as_ref()
@@ -945,6 +959,34 @@ mod tests {
         assert!(!text.contains("? Help"));
         assert!(!text.contains("No matches"));
         assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
+    }
+
+    #[test]
+    fn failed_episode_refresh_keeps_cached_selection_visible() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.anime = Some(Anime {
+            title: "Series".into(),
+            ..Default::default()
+        });
+        state.episodes = vec![Episode {
+            id: "1".into(),
+            number: "1".into(),
+            title: "The beginning".into(),
+        }];
+        state.marked.insert(0);
+        state.request_error = Some("Service unavailable".into());
+        for (w, h) in [(80, 24), (40, 18), (32, 12)] {
+            let text = render_text(&mut state, w, h);
+            assert!(text.contains("The beginning"), "{w}x{h}: {text}");
+            assert!(text.contains("F5 Retry"));
+            assert!(text.contains("Play"));
+            assert!(!text.contains("Episodes unavailable"));
+        }
+        state.episodes.clear();
+        let text = render_text(&mut state, 80, 24);
+        assert!(text.contains("Episodes unavailable"));
+        assert!(!text.contains("Enter Play"));
     }
 
     #[test]

@@ -31,6 +31,9 @@ def main():
         requests = []
         media_requested = threading.Event()
         release_media = threading.Event()
+        fail_refresh = threading.Event()
+        refresh_failed = threading.Event()
+        fail_episode_once = threading.Event()
         clip = root / "video.ts"
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                         "color=size=128x96:rate=12", "-t", "1", "-c:v", "libx264",
@@ -62,12 +65,22 @@ def main():
                 elif path == "/original-1":
                     body = '<div class="film-description"><div class="text">A complete synopsis beyond the search snippet.</div></div>'
                 elif path.startswith("/api/theme/episode/list/"):
+                    if fail_refresh.is_set():
+                        self.send_response(503)
+                        self.end_headers()
+                        refresh_failed.set()
+                        return
                     series = path.rsplit("/", 1)[-1]
                     body = json.dumps({"html": ''.join(
                         f'<a class="ep-item" data-number="{n}" data-id="{series}{n}" title="Part {n}" href="/watch/{"original-1" if series == "1" else "other-2"}?ep={series}{n}"></a>'
                         for n in (1, 2, 3))})
                 elif path == "/api/theme/episode/servers":
                     episode = urllib.parse.parse_qs(parsed.query)["episodeId"][0]
+                    if episode == "12" and fail_episode_once.is_set():
+                        fail_episode_once.clear()
+                        self.send_response(503)
+                        self.end_headers()
+                        return
                     if episode == "11":
                         resolving.set()
                         release.wait(timeout=10)
@@ -212,9 +225,37 @@ while not (root / str(os.getpid())).exists():
             wait_for(lambda: len(list((root / "downloads").glob("*.mkv"))) == 2)
             assert all("Other Series" in file.name for file in (root / "downloads").glob("*.mkv"))
             assert json.loads((root / "library.json").read_text())["entries"] == history
+            send(b"\x1b")
+            send(b"H\r")
+            pump()
+            fail_refresh.set()
+            output.clear()
+            send(b"\x1b[15~")  # F5: a failed refresh keeps the cached episodes usable.
+            wait_for(refresh_failed.is_set)
+            pump()
+            fail_refresh.clear()
+            fail_episode_once.set()
+            output.clear()
+            send(b":1-3\rd")
+            wait_for(lambda: not fail_episode_once.is_set())
+            pump()
+            originals = list((root / "downloads").glob("Original*.mkv"))
+            assert len(originals) == 1, originals
+            saved = originals[0].stat()
+            first_requests = sum("episodeId=11" in url for url in requests)
+            # Retry while searching elsewhere, after changing the next queue's defaults.
+            send(b"DQ/other")
+            pump(0.5)
+            send(b"\x1b[17~")  # F6 retries only the failed and pending episodes.
+            wait_for(lambda: len(list((root / "downloads").glob("Original*.mkv"))) == 3)
+            originals = list((root / "downloads").glob("Original*.mkv"))
+            assert all(" SUB.mkv" in file.name for file in originals), originals
+            assert sum("episodeId=11" in url for url in requests) == first_requests
+            assert any("episodeId=13" in url for url in requests)
+            assert (root / "downloads" / "Original Series _ Episode 1 SUB.mkv").stat().st_mtime_ns == saved.st_mtime_ns
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: full synopsis loading/cache/retry, Home continuation, navigation during resolution/playback/download, queue ownership, fixed language, correct history, explicit stop")
+            print("PASS: synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()
