@@ -65,6 +65,8 @@ def main():
                     body = '<div class="flw-item"><h3 class="film-name"><a title="Other Series" href="/other-2">Other Series</a></h3></div>'
                 elif path == "/original-1":
                     body = '<div class="film-description"><div class="text">A complete synopsis beyond the search snippet.</div></div>'
+                elif path == "/other-2":
+                    body = '<div class="film-description"><div class="text">The second series has a complete synopsis beyond its search result.</div></div>'
                 elif path.startswith("/api/theme/episode/list/"):
                     if fail_refresh.is_set():
                         self.send_response(503)
@@ -126,6 +128,9 @@ while not (root / str(os.getpid())).exists():
             "version": 1, "mode": "sub", "quality": "best", "entries": [{
                 "anime": {"id": "original-1", "title": "Original Series", "cover": None},
                 "episode": "0", "mode": "sub", "watched_at": 1,
+            }, {
+                "anime": {"id": "history-2", "title": "Second Series", "cover": None},
+                "episode": "0", "mode": "sub", "watched_at": 0,
             }],
         }))
         master, slave = os.openpty()
@@ -167,6 +172,13 @@ while not (root / str(os.getpid())).exists():
             log = root / "download.log"
             assert predicate(), "Timed out waiting for TUI action: " + (log.read_text() if log.exists() else "no download log")
 
+        def copied_text(keys=b"y"):
+            output.clear()
+            send(keys)
+            payloads = re.findall(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)", output)
+            assert payloads, "Copy should emit a clipboard payload"
+            return base64.b64decode(payloads[-1]).decode()
+
         def launches():
             path = root / "launches"
             return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
@@ -180,13 +192,14 @@ while not (root / str(os.getpid())).exists():
 
         try:
             pump(0.5)
+            wait_for(lambda: requests.count("/original-1") == 1)
+            wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
+            copied = copied_text(b"jy")
+            assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
+            copied = copied_text(b"yk")
+            assert "Second Series" in copied and "Original Series" not in copied, "Queued copy+navigation must copy before moving"
             send(b"i")
-            # Cursor moves may split the sentence when only changed cells are drawn.
-            wait_for(lambda: b"snippet." in output)
-            output.clear()
-            send(b"y")
-            payloads = re.findall(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)", output)
-            copied = base64.b64decode(payloads[-1]).decode()
+            copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
             assert "F1 Help" not in copied and "Enter Episodes" not in copied
             send(b"\x1b")
@@ -202,7 +215,10 @@ while not (root / str(os.getpid())).exists():
             wait_for(resolving.is_set)
             send(b"/other")
             pump(0.5)
-            send(b"\r\r")  # Browse a different series while the first stream resolves.
+            send(b"\r")  # Focus the search results without opening Info.
+            wait_for(lambda: "The second series has a complete synopsis beyond its search result." in " ".join(copied_text().split()))
+            assert requests.count("/other-2") == 1, "Search previews should fetch full synopses without opening Info"
+            send(b"\r")  # Browse a different series while the first stream resolves.
             wait_for(lambda: "/api/theme/episode/list/2" in requests)
             release.set()
             wait_for(lambda: len(launches()) == 1)

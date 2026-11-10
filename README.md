@@ -25,8 +25,9 @@ selected; Enter again plays it. History records launches, not completed viewing.
 Press `/` to search. Type a title, press Enter to focus the results, then Enter
 to browse episodes. `H` returns Home, `h` opens full history, and Esc retraces
 your navigation, preserving queries, selections and scroll positions. `i` opens
-full cover/details, including in compact terminals. This view fetches the full
-synopsis instead of the provider's shortened search snippet; F5 retries it.
+full cover/details, including in compact terminals. Highlighting a series loads
+its full synopsis automatically in the preview and caches it for Details.
+F5 retries the full synopsis along with the current view.
 Drag over the text in Details or a series preview to select it; releasing the mouse
 copies only that selection. This includes the title, episode, metadata and synopsis.
 Outside text input, press `y` to copy the selection again, or the full text panel

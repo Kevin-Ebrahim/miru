@@ -490,10 +490,13 @@ pub struct App {
     episode_task: Option<JoinHandle<()>>,
     synopsis_task: Option<JoinHandle<()>>,
     synopsis_generation: u64,
+    synopsis_target: Option<String>,
+    synopsis_due: Option<Instant>,
     play_task: Option<JoinHandle<()>>,
     search_due: Option<Instant>,
     job: u64,
     quit: bool,
+    copy_requested: bool,
     back_stack: Vec<Visit>,
     continuation: Option<crate::persistence::Entry>,
     save_tx: Option<mpsc::UnboundedSender<crate::persistence::Change>>,
@@ -545,10 +548,13 @@ impl App {
             episode_task: None,
             synopsis_task: None,
             synopsis_generation: 0,
+            synopsis_target: None,
+            synopsis_due: None,
             play_task: None,
             search_due,
             job: 0,
             quit: false,
+            copy_requested: false,
             back_stack: vec![],
             continuation: None,
             save_tx: Some(save_tx),
@@ -767,10 +773,41 @@ impl App {
         }));
     }
 
+    fn cancel_synopsis(&mut self) {
+        abort(&mut self.synopsis_task);
+        self.synopsis_generation += 1;
+        self.synopsis_due = None;
+        if let Some(id) = self.synopsis_target.take()
+            && matches!(self.state.synopses.peek(&id), Some(Synopsis::Loading))
+        {
+            self.state.synopses.pop(&id);
+        }
+    }
+
+    fn prepare_synopsis(&mut self) -> bool {
+        let target = self.state.selected_anime().map(|anime| anime.id.clone());
+        if target == self.synopsis_target {
+            return false;
+        }
+        self.cancel_synopsis();
+        self.synopsis_target = target.clone();
+        if let Some(id) = target
+            && !matches!(
+                self.state.synopses.get(&id),
+                Some(Synopsis::Ready(_) | Synopsis::Failed(_))
+            )
+        {
+            self.state.synopses.put(id, Synopsis::Loading);
+            self.synopsis_due = Some(Instant::now() + Duration::from_millis(180));
+        }
+        true
+    }
+
     fn load_synopsis(&mut self, force: bool) {
         let Some(anime) = self.state.selected_anime().cloned() else {
             return;
         };
+        self.synopsis_due = None;
         if !force
             && matches!(
                 self.state.synopses.get(&anime.id),
@@ -779,8 +816,14 @@ impl App {
         {
             return;
         }
-        abort(&mut self.synopsis_task);
-        self.synopsis_generation += 1;
+        if !force
+            && self.synopsis_target.as_deref() == Some(anime.id.as_str())
+            && self.synopsis_task.is_some()
+        {
+            return;
+        }
+        self.cancel_synopsis();
+        self.synopsis_target = Some(anime.id.clone());
         let generation = self.synopsis_generation;
         self.state.synopses.put(anime.id.clone(), Synopsis::Loading);
         let provider = self.provider.clone();
@@ -797,6 +840,7 @@ impl App {
             self.load_synopsis(true);
             return;
         }
+        self.load_synopsis(true);
         match self.state.screen {
             Screen::Search => self.search(),
             Screen::Episodes => self.load_episodes(),
@@ -1261,7 +1305,7 @@ impl App {
                 KeyCode::End => self.state.details_scroll = u16::MAX,
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('x') => self.stop(),
-                KeyCode::Char('y') => self.copy_text(),
+                KeyCode::Char('y') => self.copy_requested = true,
                 _ => {}
             }
             return;
@@ -1311,7 +1355,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_text(),
+            KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.state.help = true,
             KeyCode::Char('/') => {
                 self.navigate(Screen::Search);
@@ -1470,6 +1514,11 @@ impl App {
         let mut mouse_capture = false;
         let [mut interrupt, mut terminate, mut hangup] = signals;
         while !self.quit {
+            dirty |= self.prepare_synopsis();
+            if self.synopsis_due.is_some_and(|at| Instant::now() >= at) {
+                self.load_synopsis(false);
+                dirty = true;
+            }
             if self.search_due.is_some_and(|at| Instant::now() >= at) {
                 self.search();
                 dirty = true;
@@ -1500,6 +1549,9 @@ impl App {
                     }
                     _ => {}
                 }
+                if self.copy_requested {
+                    break;
+                }
             }
             if dirty {
                 let size = terminal.size()?;
@@ -1523,6 +1575,9 @@ impl App {
                     terminal.draw(|frame| ui::render(frame, &mut self.state, &art))?;
                     Ok(())
                 })??;
+                if std::mem::take(&mut self.copy_requested) {
+                    self.copy_text();
+                }
                 let capture = self.state.text_view.is_some() && !self.state.help;
                 if capture != mouse_capture {
                     if capture {
@@ -1700,6 +1755,52 @@ mod tests {
             .collect();
         app.mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
         assert_eq!(app.state.episode_selected, 1);
+    }
+
+    #[tokio::test]
+    async fn preview_loading_tracks_selection_and_reuses_full_synopsis_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(
+            0,
+            Ok(vec![
+                anime("first", "First series"),
+                anime("second", "Second series"),
+            ]),
+        );
+        let mut app = test_app(state, dir.path());
+        assert!(app.prepare_synopsis());
+        assert!(app.synopsis_due.is_some());
+        assert!(matches!(
+            app.state.synopses.peek("first"),
+            Some(Synopsis::Loading)
+        ));
+        assert!(!app.prepare_synopsis());
+        app.state.selected = 1;
+        assert!(app.prepare_synopsis());
+        assert!(app.state.synopses.peek("first").is_none());
+        assert!(matches!(
+            app.state.synopses.peek("second"),
+            Some(Synopsis::Loading)
+        ));
+        app.state
+            .synopses
+            .put("second".into(), Synopsis::Ready("Full synopsis".into()));
+        app.state.selected = 0;
+        app.prepare_synopsis();
+        app.state.selected = 1;
+        app.prepare_synopsis();
+        assert!(app.synopsis_due.is_none());
+        assert!(
+            matches!(app.state.synopses.peek("second"), Some(Synopsis::Ready(text)) if text == "Full synopsis")
+        );
     }
 
     #[tokio::test]

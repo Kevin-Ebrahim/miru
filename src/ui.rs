@@ -776,7 +776,11 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     };
     let prose = synopsis_lines(
         if description.is_empty() {
-            "No synopsis"
+            if matches!(synopsis, Some(Synopsis::Loading)) {
+                ""
+            } else {
+                "No synopsis"
+            }
         } else {
             description
         },
@@ -784,9 +788,9 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         state,
     );
     details.extend(prose);
-    let feedback = match (state.details, synopsis) {
-        (true, Some(Synopsis::Loading)) => Some(("Loading synopsis...", palette(state).pending)),
-        (true, Some(Synopsis::Failed(_))) => {
+    let feedback = match synopsis {
+        Some(Synopsis::Loading) => Some(("Loading full synopsis...", palette(state).pending)),
+        Some(Synopsis::Failed(_)) => {
             Some(("! Synopsis unavailable / F5 Retry", palette(state).error))
         }
         _ => None,
