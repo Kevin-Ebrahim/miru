@@ -209,19 +209,33 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
             Screen::Episodes => "Episodes",
         }
     };
-    let mut heading = vec![Line::from(vec![
-        Span::styled(" ani / watch", accent(state)),
-        Span::raw(format!(
-            "   {location}   {} / {}",
-            state.mode.as_str().to_uppercase(),
-            state.quality
-        )),
-    ])];
+    let settings = format!("{} / {}", state.mode.as_str().to_uppercase(), state.quality);
+    let context = format!("   {location}   {settings}");
+    let mut heading = vec![Line::from(
+        if " ani / watch".width() + context.width() > usize::from(area.width) {
+            vec![
+                Span::styled(format!(" {location}"), accent(state)),
+                Span::raw(format!("   {settings}")),
+            ]
+        } else {
+            vec![
+                Span::styled(" ani / watch", accent(state)),
+                Span::raw(context),
+            ]
+        },
+    )];
     if state.screen == Screen::Episodes
         && !state.details
         && let Some(anime) = &state.anime
     {
-        heading.push(Line::raw(format!(" {}", anime.title)));
+        heading.push(Line::raw(format!(
+            " {}",
+            ellipsize(
+                &anime.title,
+                usize::from(area.width.saturating_sub(1)),
+                state
+            )
+        )));
     }
     frame.render_widget(Paragraph::new(heading), header);
     if input.height > 0 {
@@ -471,6 +485,35 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
     ]
 }
 
+fn series_item(title: &str, metadata: &str, width: usize, state: &State) -> ListItem<'static> {
+    let lines = wrap_prose(title, width);
+    let mut content = vec![Line::styled(
+        lines.first().cloned().unwrap_or_default(),
+        Style::default().bold(),
+    )];
+    if lines.len() > 1 {
+        content.push(Line::styled(
+            if lines.len() == 2 {
+                lines[1].clone()
+            } else {
+                ellipsize_start(title, width, state)
+            },
+            Style::default().bold(),
+        ));
+        content.push(Line::styled(
+            ellipsize(metadata, width, state),
+            muted(state),
+        ));
+    } else {
+        content.push(Line::styled(
+            ellipsize(metadata, width, state),
+            muted(state),
+        ));
+        content.push(Line::raw(""));
+    }
+    ListItem::new(content)
+}
+
 fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     let visible = state.visible();
     let (label, count, selected) = match state.screen {
@@ -547,35 +590,30 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         empty_art(frame, state, inner, title, hint, false);
         return;
     }
+    let item_width = usize::from(inner.width.saturating_sub(2));
     let items: Vec<ListItem> = match state.screen {
         Screen::Home | Screen::History => state
             .history
             .iter()
             .take(count)
             .map(|entry| {
-                ListItem::new(vec![
-                    Line::styled(entry.anime.title.clone(), Style::default().bold()),
-                    Line::styled(
-                        format!(
-                            "Last played: Ep {} / {}",
-                            entry.episode,
-                            entry.mode.as_str().to_uppercase()
-                        ),
-                        muted(state),
+                series_item(
+                    &entry.anime.title,
+                    &format!(
+                        "Last played: Ep {} / {}",
+                        entry.episode,
+                        entry.mode.as_str().to_uppercase()
                     ),
-                    Line::raw(""),
-                ])
+                    item_width,
+                    state,
+                )
             })
             .collect(),
         Screen::Search => visible
             .iter()
             .map(|i| {
                 let anime = &state.results[*i];
-                ListItem::new(vec![
-                    Line::styled(anime.title.clone(), Style::default().bold()),
-                    Line::styled(anime.info.clone(), muted(state)),
-                    Line::raw(""),
-                ])
+                series_item(&anime.title, &anime.info, item_width, state)
             })
             .collect(),
         Screen::Episodes => state
@@ -658,6 +696,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         };
         empty_art(frame, state, cover, label, "", false);
     }
+    let compact_details = state.details && metadata.height < 10;
     let mut details = Vec::new();
     let mut push = |text: &str, style: Style| {
         details.extend(
@@ -694,13 +733,17 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         && state.screen == Screen::Episodes
         && let Some(ep) = state.episodes.get(state.episode_selected)
     {
-        push("", Style::default());
+        if !compact_details {
+            push("", Style::default());
+        }
         push(
             &format!("Episode {} / {}", ep.number, ep.title),
             accent(state),
         );
     }
-    push("", Style::default());
+    if !compact_details {
+        push("", Style::default());
+    }
     push("Synopsis", accent(state));
     let synopsis = state.synopses.peek(&anime.id);
     let description = if let Some(Synopsis::Ready(text)) = synopsis {
@@ -719,14 +762,18 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     if state.details {
         match synopsis {
             Some(Synopsis::Loading) => {
-                push("", Style::default());
+                if !compact_details {
+                    push("", Style::default());
+                }
                 push(
                     "Loading synopsis...",
                     Style::default().fg(palette(state).pending),
                 );
             }
             Some(Synopsis::Failed(_)) => {
-                push("", Style::default());
+                if !compact_details {
+                    push("", Style::default());
+                }
                 push(
                     "! Synopsis unavailable / F5 Retry",
                     Style::default().fg(palette(state).error),
@@ -894,6 +941,26 @@ fn ellipsize(text: &str, width: usize, state: &State) -> String {
     }
     let (prefix, _) = input_window(text, 0, width - marker.width());
     format!("{prefix}{marker}")
+}
+
+fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
+    if text.width() <= width {
+        return text.into();
+    }
+    let marker = symbol(state, "…", "...");
+    if width < marker.width() {
+        return ".".repeat(width);
+    }
+    let mut used = marker.width();
+    let mut start = text.len();
+    for (i, grapheme) in text.grapheme_indices(true).rev() {
+        if used + grapheme.width() > width {
+            break;
+        }
+        used += grapheme.width();
+        start = i;
+    }
+    format!("{marker}{}", &text[start..])
 }
 
 fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
@@ -1227,6 +1294,121 @@ mod tests {
         let text = render_text(&mut state, 120, 80);
         assert!(text.contains("LAST DETAIL") && text.contains("Plain borders and symbols"));
         assert_eq!(state.help_scroll, 0);
+    }
+
+    #[test]
+    fn long_titles_keep_season_suffixes_visible_in_results() {
+        let title = "As a Reincarnated Aristocrat, I’ll Use My Appraisal Skill";
+        for ascii in [false, true] {
+            let mut state = State::new(
+                "appraisal".into(),
+                Mode::Sub,
+                "best".into(),
+                false,
+                ascii,
+                false,
+            );
+            state.accept_search(
+                0,
+                Ok(vec![
+                    Anime {
+                        id: "first".into(),
+                        title: title.into(),
+                        info: "TV / SUB 24".into(),
+                        ..Default::default()
+                    },
+                    Anime {
+                        id: "second".into(),
+                        title: format!("{title} Season 2"),
+                        info: "TV / SUB 12".into(),
+                        ..Default::default()
+                    },
+                ]),
+            );
+            state.focus = Focus::List;
+            for width in [117, 80, 52, 32] {
+                state.selected = 0;
+                let text = render_text(&mut state, width, 28);
+                assert!(text.contains("Season 2"), "{width}: {text}");
+                assert!(text.contains("TV / SUB 12"));
+                state.results[1].title = format!(
+                    "{} Season 2",
+                    "A very long 日本語 title e\u{301} ".repeat(15)
+                );
+                let text = render_text(&mut state, width, 28);
+                assert!(text.contains("Season 2"), "{width}: {text}");
+                assert!(text.contains(if ascii { "..." } else { "…" }));
+                state.results[1].title = format!("{title} Season 2");
+            }
+        }
+    }
+
+    #[test]
+    fn minimum_size_headers_keep_language_and_quality_visible() {
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::Episodes,
+            Screen::History,
+        ] {
+            for details in [false, true] {
+                for quality in ["best", "1080p", "720p", "480p", "360p", "worst"] {
+                    let mut state = State::new(
+                        String::new(),
+                        Mode::Dub,
+                        quality.into(),
+                        false,
+                        false,
+                        false,
+                    );
+                    state.screen = screen;
+                    state.details = details;
+                    let text = render_text(&mut state, 32, 12);
+                    assert!(
+                        text.lines()
+                            .next()
+                            .unwrap()
+                            .contains(&format!("DUB / {quality}")),
+                        "{screen:?}, {details}: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_details_show_synopsis_without_blank_separators() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.details = true;
+        let anime = Anime {
+            id: "series".into(),
+            title: "As a Reincarnated Aristocrat, I’ll Use My Appraisal Skill".into(),
+            info: "TV / SUB 24".into(),
+            description: "Opening sentence.".into(),
+            ..Default::default()
+        };
+        state.anime = Some(anime.clone());
+        state.history.push(crate::persistence::Entry {
+            anime,
+            episode: "5".into(),
+            mode: Mode::Sub,
+            watched_at: 1,
+        });
+        state.episodes = vec![Episode {
+            id: "6".into(),
+            number: "6".into(),
+            title: "Arrival".into(),
+        }];
+        let text = render_text(&mut state, 52, 12);
+        for content in [
+            "Last played: Ep 5",
+            "Episode 6 / Arrival",
+            "Synopsis",
+            "Opening sentence.",
+        ] {
+            assert!(text.contains(content), "{text}");
+        }
     }
 
     #[test]
