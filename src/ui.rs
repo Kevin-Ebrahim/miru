@@ -86,8 +86,10 @@ fn panels(state: &State, area: Rect) -> (Rect, Rect) {
     if area.width >= 72 && body.height >= 12 {
         let share = if state.screen == Screen::Episodes {
             65
+        } else if area.width >= 120 {
+            35
         } else {
-            55
+            45
         };
         let [list, preview] = Layout::horizontal([
             Constraint::Percentage(share),
@@ -109,15 +111,25 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
         return (Rect::default(), Rect::default());
     }
     let inner = area.inner(Margin::new(2, 1));
-    if inner.height < 6 || (state.details && inner.height < 10 && inner.width < 72) {
+    if inner.height < 6 || (inner.width < 72 && inner.height < if state.details { 10 } else { 12 })
+    {
         return (Rect::default(), inner);
     }
-    if state.details && inner.width >= 72 {
-        let cover_width = (inner.width / 3).min(32);
+    if inner.width >= 72 {
+        let cover_width = if state.details {
+            (inner.width / 3).min(32)
+        } else {
+            (inner.width / 4).min(20)
+        };
         let text_width = inner.width.saturating_sub(cover_width + 3).min(72);
         let left = inner.x + inner.width.saturating_sub(cover_width + text_width + 3) / 2;
         return (
-            Rect::new(left, inner.y, cover_width, inner.height.min(26)),
+            Rect::new(
+                left,
+                inner.y,
+                cover_width,
+                inner.height.min(if state.details { 26 } else { 14 }),
+            ),
             Rect::new(left + cover_width + 3, inner.y, text_width, inner.height),
         );
     }
@@ -342,8 +354,12 @@ fn fit_hints(hints: &[String], width: usize, state: &State) -> Line<'static> {
         used += separator.len() + hint.width();
         spans.push(Span::raw(separator));
         let (key, label) = hint.split_once(' ').unwrap_or((hint.as_str(), ""));
-        spans.push(Span::styled(key.to_owned(), accent(state)));
-        spans.push(Span::raw(format!(" {label}")));
+        if key == "Enter" {
+            spans.push(Span::styled(hint.clone(), palette(state).selection.bold()));
+        } else {
+            spans.push(Span::styled(key.to_owned(), muted(state).bold()));
+            spans.push(Span::raw(format!(" {label}")));
+        }
     }
     Line::from(spans)
 }
@@ -676,7 +692,30 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         state,
         state.details,
     );
+    // A bottom-aligned top rule meets the surface in the next terminal row.
+    let block = if state.ascii {
+        block
+    } else {
+        block.border_set(ratatui::symbols::border::Set {
+            top_left: "▁",
+            top_right: "▁",
+            horizontal_top: "▁",
+            ..if state.details {
+                ratatui::symbols::border::DOUBLE
+            } else {
+                ratatui::symbols::border::THICK
+            }
+        })
+    };
     frame.render_widget(block, area);
+    frame.render_widget(
+        Block::default().style(
+            Style::default()
+                .bg(palette(state).surface)
+                .fg(palette(state).text),
+        ),
+        area.inner(Margin::new(1, 1)),
+    );
     let (cover, metadata) = preview_regions(state, area);
     let Some(anime) = state.selected_anime() else {
         state.text_view = None;
@@ -764,7 +803,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     if !compact_details {
         push("", Style::default());
     }
-    push("Synopsis", accent(state));
+    push("Synopsis", Style::default().bold());
     if !compact_details && state.details {
         push("", Style::default());
     }
@@ -1295,6 +1334,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn wide_previews_prioritize_reading_and_keep_art_outside_selectable_text() {
+        let anime = Anime {
+            id: "series-1".into(),
+            title: "A series with a long title and a second season".into(),
+            info: "TV / 24m / SUB 24 / DUB 12".into(),
+            description: "A readable synopsis with room below the title.".into(),
+            ..Default::default()
+        };
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(0, Ok(vec![anime.clone()]));
+        state.focus = Focus::List;
+        state.history.push(crate::persistence::Entry {
+            anime,
+            episode: "1".into(),
+            mode: Mode::Sub,
+            watched_at: 1,
+        });
+        for screen in [Screen::Home, Screen::Search, Screen::History] {
+            state.screen = screen;
+            for (w, h) in [(120, 40), (180, 45)] {
+                let text = render_text(&mut state, w, h);
+                let area = Rect::new(0, 0, w, h);
+                let (list, preview) = panels(&state, area);
+                let cover = cover_area(&state, area);
+                let reading = state.text_view.as_ref().unwrap().area;
+                assert!(preview.width > list.width);
+                assert!(cover.width <= 20);
+                assert_eq!(cover.y, reading.y);
+                assert!(cover.right() < reading.x);
+                assert!((50..=72).contains(&reading.width));
+                assert!(text.contains("Synopsis"));
+                assert!(text.contains("Enter Episodes"));
+            }
+        }
+        state.screen = Screen::Search;
+        let text = render_text(&mut state, 78, 19);
+        assert!(text.contains("A readable synopsis"));
+        assert_eq!(cover_area(&state, Rect::new(0, 0, 78, 19)), Rect::default());
     }
 
     #[test]
