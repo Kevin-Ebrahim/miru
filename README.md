@@ -60,7 +60,8 @@ outside the terminal input loop.
 
 While typing a search, printable keys are text. The other single-letter shortcuts
 apply after leaving the input. F1, F5 and Ctrl+C also work while typing.
-The footer shows the actions available for the current focus.
+The footer shows the actions available for the current focus; F1 lists all
+shortcuts. Loading and error feedback stays with the affected view.
 
 Ranges follow the provider's episode order, including decimal specials. Examples:
 `1-3`, `1, 5, 8`, `1.5-3`, `0--1` (all), and `-1` (last). A range is validated

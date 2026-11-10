@@ -32,7 +32,11 @@ fn symbol<'a>(state: &State, unicode: &'a str, ascii: &'a str) -> &'a str {
 
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(if state.screen == Screen::Episodes && !state.details {
+            2
+        } else {
+            1
+        }),
         Constraint::Length(
             if !state.details && (state.screen == Screen::Search || state.focus == Focus::Range) {
                 3
@@ -48,7 +52,12 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 2
             },
         ),
-        Constraint::Length(if state.activity.is_some() { 2 } else { 0 }),
+        Constraint::Length(
+            state
+                .activity
+                .as_ref()
+                .map_or(0, |a| if a.message.is_empty() { 1 } else { 2 }),
+        ),
         Constraint::Length(2),
     ])
     .areas(area)
@@ -179,53 +188,36 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         return;
     }
     let [header, input, body, status, activity, footer] = sections(state, area);
-    let location = match state.screen {
-        Screen::Home => "Home",
-        Screen::Search => "Search",
-        Screen::History => "History",
-        Screen::Episodes => "Episodes",
-    };
-    let subtitle = if state.details {
-        "Series details / Esc back".into()
-    } else if state.screen == Screen::Episodes {
-        state
-            .anime
-            .as_ref()
-            .map(|a| a.title.clone())
-            .unwrap_or_default()
+    let location = if state.details {
+        "Details"
     } else {
         match state.screen {
-            Screen::Home => "Your watch shelf".into(),
-            Screen::Search => "Find your next series".into(),
-            _ => "Previously played / Enter opens episodes".into(),
+            Screen::Home => "Home",
+            Screen::Search => "Search",
+            Screen::History => "History",
+            Screen::Episodes => "Episodes",
         }
     };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(" ani / watch", accent(state)),
-                Span::raw(format!(
-                    "   {location}   {} / {}",
-                    state.mode.as_str().to_uppercase(),
-                    state.quality
-                )),
-            ]),
-            Line::raw(format!(" {subtitle}")),
-        ]),
-        header,
-    );
+    let mut heading = vec![Line::from(vec![
+        Span::styled(" ani / watch", accent(state)),
+        Span::raw(format!(
+            "   {location}   {} / {}",
+            state.mode.as_str().to_uppercase(),
+            state.quality
+        )),
+    ])];
+    if state.screen == Screen::Episodes
+        && !state.details
+        && let Some(anime) = &state.anime
+    {
+        heading.push(Line::raw(format!(" {}", anime.title)));
+    }
+    frame.render_widget(Paragraph::new(heading), header);
     if input.height > 0 {
         render_input(frame, state, input);
     }
     if state.welcome() && !state.details {
-        empty_art(
-            frame,
-            state,
-            body.inner(Margin::new(2, 1)),
-            "Your next story starts here",
-            "/ Search for your first series",
-            true,
-        );
+        empty_art(frame, state, body.inner(Margin::new(2, 1)), "", "", true);
     } else {
         let (list, preview) = panels(state, area);
         if list.width > 0 {
@@ -262,10 +254,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
 fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     let title = if state.focus == Focus::Range {
         " Mark episodes / 1-3, 5 "
-    } else if state.focus == Focus::Search {
-        " Search / typing "
     } else {
-        " Search / press / to edit "
+        " Search "
     };
     let block = panel(
         format!(
@@ -324,13 +314,19 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
     } else if state.focus == Focus::Search {
         vec![
             "Enter Results".into(),
-            "Esc Leave input".into(),
+            "Esc Done".into(),
             "Ctrl+E Exact".into(),
         ]
     } else if state.focus == Focus::Range {
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
     } else if state.request_error.is_some() {
-        vec!["F5 Retry".into(), "/ Edit search".into(), "Esc Back".into()]
+        vec!["F5 Retry".into(), "/ Search".into(), "Esc Back".into()]
+    } else if state.screen == Screen::Episodes && state.episodes.is_empty() {
+        let mut hints = vec!["Esc Back".into(), "i Details".into()];
+        if !state.loading {
+            hints.push("F5 Retry".into());
+        }
+        hints
     } else if state.screen == Screen::Episodes {
         let count = state.marked.len();
         let suffix = if count > 0 {
@@ -349,31 +345,55 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
     } else {
         let mut hints = vec![
             "Enter Episodes".into(),
-            "/ Search".into(),
+            if state.screen == Screen::Search {
+                "/ Edit"
+            } else {
+                "/ Search"
+            }
+            .into(),
             "i Details".into(),
         ];
-        if state.welcome() {
-            hints = vec!["/ Search".into()];
+        if state.selected_anime().is_none() {
+            hints = vec![
+                if state.screen == Screen::Search {
+                    "/ Edit"
+                } else {
+                    "/ Search"
+                }
+                .into(),
+            ];
         }
-        if state.screen == Screen::History {
+        if state.screen == Screen::History && !state.history.is_empty() {
             hints.push("Delete Remove".into());
         }
         hints
     };
     let mut global = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
-    if state.activity.is_some() {
-        global.insert(0, "x Stop / dismiss".into());
+    if let Some(activity) = &state.activity {
+        global.insert(
+            0,
+            if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
+                "x Dismiss"
+            } else {
+                "x Stop"
+            }
+            .into(),
+        );
     }
     // Printable shortcuts are text while editing.
     if matches!(state.focus, Focus::Search | Focus::Range) {
-        global = vec!["F1 Help".into(), "F5 Retry".into(), "Ctrl+C Quit".into()];
+        global = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
+        if state.request_error.is_some() {
+            global.insert(0, "F5 Retry".into());
+        }
     } else if !state.details {
-        global.extend([
-            "H Home".into(),
-            "h History".into(),
-            "D SUB/DUB".into(),
-            "Q Quality".into(),
-        ]);
+        if state.screen != Screen::Home {
+            global.push("H Home".into());
+        }
+        if state.screen != Screen::History && !state.history.is_empty() {
+            global.push("h History".into());
+        }
+        global.extend(["D SUB/DUB".into(), "Q Quality".into()]);
     }
     vec![
         fit_hints(&primary, width, state),
@@ -393,15 +413,18 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         Screen::History => ("History", state.history.len(), state.history_selected),
         Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
     };
-    let title = if state.marked.is_empty() || state.screen != Screen::Episodes {
-        format!(" {} {label} / {count} ", symbol(state, "≡", "#"))
+    let mut title = if state.marked.is_empty() || state.screen != Screen::Episodes {
+        format!(" {label} / {count} ")
     } else {
-        format!(
-            " {} {label} / {count} / {} marked ",
-            symbol(state, "≡", "#"),
-            state.marked.len()
-        )
+        format!(" {label} / {count} / {} marked ", state.marked.len())
     };
+    if state.loading && count > 0 {
+        title.push_str(if state.screen == Screen::Search {
+            "/ Searching... "
+        } else {
+            "/ Loading... "
+        });
+    }
     let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -417,8 +440,6 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 Line::styled(title, Style::default().fg(palette(state).error).bold()),
                 Line::raw(""),
                 Line::raw(error.clone()),
-                Line::raw(""),
-                Line::raw("F5 Retry / F1 Details"),
             ])
             .wrap(Wrap { trim: true }),
             inner,
@@ -428,23 +449,24 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     if count == 0 {
         let (title, hint) = if state.loading {
             if state.screen == Screen::Episodes {
-                ("Loading episodes...", "You can browse while this loads.")
+                ("Loading episodes...", "")
             } else {
-                ("Searching...", "You can keep typing.")
+                ("Searching...", "")
             }
         } else if state.screen == Screen::History {
-            (
-                "No recently played series",
-                "/ Search for your first series",
-            )
+            ("No history", "")
         } else if state.screen == Screen::Episodes {
-            ("No episodes available", "F5 Refresh / Esc Back")
+            ("No episodes", "")
         } else if state.query.text.trim().is_empty() {
-            ("Search the catalogue", "Type an anime title above.")
+            ("Enter a title", "")
         } else {
             (
-                "No matching series",
-                "Edit your search or toggle exact matching with Ctrl+E.",
+                "No matches",
+                if state.exact {
+                    "Ctrl+E Turn off exact match"
+                } else {
+                    "Try another title"
+                },
             )
         };
         empty_art(frame, state, inner, title, hint, false);
@@ -460,8 +482,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                     Line::styled(entry.anime.title.clone(), Style::default().bold()),
                     Line::styled(
                         format!(
-                            "{} Last played: {} / {}",
-                            symbol(state, "↳", ">"),
+                            "Last played: Ep {} / {}",
                             entry.episode,
                             entry.mode.as_str().to_uppercase()
                         ),
@@ -520,12 +541,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
 
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
     let block = panel(
-        if state.details {
-            " Series details / Esc back "
-        } else {
-            " Selected series "
-        }
-        .into(),
+        if state.details { "" } else { " Series " }.into(),
         state,
         state.details,
     );
@@ -537,7 +553,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             state,
             area.inner(Margin::new(2, 1)),
             "Choose a series",
-            "Its cover and details will appear here.",
+            "",
             false,
         );
         return;
@@ -563,7 +579,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         } else if anime.cover.is_some() {
             "Loading cover..."
         } else {
-            "No cover available"
+            "No cover"
         };
         empty_art(frame, state, cover, label, "", false);
     }
@@ -587,18 +603,20 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             .iter()
             .find(|e| e.anime.id == anime.id && e.mode == state.mode),
     };
-    if let Some(entry) = entry {
+    if let Some(entry) = entry
+        && (state.details || !matches!(state.screen, Screen::Home | Screen::History))
+    {
         push(
             &format!(
-                "{} Last played: episode {} / {}",
-                symbol(state, "↳", ">"),
+                "Last played: Ep {} / {}",
                 entry.episode,
                 entry.mode.as_str().to_uppercase()
             ),
             muted(state),
         );
     }
-    if state.screen == Screen::Episodes
+    if state.details
+        && state.screen == Screen::Episodes
         && let Some(ep) = state.episodes.get(state.episode_selected)
     {
         push("", Style::default());
@@ -617,7 +635,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     };
     push(
         if description.is_empty() {
-            "No synopsis available."
+            "No synopsis"
         } else {
             description
         },
@@ -628,29 +646,23 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             Some(Synopsis::Loading) => {
                 push("", Style::default());
                 push(
-                    "Loading full synopsis...",
+                    "Loading synopsis...",
                     Style::default().fg(palette(state).pending),
                 );
             }
             Some(Synopsis::Failed(_)) => {
                 push("", Style::default());
                 push(
-                    "! Full synopsis unavailable / F5 Retry",
+                    "! Synopsis unavailable / F5 Retry",
                     Style::default().fg(palette(state).error),
                 );
             }
             _ => {}
         }
     }
-    let reading = Rect::new(
-        metadata.x,
-        metadata.y,
-        metadata.width,
-        metadata.height.saturating_sub(1),
-    );
     let max_scroll = details
         .len()
-        .saturating_sub(reading.height as usize)
+        .saturating_sub(metadata.height as usize)
         .min(u16::MAX as usize) as u16;
     if state.details {
         state.details_scroll = state.details_scroll.min(max_scroll);
@@ -660,25 +672,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     } else {
         0
     };
-    frame.render_widget(Paragraph::new(details).scroll((scroll, 0)), reading);
-    if metadata.height > 0 {
-        let hint = if state.details && max_scroll > 0 {
-            format!(
-                "{} Scroll / {}/{}",
-                symbol(state, "↑↓", "Up/Down"),
-                usize::from(scroll) + 1,
-                usize::from(max_scroll) + 1
-            )
-        } else if !state.details {
-            "i Full synopsis / details".into()
-        } else {
-            "Esc Back".into()
-        };
-        frame.render_widget(
-            Paragraph::new(hint).style(muted(state)),
-            Rect::new(metadata.x, metadata.bottom() - 1, metadata.width, 1),
-        );
-    }
+    frame.render_widget(Paragraph::new(details).scroll((scroll, 0)), metadata);
 }
 
 fn wrap_prose(text: &str, width: usize) -> Vec<String> {
@@ -759,7 +753,7 @@ fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text = "ANI / WATCH\n\nH                 Home / recently played\n/                 Search the catalogue\nh                 Full watch history\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\ni                 Full cover and series details\nCtrl+E            Toggle exact title matching\nD / Q             Language / quality for a new queue\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss the active job\nF5 or R           Retry request and cover\nDelete            Remove an entry in History\nEsc               Leave input / return to previous screen\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop owned jobs\n\nWhile typing, printable shortcuts are text.\nBrowsing leaves playback and downloads running.\nA queue keeps its series, language and quality.\nHistory records launches, not completion or position.\nUse --no-animation for a still welcome scene.\nUse --images off or --ascii for simpler rendering.";
+    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
     let job = state
         .activity
         .as_ref()
@@ -779,11 +773,15 @@ fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
         })
         .map(|message| format!("\n\nSynopsis: {message}"))
         .unwrap_or_default();
+    let status = if state.status.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nStatus: {}", state.status)
+    };
     let cover = art.error.as_deref().unwrap_or(&art.label);
     frame.render_widget(
         Paragraph::new(format!(
-            "{text}\n\nCurrent status:\n{}{job}\n\nCovers: {cover}{synopsis_error}",
-            state.status
+            "{text}{status}{job}\n\nCovers: {cover}{synopsis_error}"
         ))
         .wrap(Wrap { trim: false })
         .scroll((state.help_scroll, 0)),
@@ -798,17 +796,16 @@ fn empty_art(
     hint: &str,
     show_scene: bool,
 ) {
-    let lines = vec![
-        Line::styled(title, accent(state)),
-        Line::styled(hint, muted(state)),
-    ];
-    let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
-    // These short captions need at most two rows each in a scene-sized panel.
-    // Reserve an extra row for each wrapped line without an unstable Ratatui API.
-    let caption_height = (2
+    let lines: Vec<_> = [(title, accent(state)), (hint, muted(state))]
+        .into_iter()
+        .filter(|(text, _)| !text.is_empty())
+        .map(|(text, style)| Line::styled(text, style))
+        .collect();
+    let caption_height = (lines.len() as u16
         + u16::from(title.width() > usize::from(area.width))
         + u16::from(hint.width() > usize::from(area.width)))
     .min(area.height);
+    let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
     let art_height = area.height.saturating_sub(caption_height + 1).min(24);
     let (min_width, min_height) = if state.ascii || state.colorless {
         (40, 10)
@@ -946,7 +943,7 @@ mod tests {
         assert!(text.contains("F5 Retry"));
         assert!(text.contains("Enter Results"));
         assert!(!text.contains("? Help"));
-        assert!(!text.contains("No matching series"));
+        assert!(!text.contains("No matches"));
         assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
     }
 
@@ -965,8 +962,8 @@ mod tests {
         });
         let text = render_text(&mut state, 120, 40);
         assert!(text.contains("Recently played"));
-        assert!(text.contains("Selected series"));
-        assert!(text.contains("No cover available") || text.contains("Covers disabled"));
+        assert!(text.contains("Series"));
+        assert!(text.contains("No cover") || text.contains("Covers disabled"));
         assert!(!text.contains("Your next story starts here"));
         state.screen = Screen::Episodes;
         state.episodes = (1..=100)

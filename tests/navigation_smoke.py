@@ -167,7 +167,8 @@ while not (root / str(os.getpid())).exists():
         try:
             pump(0.5)
             send(b"i")
-            wait_for(lambda: b"A complete synopsis beyond" in output)
+            # Cursor moves may split the sentence when only changed cells are drawn.
+            wait_for(lambda: b"snippet." in output)
             send(b"\x1b")
             send(b"i")
             assert requests.count("/original-1") == 1, "Reopening details should reuse the full synopsis"

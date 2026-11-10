@@ -296,12 +296,7 @@ impl State {
         self.loading = !self.query.text.trim().is_empty();
         self.error = false;
         self.request_error = None;
-        self.status = if self.loading {
-            "Searching after you pause..."
-        } else {
-            "Type a title to begin."
-        }
-        .into();
+        self.status.clear();
         if !self.loading {
             self.results.clear();
         }
@@ -326,11 +321,7 @@ impl State {
                     .unwrap_or(0);
                 self.error = false;
                 self.request_error = None;
-                self.status = if self.visible().is_empty() {
-                    "No matches. Try another title or turn off exact matching (Ctrl+E).".into()
-                } else {
-                    "Choose a series to browse episodes.".into()
-                };
+                self.status.clear();
             }
             Err(err) => {
                 self.error = true;
@@ -475,7 +466,7 @@ impl App {
         }
         self.state.loading = true;
         self.state.request_error = None;
-        self.state.message("Searching the catalogue...", false);
+        self.state.message("", false);
         let generation = self.state.search_generation;
         let query = self.state.query.text.clone();
         let provider = self.provider.clone();
@@ -636,13 +627,7 @@ impl App {
         if let Some(entry) = self.continuation.take() {
             if let Some(i) = crate::persistence::next_episode(&entry, &self.state.episodes) {
                 self.state.episode_selected = i;
-                self.state.message(
-                    format!(
-                        "Next episode: {}. Enter to play.",
-                        self.state.episodes[i].number
-                    ),
-                    false,
-                );
+                self.state.message("", false);
             } else {
                 self.state.episode_selected = self
                     .state
@@ -666,7 +651,7 @@ impl App {
         self.state.episode_generation += 1;
         self.state.loading = true;
         self.state.request_error = None;
-        self.state.message("Loading episodes...", false);
+        self.state.message("", false);
         let generation = self.state.episode_generation;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
@@ -759,8 +744,7 @@ impl App {
 
     fn navigate_play(&mut self, index: usize) {
         if index >= self.state.episodes.len() {
-            self.state
-                .message("There are no more episodes in this direction.", false);
+            self.state.message("No more episodes.", false);
             return;
         }
         self.state.episode_selected = index;
@@ -774,7 +758,7 @@ impl App {
         let episode = activity.episodes[index].clone();
         activity.index = index;
         activity.phase = JobPhase::Resolving;
-        activity.message = "Finding a stream...".into();
+        activity.message.clear();
         self.job += 1;
         abort(&mut self.play_task);
         let job = self.job;
@@ -892,7 +876,7 @@ impl App {
                     let dir = self.options.download_dir.clone();
                     let tx = self.tx.clone();
                     activity.phase = JobPhase::Running;
-                    activity.message = "Downloading...".into();
+                    activity.message.clear();
                     self.play_task = Some(tokio::spawn(async move {
                         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
                         let task = crate::download::download(
@@ -1066,13 +1050,7 @@ impl App {
                         Ok(indices) => {
                             self.state.marked = indices.into_iter().collect();
                             self.state.focus = Focus::List;
-                            self.state.message(
-                                format!(
-                                    "{} episodes marked / Enter play / d download",
-                                    self.state.marked.len()
-                                ),
-                                false,
-                            );
+                            self.state.message("", false);
                         }
                         Err(err) => self.state.message(err.to_string(), true),
                     }
@@ -1138,13 +1116,7 @@ impl App {
                 if !self.state.marked.remove(&i) && i < self.state.episodes.len() {
                     self.state.marked.insert(i);
                 }
-                self.state.message(
-                    format!(
-                        "{} marked / Enter play / d download / : range",
-                        self.state.marked.len()
-                    ),
-                    false,
-                );
+                self.state.message("", false);
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
                 self.start_selection(true)
@@ -1153,10 +1125,11 @@ impl App {
                 self.state.mode.toggle();
                 self.settings();
                 self.state.message(
-                    format!(
-                        "{} selected for your next play or download selection.",
-                        self.state.mode.as_str().to_uppercase()
-                    ),
+                    if self.state.activity.as_ref().is_some_and(Activity::active) {
+                        "Language applies to the next queue."
+                    } else {
+                        ""
+                    },
                     false,
                 );
             }
@@ -1169,7 +1142,11 @@ impl App {
                 self.state.quality = choices[(index + 1) % choices.len()].into();
                 self.settings();
                 self.state.message(
-                    "Quality applies to your next play or download selection.",
+                    if self.state.activity.as_ref().is_some_and(Activity::active) {
+                        "Quality applies to the next queue."
+                    } else {
+                        ""
+                    },
                     false,
                 );
             }
@@ -1187,9 +1164,10 @@ impl App {
             }
             KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
             KeyCode::Char('x') => {
+                let active = self.state.activity.as_ref().is_some_and(Activity::active);
                 self.stop();
                 self.state
-                    .message("Playback / download queue stopped.", false);
+                    .message(if active { "Queue stopped." } else { "" }, false);
             }
             KeyCode::Char('n') if self.state.screen == Screen::Episodes => self.navigate_play(
                 self.state
@@ -1206,7 +1184,7 @@ impl App {
                 {
                     self.navigate_play(i);
                 } else {
-                    self.state.message("Already at the first episode.", false);
+                    self.state.message("First episode.", false);
                 }
             }
             KeyCode::Char('r') if self.state.screen == Screen::Episodes => self.navigate_play(
