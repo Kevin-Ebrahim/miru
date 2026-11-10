@@ -51,10 +51,10 @@ def check(binary, exit_method, animate=False):
             pump(0.25)
             assert process.poll() is None, bytes(output)
             for _ in range(20):
-                if b"imagination" in output:
+                if b"Your next story starts here" in output:
                     break
                 pump(0.1)
-            assert b"imagination" in output, "Welcome scene did not draw"
+            assert b"Your next story starts here" in output, "Welcome scene did not draw"
             pump(0.2)
             drawn = len(output)
             pump(0.4)

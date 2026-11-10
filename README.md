@@ -18,15 +18,25 @@ cargo build --release --locked
 ./target/release/ani-watch --continue
 ```
 
-Type a title, press Enter to focus the results, then Enter to browse episodes.
-Enter on an episode launches the player. Network requests, cover downloads,
-image decoding, and image encoding run outside the terminal input loop.
+The app opens on **Home**, showing your eight most recently played series and
+the highlighted anime's cover. Enter opens its episodes with the next episode
+selected; Enter again plays it. History records launches, not completed viewing.
+
+Press `/` to search. Type a title, press Enter to focus the results, then Enter
+to browse episodes. `H` returns Home, `h` opens full history, and Esc retraces
+your navigation, preserving queries, selections and scroll positions. `i` opens
+full cover/details, including in compact terminals. Browsing leaves playback
+and downloads running; `x` stops the current job or dismisses its result.
+Network requests, cover downloads, image decoding, and image encoding run
+outside the terminal input loop.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| `/` | Edit the search |
+| `H` | Open Home / recently played |
+| `/` | Open or edit catalogue search |
+| `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
 | Enter | Focus results / browse series / play episode(s) |
 | ↑ ↓ or `j` `k` | Navigate |
 | Page Up / Page Down | Move ten items |
@@ -39,22 +49,24 @@ image decoding, and image encoding run outside the terminal input loop.
 | `:` in episodes | Enter a range; Enter marks it |
 | `d` in episodes | Download marked episodes, or the highlighted episode |
 | `n` / `p` / `r` | Next / previous / replay |
-| `x` | Stop the owned player or cancel the download queue |
-| `R` | Retry the current view and artwork |
+| `x` | Stop the owned player/download queue, or dismiss its result |
+| F5 or `R` | Retry the current view and artwork; F5 also works while typing |
 | Delete in history | Remove the highlighted history entry |
 | `?` or F1 | Help; ↑/↓ scroll the guide |
-| Esc | Leave input / return to results / close help |
+| Esc | Leave input / return to the previous screen / close help or details |
 | `q` outside text input, or Ctrl+C anywhere | Quit and stop owned jobs |
 
 While typing a search, printable keys are text. The other single-letter shortcuts
-apply after leaving the input. F1 and Ctrl+C also work while typing.
+apply after leaving the input. F1, F5 and Ctrl+C also work while typing.
+The footer shows the actions available for the current focus.
 
 Ranges follow the provider's episode order, including decimal specials. Examples:
 `1-3`, `1, 5, 8`, `1.5-3`, `0--1` (all), and `-1` (last). A range is validated
 in full before anything launches. Queued playback waits for each player to exit.
-Language and quality changes apply to the next launch; an already-resolving job
-keeps the choices it started with. Missing resolutions fall back to best with a
-notice. SUB and DUB history are tracked separately.
+Each queue keeps its selected series, episodes, language and quality while you
+browse elsewhere. Language and quality changes apply to your next play/download
+selection; they do not change an existing queue. Missing resolutions fall back to
+best with a notice. SUB and DUB history are tracked separately.
 
 ## Script-friendly operations
 
@@ -109,16 +121,27 @@ codes to identify the image. If your launcher exports it unintentionally, use
 interface borders and indicators; it does not transliterate anime titles.
 
 Interface colors come from the terminal palette, with its default foreground/background.
-Wide layouts show results and a large, aspect-preserving, centered cover. Below
-88 columns, sufficiently tall terminals stack the cover below results; compact
-terminals prioritize navigation. Below 32 × 12 the app displays a resize hint.
-Help remains scrollable. Empty views and missing covers show
+Home and Search show a list on the left and the selected anime's aspect-preserving
+cover, title and details on the right. Episodes use a wider list and a smaller
+cover, without a persistent search field. A separate activity strip shows the
+current playback/download job and its outcome across screens. Selected episodes
+and marked batches have distinct indicators.
+
+At 72 columns and above, sufficiently tall terminals show both panels. Narrow,
+tall terminals stack them; shorter terminals prioritize the list, with the full
+preview available through `i`. Below 32 × 12 the app displays a resize hint.
+Help and full series details are scrollable. Provider failures have their own
+retry state, separate from a successful search with no matches. Failed or missing
+covers leave the selected title and details visible with a quiet placeholder.
+
+An empty Home welcomes you with
 [Kyoto Dusk from ascii.rest](https://ascii.rest/kyoto-dusk/): a cherry tree, a
 five-storey pagoda, a crescent moon, and a glowing stone lantern reflected in a
-pond. Coloured Unicode dots preserve the scene's dusk palette and shading as it
-scales to the panel. `--ascii` uses ASCII shading instead; `NO_COLOR` uses
-monochrome ASCII shading. `--no-animation` holds a still frame. Very small panels
-show just the status text.
+pond. The scene belongs only to this welcome state; it never substitutes for an
+anime cover, search error or loading result. Coloured Unicode dots preserve its
+dusk palette and shading as it scales. `--ascii` uses ASCII shading; `NO_COLOR`
+uses monochrome ASCII shading. `--no-animation` holds a still frame. Very small
+panels show only the search prompt.
 
 The animation is bundled and plays natively in Rust, without network access or
 a JavaScript runtime. Its MIT-licensed source and licence are in
@@ -172,6 +195,7 @@ cargo test --locked
 cargo build --locked
 python tests/smoke.py
 python tests/terminal_smoke.py
+python tests/navigation_smoke.py
 ```
 
 Unit tests cover HTML parsing, embed decoding, HLS relative URLs/audio/quality,
@@ -182,6 +206,10 @@ and ffmpeg, validates audio/video/subtitle tracks, checks history, and checks th
 an existing download is preserved. It needs Python, mpv, ffmpeg and ffprobe.
 `tests/terminal_smoke.py` emulates cursor replies in a PTY and checks resizing and
 terminal restoration for q, Ctrl+C, SIGTERM and SIGHUP. It is not a graphics test.
+`tests/navigation_smoke.py` uses a local provider, controllable player process and
+generated one-second clip (requires ffmpeg) to verify Home continuation, navigation
+during resolution/playback/downloads, queue ownership across series, correct
+history, fixed queue language, and explicit stop.
 
 Implementation references: [Ratatui](https://ratatui.rs/),
 [ratatui-image](https://docs.rs/ratatui-image/11.1.0/ratatui_image/),

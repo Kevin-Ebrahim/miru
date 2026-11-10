@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
+    Home,
     Search,
     Episodes,
     History,
@@ -31,7 +32,39 @@ pub enum Focus {
     Range,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobKind {
+    Playback,
+    Download,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobPhase {
+    Resolving,
+    Running,
+    Finished,
+    Failed,
+}
+
+pub struct Activity {
+    pub anime: Anime,
+    pub episodes: Vec<Episode>,
+    pub index: usize,
+    pub remaining: VecDeque<usize>,
+    pub mode: Mode,
+    pub quality: String,
+    pub kind: JobKind,
+    pub phase: JobPhase,
+    pub message: String,
+}
+
+impl Activity {
+    pub fn active(&self) -> bool {
+        matches!(self.phase, JobPhase::Resolving | JobPhase::Running)
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct Input {
     pub text: String,
     pub cursor: usize,
@@ -114,9 +147,10 @@ pub struct State {
     pub results_query: String,
     pub history: Vec<crate::persistence::Entry>,
     pub history_selected: usize,
+    pub home_selected: usize,
+    pub list_offsets: [usize; 4],
     pub range: Input,
     pub marked: BTreeSet<usize>,
-    pub downloading: bool,
     pub art_revision: u64,
     pub selected: usize,
     pub anime: Option<Anime>,
@@ -130,14 +164,16 @@ pub struct State {
     pub loading: bool,
     pub status: String,
     pub error: bool,
+    pub request_error: Option<String>,
+    pub details: bool,
+    pub details_scroll: u16,
     pub help: bool,
     pub help_scroll: u16,
     pub frame: usize,
     pub ascii: bool,
     pub colorless: bool,
     pub animate: bool,
-    pub playing: Option<usize>,
-    pub busy: bool,
+    pub activity: Option<Activity>,
 }
 
 impl State {
@@ -150,18 +186,28 @@ impl State {
         animate: bool,
     ) -> Self {
         let mut input = Input::default();
+        let searching = !query.is_empty();
         input.set(query);
         Self {
-            screen: Screen::Search,
-            focus: Focus::Search,
+            screen: if searching {
+                Screen::Search
+            } else {
+                Screen::Home
+            },
+            focus: if searching {
+                Focus::Search
+            } else {
+                Focus::List
+            },
             query: input,
             results: vec![],
             results_query: String::new(),
             history: vec![],
             history_selected: 0,
+            home_selected: 0,
+            list_offsets: [0; 4],
             range: Input::default(),
             marked: BTreeSet::new(),
-            downloading: false,
             art_revision: 0,
             selected: 0,
             anime: None,
@@ -173,16 +219,18 @@ impl State {
             search_generation: 0,
             episode_generation: 0,
             loading: false,
-            status: "Find your next story. Type a title to begin.".into(),
+            status: String::new(),
             error: false,
+            request_error: None,
+            details: false,
+            details_scroll: 0,
             help: false,
             help_scroll: 0,
             frame: 0,
             ascii,
             colorless: false,
             animate,
-            playing: None,
-            busy: false,
+            activity: None,
         }
     }
 
@@ -205,6 +253,8 @@ impl State {
 
     pub fn selected_anime(&self) -> Option<&Anime> {
         match self.screen {
+            Screen::Home => self.history.get(self.home_selected).map(|e| &e.anime),
+            Screen::Search if self.request_error.is_some() => None,
             Screen::Search => self
                 .visible()
                 .get(self.selected)
@@ -214,11 +264,26 @@ impl State {
         }
     }
 
+    pub fn current_episode_index(&self) -> Option<usize> {
+        let activity = self.activity.as_ref()?;
+        if activity.kind != JobKind::Playback || self.anime.as_ref()?.id != activity.anime.id {
+            return None;
+        }
+        let episode = &activity.episodes[activity.index];
+        self.episodes.iter().position(|e| e.id == episode.id)
+    }
+
+    pub fn welcome(&self) -> bool {
+        self.screen == Screen::Home && self.history.is_empty()
+    }
+
     pub fn invalidate_search(&mut self) {
         self.search_generation += 1;
         self.selected = 0;
+        self.list_offsets[Screen::Search as usize] = 0;
         self.loading = !self.query.text.trim().is_empty();
         self.error = false;
+        self.request_error = None;
         self.status = if self.loading {
             "Searching after you pause..."
         } else {
@@ -248,6 +313,7 @@ impl State {
                     })
                     .unwrap_or(0);
                 self.error = false;
+                self.request_error = None;
                 self.status = if self.visible().is_empty() {
                     "No matches. Try another title or turn off exact matching (Ctrl+E).".into()
                 } else {
@@ -257,6 +323,7 @@ impl State {
             Err(err) => {
                 self.error = true;
                 self.status = format!("{err:#}");
+                self.request_error = Some(self.status.clone());
             }
         }
         true
@@ -271,7 +338,7 @@ impl State {
 enum Message {
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
-    Resolved(u64, usize, Result<Stream>),
+    Resolved(u64, Result<Stream>),
     Finished(u64, Result<()>),
     Downloaded(u64, Result<PathBuf>),
     Progress(u64, String),
@@ -287,6 +354,30 @@ pub struct Options {
     pub download_dir: PathBuf,
 }
 
+enum Visit {
+    Home,
+    History,
+    Search {
+        query: Input,
+        results: Vec<Anime>,
+        results_query: String,
+        selected: usize,
+        offset: usize,
+        exact: bool,
+    },
+    Episodes(Box<EpisodeVisit>),
+}
+
+struct EpisodeVisit {
+    anime: Option<Anime>,
+    episodes: Vec<Episode>,
+    selected: usize,
+    offset: usize,
+    marked: BTreeSet<usize>,
+    mode: Mode,
+    continuation: Option<crate::persistence::Entry>,
+}
+
 pub struct App {
     pub state: State,
     provider: Provider,
@@ -298,10 +389,8 @@ pub struct App {
     play_task: Option<JoinHandle<()>>,
     search_due: Option<Instant>,
     job: u64,
-    job_mode: Mode,
-    job_quality: String,
     quit: bool,
-    queue: VecDeque<usize>,
+    back_stack: Vec<Visit>,
     continuation: Option<crate::persistence::Entry>,
     save_tx: Option<mpsc::UnboundedSender<crate::persistence::Change>>,
     save_task: Option<JoinHandle<()>>,
@@ -353,10 +442,8 @@ impl App {
             play_task: None,
             search_due,
             job: 0,
-            job_mode: Mode::Sub,
-            job_quality: "best".into(),
             quit: false,
-            queue: VecDeque::new(),
+            back_stack: vec![],
             continuation: None,
             save_tx: Some(save_tx),
             save_task: Some(save_task),
@@ -370,6 +457,7 @@ impl App {
             return;
         }
         self.state.loading = true;
+        self.state.request_error = None;
         self.state.message("Searching the catalogue...", false);
         let generation = self.state.search_generation;
         let query = self.state.query.text.clone();
@@ -394,48 +482,174 @@ impl App {
         });
     }
 
-    fn history(&mut self) {
-        self.stop();
+    fn navigate(&mut self, screen: Screen) {
+        if self.state.screen != screen {
+            self.back_stack.push(match self.state.screen {
+                Screen::Home => Visit::Home,
+                Screen::History => Visit::History,
+                Screen::Search => Visit::Search {
+                    query: self.state.query.clone(),
+                    results: self.state.results.clone(),
+                    results_query: self.state.results_query.clone(),
+                    selected: self.state.selected,
+                    offset: self.state.list_offsets[Screen::Search as usize],
+                    exact: self.state.exact,
+                },
+                Screen::Episodes => Visit::Episodes(Box::new(EpisodeVisit {
+                    anime: self.state.anime.clone(),
+                    episodes: self.state.episodes.clone(),
+                    selected: self.state.episode_selected,
+                    offset: self.state.list_offsets[Screen::Episodes as usize],
+                    marked: self.state.marked.clone(),
+                    mode: self.state.mode,
+                    continuation: self.continuation.clone(),
+                })),
+            });
+        }
+        self.show(screen);
+    }
+
+    fn show(&mut self, screen: Screen) {
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
         self.state.search_generation += 1;
         self.state.episode_generation += 1;
-        self.state.screen = Screen::History;
+        self.state.screen = screen;
         self.state.focus = Focus::List;
+        self.state.details = false;
         self.state.loading = false;
-        self.state.message(
-            "Enter continues a series. Delete removes the selected history entry. / searches.",
-            false,
-        );
+        self.state.request_error = None;
+        self.state.message("", false);
+        if screen == Screen::Search
+            && !self.state.query.text.trim().is_empty()
+            && self.state.results_query != self.state.query.text
+        {
+            self.search();
+        } else if screen == Screen::Episodes && self.state.episodes.is_empty() {
+            self.load_episodes();
+        }
+    }
+
+    fn home(&mut self) {
+        self.back_stack.clear();
+        self.show(Screen::Home);
+    }
+
+    fn back(&mut self) {
+        let screen = match self.back_stack.pop().unwrap_or(Visit::Home) {
+            Visit::Home => Screen::Home,
+            Visit::History => Screen::History,
+            Visit::Search {
+                query,
+                results,
+                results_query,
+                selected,
+                offset,
+                exact,
+            } => {
+                self.state.query = query;
+                self.state.results = results;
+                self.state.results_query = results_query;
+                self.state.selected = selected;
+                self.state.list_offsets[Screen::Search as usize] = offset;
+                self.state.exact = exact;
+                Screen::Search
+            }
+            Visit::Episodes(visit) => {
+                let EpisodeVisit {
+                    anime,
+                    episodes,
+                    selected,
+                    offset,
+                    marked,
+                    mode,
+                    continuation,
+                } = *visit;
+                self.state.anime = anime;
+                self.state.episodes = episodes;
+                self.state.episode_selected = selected;
+                self.state.list_offsets[Screen::Episodes as usize] = offset;
+                self.state.marked = marked;
+                self.state.mode = mode;
+                self.continuation = continuation;
+                Screen::Episodes
+            }
+        };
+        self.show(screen);
+    }
+
+    fn history(&mut self) {
+        self.navigate(Screen::History);
     }
 
     fn open(&mut self) {
         let Some(anime) = self.state.selected_anime().cloned() else {
             return;
         };
-        self.stop();
-        self.continuation = if self.state.screen == Screen::History {
-            self.state.history.get(self.state.history_selected).cloned()
-        } else {
-            None
-        };
-        if let Some(entry) = &self.continuation {
+        let entry = match self.state.screen {
+            Screen::Home => self.state.history.get(self.state.home_selected),
+            Screen::History => self.state.history.get(self.state.history_selected),
+            _ => None,
+        }
+        .cloned();
+        if let Some(entry) = &entry {
             self.state.mode = entry.mode;
         }
-        abort(&mut self.search_task);
-        self.search_due = None;
-        self.state.search_generation += 1;
-        self.state.marked.clear();
-        self.state.anime = Some(anime.clone());
-        self.state.screen = Screen::Episodes;
-        self.state.focus = Focus::List;
-        self.state.episodes.clear();
-        self.state.episode_selected = 0;
+        let same_series = self.state.anime.as_ref().is_some_and(|a| a.id == anime.id);
+        if !same_series {
+            self.state.marked.clear();
+            self.state.episodes.clear();
+            self.state.episode_selected = 0;
+            self.state.list_offsets[Screen::Episodes as usize] = 0;
+        }
+        self.state.anime = Some(anime);
+        self.continuation = entry;
+        self.navigate(Screen::Episodes);
+        if !self.state.episodes.is_empty() {
+            self.select_continuation();
+        }
+    }
+
+    fn select_continuation(&mut self) {
+        if self.state.episodes.is_empty() {
+            self.continuation = None;
+            return;
+        }
+        if let Some(entry) = self.continuation.take() {
+            if let Some(i) = crate::persistence::next_episode(&entry, &self.state.episodes) {
+                self.state.episode_selected = i;
+                self.state.message(
+                    format!(
+                        "Next episode: {}. Enter to play.",
+                        self.state.episodes[i].number
+                    ),
+                    false,
+                );
+            } else {
+                self.state.episode_selected = self
+                    .state
+                    .episodes
+                    .iter()
+                    .position(|e| e.number == entry.episode)
+                    .unwrap_or(0);
+                self.state.message(
+                    "No newer episode. Enter replays the last played episode.",
+                    false,
+                );
+            }
+        }
+    }
+
+    fn load_episodes(&mut self) {
+        let Some(anime) = self.state.anime.clone() else {
+            return;
+        };
+        abort(&mut self.episode_task);
         self.state.episode_generation += 1;
         self.state.loading = true;
+        self.state.request_error = None;
         self.state.message("Loading episodes...", false);
-        abort(&mut self.episode_task);
         let generation = self.state.episode_generation;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
@@ -445,63 +659,108 @@ impl App {
         }));
     }
 
-    fn stop(&mut self) {
-        self.queue.clear();
-        self.job += 1;
-        abort(&mut self.play_task);
-        self.state.busy = false;
-        self.state.playing = None;
-    }
-
-    fn start_selection(&mut self, download: bool) {
-        let indices = if self.state.marked.is_empty() {
-            vec![self.state.episode_selected]
-        } else {
-            self.state.marked.iter().copied().collect()
-        };
-        self.stop();
-        self.state.downloading = download;
-        self.queue = indices.into();
-        if let Some(index) = self.queue.pop_front() {
-            self.play(index);
+    fn retry(&mut self) {
+        self.state.art_revision += 1;
+        match self.state.screen {
+            Screen::Search => self.search(),
+            Screen::Episodes => self.load_episodes(),
+            _ => {}
         }
     }
 
-    fn navigate_play(&mut self, index: usize) {
+    fn stop(&mut self) {
+        self.job += 1;
+        abort(&mut self.play_task);
+        self.state.activity = None;
+    }
+
+    fn start_selection(&mut self, download: bool) {
+        let indices: VecDeque<_> = if self.state.marked.is_empty() {
+            [self.state.episode_selected].into()
+        } else {
+            self.state.marked.iter().copied().collect()
+        };
+        self.start(indices, download);
+    }
+
+    fn start(&mut self, mut indices: VecDeque<usize>, download: bool) {
+        let Some(anime) = self.state.anime.clone() else {
+            return;
+        };
+        let Some(index) = indices
+            .pop_front()
+            .filter(|i| *i < self.state.episodes.len())
+        else {
+            return;
+        };
         self.stop();
-        self.state.downloading = false;
+        self.state.activity = Some(Activity {
+            anime,
+            episodes: self.state.episodes.clone(),
+            index,
+            remaining: indices,
+            mode: self.state.mode,
+            quality: self.state.quality.clone(),
+            kind: if download {
+                JobKind::Download
+            } else {
+                JobKind::Playback
+            },
+            phase: JobPhase::Resolving,
+            message: String::new(),
+        });
         self.play(index);
     }
 
-    fn play(&mut self, index: usize) {
-        let Some(episode) = self.state.episodes.get(index).cloned() else {
+    fn navigate_play(&mut self, index: usize) {
+        if index >= self.state.episodes.len() {
             self.state
                 .message("There are no more episodes in this direction.", false);
             return;
+        }
+        self.state.episode_selected = index;
+        self.start([index].into(), false);
+    }
+
+    fn play(&mut self, index: usize) {
+        let Some(activity) = self.state.activity.as_mut() else {
+            return;
         };
+        let episode = activity.episodes[index].clone();
+        activity.index = index;
+        activity.phase = JobPhase::Resolving;
+        activity.message = "Finding a stream...".into();
         self.job += 1;
         abort(&mut self.play_task);
-        self.state.playing = None;
-        self.state.busy = true;
-        self.state.episode_selected = index;
-        self.state.message(
-            format!(
-                "Resolving episode {} / {}...",
-                episode.number,
-                self.state.mode.as_str().to_uppercase()
-            ),
-            false,
-        );
         let job = self.job;
-        self.job_mode = self.state.mode;
-        self.job_quality = self.state.quality.clone();
-        let mode = self.job_mode;
+        let mode = activity.mode;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
         self.play_task = Some(tokio::spawn(async move {
             let result = provider.resolve(&episode, mode).await;
-            let _ = tx.send(Message::Resolved(job, index, result));
+            let _ = tx.send(Message::Resolved(job, result));
         }));
+    }
+
+    fn finish(&mut self, result: Result<()>, success: String) {
+        let Some(activity) = self.state.activity.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                if let Some(index) = activity.remaining.pop_front() {
+                    self.play(index);
+                } else {
+                    activity.phase = JobPhase::Finished;
+                    activity.message = success;
+                }
+            }
+            Err(err) => {
+                activity.remaining.clear();
+                activity.phase = JobPhase::Failed;
+                activity.message = format!("{err:#}");
+            }
+        }
     }
 
     fn message(&mut self, message: Message) {
@@ -516,187 +775,170 @@ impl App {
                 self.state.loading = false;
                 match result {
                     Ok(episodes) => {
+                        // Refreshes preserve marks by episode identity, not the old row number.
+                        let marked: Vec<_> = self
+                            .state
+                            .marked
+                            .iter()
+                            .filter_map(|i| self.state.episodes.get(*i))
+                            .map(|e| e.id.clone())
+                            .collect();
+                        let selected = self
+                            .state
+                            .episodes
+                            .get(self.state.episode_selected)
+                            .map(|e| e.id.clone());
                         self.state.episodes = episodes;
-                        if let Some(entry) = self.continuation.take() {
-                            if let Some(i) =
-                                crate::persistence::next_episode(&entry, &self.state.episodes)
-                            {
-                                self.state.episode_selected = i;
-                                self.state.message(
-                                    format!(
-                                        "Continue at episode {}. Enter to play.",
-                                        self.state.episodes[i].number
-                                    ),
-                                    false,
-                                );
-                            } else {
-                                self.state.episode_selected = self
-                                    .state
-                                    .episodes
-                                    .iter()
-                                    .position(|e| e.number == entry.episode)
-                                    .unwrap_or(0);
-                                self.state.message(
-                                    "No newer episode found. Select an episode to replay.",
-                                    false,
-                                );
-                            }
-                            return;
-                        }
-                        self.state.message(
-                            "Enter to play. D changes language; Q changes quality.",
-                            false,
-                        );
+                        self.state.marked = self
+                            .state
+                            .episodes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, e)| marked.contains(&e.id))
+                            .map(|(i, _)| i)
+                            .collect();
+                        self.state.episode_selected = selected
+                            .and_then(|id| self.state.episodes.iter().position(|e| e.id == id))
+                            .unwrap_or(0);
+                        self.state.request_error = None;
+                        self.state.message("", false);
+                        self.select_continuation();
                     }
-                    Err(err) => self.state.message(format!("{err:#}"), true),
+                    Err(err) => {
+                        let message = format!("{err:#}");
+                        self.state.request_error = Some(message.clone());
+                        self.state.message(message, true);
+                    }
                 }
             }
-            Message::Resolved(job, index, result) if job == self.job => match result {
-                Ok(stream) => {
-                    let title = format!(
-                        "{} / Episode {}",
-                        self.state.anime.as_ref().unwrap().title,
-                        self.state.episodes[index].number
-                    );
-                    let log = self.options.state_dir.join(if self.state.downloading {
+            Message::Resolved(job, result) if job == self.job => {
+                let stream = match result {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        self.finish(Err(err), String::new());
+                        return;
+                    }
+                };
+                let Some(activity) = self.state.activity.as_mut() else {
+                    return;
+                };
+                let episode = &activity.episodes[activity.index];
+                let title = format!("{} / Episode {}", activity.anime.title, episode.number);
+                let quality = activity.quality.clone();
+                let log = self
+                    .options
+                    .state_dir
+                    .join(if activity.kind == JobKind::Download {
                         "download.log"
                     } else {
                         "player.log"
                     });
-                    if self.state.downloading {
-                        let title = format!("{title} {}", self.job_mode.as_str().to_uppercase());
-                        let dir = self.options.download_dir.clone();
-                        let quality = self.job_quality.clone();
-                        let tx = self.tx.clone();
-                        self.state.message(
-                            format!(
-                                "Downloading episode {} / x cancels",
-                                self.state.episodes[index].number
-                            ),
-                            false,
+                if activity.kind == JobKind::Download {
+                    let title = format!("{title} {}", activity.mode.as_str().to_uppercase());
+                    let dir = self.options.download_dir.clone();
+                    let tx = self.tx.clone();
+                    activity.phase = JobPhase::Running;
+                    activity.message = "Downloading...".into();
+                    self.play_task = Some(tokio::spawn(async move {
+                        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+                        let task = crate::download::download(
+                            &stream,
+                            &quality,
+                            &title,
+                            &dir,
+                            &log,
+                            progress_tx,
                         );
+                        tokio::pin!(task);
+                        let result = loop {
+                            tokio::select! {
+                                result = &mut task => break result,
+                                Some(text) = progress_rx.recv() => { let _ = tx.send(Message::Progress(job, text)); }
+                            }
+                        };
+                        let _ = tx.send(Message::Downloaded(job, result));
+                    }));
+                    return;
+                }
+                match player::launch(
+                    &self.options.player,
+                    &self.options.player_args,
+                    &stream,
+                    &quality,
+                    &title,
+                    &log,
+                ) {
+                    Ok(mut child) => {
+                        activity.phase = JobPhase::Running;
+                        let (variant, fallback) = stream.select(&quality);
+                        activity.message = format!(
+                            "{}p{}",
+                            variant.height,
+                            if fallback {
+                                " (requested quality unavailable)"
+                            } else {
+                                ""
+                            }
+                        );
+                        let change = crate::persistence::Change::Record {
+                            anime: activity.anime.clone(),
+                            episode: episode.number.clone(),
+                            mode: activity.mode,
+                        };
+                        self.persist(change);
+                        let tx = self.tx.clone();
                         self.play_task = Some(tokio::spawn(async move {
-                            let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-                            let task = crate::download::download(
-                                &stream,
-                                &quality,
-                                &title,
-                                &dir,
-                                &log,
-                                progress_tx,
-                            );
-                            tokio::pin!(task);
-                            let result = loop {
-                                tokio::select! {
-                                    result = &mut task => break result,
-                                    Some(text) = progress_rx.recv() => { let _ = tx.send(Message::Progress(job, text)); }
-                                }
+                            let result = match child.wait().await {
+                                Ok(status) if status.success() => Ok(()),
+                                Ok(status) => Err(anyhow::anyhow!(
+                                    "Player exited with {status}. See {}",
+                                    log.display()
+                                )),
+                                Err(err) => Err(err.into()),
                             };
-                            let _ = tx.send(Message::Downloaded(job, result));
+                            let _ = tx.send(Message::Finished(job, result));
                         }));
-                        return;
                     }
-                    match player::launch(
-                        &self.options.player,
-                        &self.options.player_args,
-                        &stream,
-                        &self.job_quality,
-                        &title,
-                        &log,
-                    ) {
-                        Ok(mut child) => {
-                            self.state.playing = Some(index);
-                            self.persist(crate::persistence::Change::Record {
-                                anime: self.state.anime.clone().unwrap(),
-                                episode: self.state.episodes[index].number.clone(),
-                                mode: self.job_mode,
-                            });
-                            let (variant, fallback) = stream.select(&self.job_quality);
-                            self.state.message(
-                                format!(
-                                    "Playing episode {} / {} / {}p{} / x stop",
-                                    self.state.episodes[index].number,
-                                    self.job_mode.as_str().to_uppercase(),
-                                    variant.height,
-                                    if fallback {
-                                        " (requested quality unavailable)"
-                                    } else {
-                                        ""
-                                    }
-                                ),
-                                false,
-                            );
-                            let tx = self.tx.clone();
-                            self.play_task = Some(tokio::spawn(async move {
-                                let result = match child.wait().await {
-                                    Ok(status) if status.success() => Ok(()),
-                                    Ok(status) => Err(anyhow::anyhow!(
-                                        "Player exited with {status}. See {}",
-                                        log.display()
-                                    )),
-                                    Err(err) => Err(err.into()),
-                                };
-                                let _ = tx.send(Message::Finished(job, result));
-                            }));
-                        }
-                        Err(err) => {
-                            self.state.busy = false;
-                            self.state.message(format!("{err:#}"), true);
-                        }
-                    }
+                    Err(err) => self.finish(Err(err), String::new()),
                 }
-                Err(err) => {
-                    self.state.busy = false;
-                    self.state.message(format!("{err:#}"), true);
-                }
-            },
+            }
             Message::Library(result) => match result {
                 Ok(library) => {
+                    let selected =
+                        [self.state.home_selected, self.state.history_selected].map(|i| {
+                            self.state
+                                .history
+                                .get(i)
+                                .map(|e| (e.anime.id.clone(), e.mode))
+                        });
                     self.state.history = library.entries;
-                    self.state.history_selected = self
-                        .state
-                        .history_selected
-                        .min(self.state.history.len().saturating_sub(1));
+                    let positions = selected.map(|key| {
+                        key.and_then(|(id, mode)| {
+                            self.state
+                                .history
+                                .iter()
+                                .position(|e| e.anime.id == id && e.mode == mode)
+                        })
+                        .unwrap_or(0)
+                    });
+                    self.state.home_selected = positions[0].min(7);
+                    self.state.history_selected = positions[1];
                 }
                 Err(err) => self
                     .state
                     .message(format!("History was not saved: {err:#}"), true),
             },
-            Message::Progress(job, text) if job == self.job => self.state.message(
-                format!("{text} / {} queued / x cancel", self.queue.len()),
-                false,
-            ),
-            Message::Downloaded(job, result) if job == self.job => {
-                self.state.busy = false;
-                match result {
-                    Ok(path) => {
-                        self.state
-                            .message(format!("Saved {}", path.display()), false);
-                        if let Some(i) = self.queue.pop_front() {
-                            self.play(i);
-                        }
-                    }
-                    Err(err) => {
-                        self.queue.clear();
-                        self.state.message(format!("{err:#}"), true);
-                    }
+            Message::Progress(job, text) if job == self.job => {
+                if let Some(activity) = &mut self.state.activity {
+                    activity.message = text;
                 }
             }
+            Message::Downloaded(job, result) if job == self.job => match result {
+                Ok(path) => self.finish(Ok(()), format!("Saved {}", path.display())),
+                Err(err) => self.finish(Err(err), String::new()),
+            },
             Message::Finished(job, result) if job == self.job => {
-                if result.is_ok()
-                    && let Some(i) = self.queue.pop_front()
-                {
-                    self.play(i);
-                    return;
-                }
-                self.queue.clear();
-                self.state.busy = false;
-                match result {
-                    Ok(()) => self
-                        .state
-                        .message("Player closed. n next / p previous / r replay", false),
-                    Err(err) => self.state.message(format!("{err:#}"), true),
-                }
+                self.finish(result, "Player closed".into());
             }
             _ => {}
         }
@@ -734,6 +976,25 @@ impl App {
             self.state.help = true;
             return;
         }
+        if key.code == KeyCode::F(5) {
+            self.retry();
+            return;
+        }
+        if self.state.details {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.state.details_scroll = self.state.details_scroll.saturating_add(1)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.state.details_scroll = self.state.details_scroll.saturating_sub(1)
+                }
+                KeyCode::Char('q') => self.quit = true,
+                KeyCode::Char('x') => self.stop(),
+                _ => {}
+            }
+            return;
+        }
         if self.state.focus == Focus::Range {
             match key.code {
                 KeyCode::Esc => self.state.focus = Focus::List,
@@ -763,7 +1024,9 @@ impl App {
         if self.state.focus == Focus::Search {
             match key.code {
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
-                    self.search();
+                    if self.search_due.is_some() {
+                        self.search();
+                    }
                     self.state.focus = Focus::List;
                 }
                 KeyCode::Esc => self.state.focus = Focus::List,
@@ -785,24 +1048,16 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.state.help = true,
             KeyCode::Char('/') => {
-                self.stop();
-                abort(&mut self.episode_task);
-                self.state.loading = false;
-                self.state.message("Type a title to search.", false);
-                self.state.screen = Screen::Search;
+                self.navigate(Screen::Search);
                 self.state.focus = Focus::Search;
-                self.state.episode_generation += 1;
             }
-            KeyCode::Esc if self.state.screen == Screen::Episodes => {
-                self.stop();
-                abort(&mut self.episode_task);
-                self.state.screen = Screen::Search;
-                self.state.episode_generation += 1;
-                self.state.loading = false;
-                self.state.message("Choose a series or / to search.", false);
-            }
-            KeyCode::Esc => self.state.focus = Focus::Search,
+            KeyCode::Esc => self.back(),
+            KeyCode::Char('H') => self.home(),
             KeyCode::Char('h') => self.history(),
+            KeyCode::Char('i') if self.state.selected_anime().is_some() => {
+                self.state.details = true;
+                self.state.details_scroll = 0;
+            }
             KeyCode::Delete if self.state.screen == Screen::History => {
                 if let Some(entry) = self.state.history.get(self.state.history_selected) {
                     self.persist(crate::persistence::Change::Remove {
@@ -836,7 +1091,7 @@ impl App {
                 self.settings();
                 self.state.message(
                     format!(
-                        "{} selected. Press Enter or r to play in this language.",
+                        "{} selected for your next play or download selection.",
                         self.state.mode.as_str().to_uppercase()
                     ),
                     false,
@@ -851,7 +1106,7 @@ impl App {
                 self.state.quality = choices[(index + 1) % choices.len()].into();
                 self.settings();
                 self.state.message(
-                    "Quality applies on the next launch. Press r to replay.",
+                    "Quality applies to your next play or download selection.",
                     false,
                 );
             }
@@ -859,21 +1114,30 @@ impl App {
                 self.state.exact = !self.state.exact;
                 self.state.selected = 0;
             }
-            KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
+            KeyCode::Enter
+                if matches!(
+                    self.state.screen,
+                    Screen::Home | Screen::Search | Screen::History
+                ) =>
+            {
                 self.open()
             }
             KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
             KeyCode::Char('x') => {
                 self.stop();
-                self.state.message("Playback stopped.", false);
+                self.state
+                    .message("Playback / download queue stopped.", false);
             }
-            KeyCode::Char('n') if self.state.screen == Screen::Episodes => {
-                self.navigate_play(self.state.playing.unwrap_or(self.state.episode_selected) + 1)
-            }
+            KeyCode::Char('n') if self.state.screen == Screen::Episodes => self.navigate_play(
+                self.state
+                    .current_episode_index()
+                    .unwrap_or(self.state.episode_selected)
+                    + 1,
+            ),
             KeyCode::Char('p') if self.state.screen == Screen::Episodes => {
                 if let Some(i) = self
                     .state
-                    .playing
+                    .current_episode_index()
                     .unwrap_or(self.state.episode_selected)
                     .checked_sub(1)
                 {
@@ -882,24 +1146,22 @@ impl App {
                     self.state.message("Already at the first episode.", false);
                 }
             }
-            KeyCode::Char('r') if self.state.screen == Screen::Episodes => {
-                self.navigate_play(self.state.playing.unwrap_or(self.state.episode_selected))
-            }
-            KeyCode::Char('R') => {
-                self.state.art_revision += 1;
-                if self.state.screen == Screen::Search {
-                    self.search();
-                } else {
-                    self.open();
-                }
-            }
+            KeyCode::Char('r') if self.state.screen == Screen::Episodes => self.navigate_play(
+                self.state
+                    .current_episode_index()
+                    .unwrap_or(self.state.episode_selected),
+            ),
+            KeyCode::Char('R') => self.retry(),
             code => {
                 let len = match self.state.screen {
+                    Screen::Home => self.state.history.len().min(8),
                     Screen::Search => self.state.visible().len(),
                     Screen::History => self.state.history.len(),
                     Screen::Episodes => self.state.episodes.len(),
                 };
-                let selected = if self.state.screen == Screen::Search {
+                let selected = if self.state.screen == Screen::Home {
+                    &mut self.state.home_selected
+                } else if self.state.screen == Screen::Search {
                     &mut self.state.selected
                 } else if self.state.screen == Screen::History {
                     &mut self.state.history_selected
@@ -961,7 +1223,7 @@ impl App {
             if dirty {
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-                let cover = ui::cover_area(area);
+                let cover = ui::cover_area(&self.state, area);
                 let url = if self.state.help {
                     None
                 } else {
@@ -977,7 +1239,7 @@ impl App {
                         art.clear_graphics()?;
                         terminal.clear()?;
                     }
-                    terminal.draw(|frame| ui::render(frame, &self.state, &art))?;
+                    terminal.draw(|frame| ui::render(frame, &mut self.state, &art))?;
                     Ok(())
                 })??;
                 dirty = false;
@@ -987,7 +1249,7 @@ impl App {
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
-                        dirty = self.state.loading || self.state.busy || art.protocol.is_none();
+                        dirty = self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active) || self.state.welcome();
                     }
                 }
                 Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
@@ -1075,13 +1337,12 @@ mod tests {
                 title: "stale".into(),
             }]),
         ));
-        assert_eq!(app.state.screen, Screen::Search);
+        assert_eq!(app.state.screen, Screen::Home);
         assert!(app.state.episodes.is_empty());
         let old_job = app.job;
         app.stop();
         app.message(Message::Resolved(
             old_job,
-            999,
             Ok(Stream {
                 variants: vec![],
                 referer: String::new(),
@@ -1089,8 +1350,7 @@ mod tests {
                 subtitle: None,
             }),
         ));
-        assert!(!app.state.busy);
-        assert!(app.state.playing.is_none());
+        assert!(app.state.activity.is_none());
     }
     #[tokio::test]
     async fn range_entry_marks_actual_episode_order_without_launching() {
@@ -1122,8 +1382,82 @@ mod tests {
             [0, 1, 2]
         );
         assert_eq!(app.state.focus, Focus::List);
-        assert!(!app.state.busy);
+        assert!(app.state.activity.is_none());
     }
+    #[tokio::test]
+    async fn nested_back_restores_the_original_series_search_and_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "first".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(0, Ok(vec![anime("first-1", "First series")]));
+        state.focus = Focus::List;
+        let options = Options {
+            player: "does-not-exist".into(),
+            player_args: vec![],
+            cache: dir.path().join("cache"),
+            state_dir: dir.path().into(),
+            images: false,
+            download_dir: dir.path().join("downloads"),
+        };
+        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let back = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        app.key(enter);
+        let episodes = vec![
+            Episode {
+                id: "11".into(),
+                number: "1".into(),
+                title: "First episode".into(),
+            },
+            Episode {
+                id: "12".into(),
+                number: "2".into(),
+                title: "Second episode".into(),
+            },
+        ];
+        app.message(Message::Episodes(
+            app.state.episode_generation,
+            Ok(episodes),
+        ));
+        app.state.episode_selected = 1;
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.state.query.set("other".into());
+        app.state.invalidate_search();
+        app.state.accept_search(
+            app.state.search_generation,
+            Ok(vec![anime("other-2", "Other series")]),
+        );
+        app.key(enter);
+        app.key(enter);
+        app.message(Message::Episodes(
+            app.state.episode_generation,
+            Ok(vec![Episode {
+                id: "21".into(),
+                number: "1".into(),
+                title: "Other episode".into(),
+            }]),
+        ));
+        app.key(back);
+        assert_eq!(app.state.screen, Screen::Search);
+        assert_eq!(app.state.query.text, "other");
+        app.key(back);
+        assert_eq!(app.state.screen, Screen::Episodes);
+        assert_eq!(app.state.anime.as_ref().unwrap().id, "first-1");
+        assert_eq!(app.state.episodes[app.state.episode_selected].id, "12");
+        assert!(app.state.marked.contains(&1));
+        app.key(back);
+        assert_eq!(app.state.screen, Screen::Search);
+        assert_eq!(app.state.query.text, "first");
+        assert_eq!(app.state.selected_anime().unwrap().id, "first-1");
+    }
+
     #[test]
     fn stale_search_cannot_overwrite_new_query_or_empty_state() {
         let mut state = State::new("old".into(), Mode::Sub, "best".into(), false, false, false);

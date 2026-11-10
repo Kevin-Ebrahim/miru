@@ -1,12 +1,12 @@
 use crate::{
-    app::{Focus, Screen, State},
+    app::{Focus, JobKind, JobPhase, Screen, State},
     artwork::Artwork,
     scene::Dusk,
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
@@ -18,64 +18,103 @@ use unicode_width::UnicodeWidthStr;
 
 const ACCENT: Color = Color::Cyan;
 fn muted() -> Style {
-    // Default foreground remains readable on both light and dark backgrounds.
-    Style::default().fg(Color::Reset)
+    Style::default()
 }
 fn accent() -> Style {
     Style::default().fg(ACCENT).bold()
 }
 
-fn sections(area: Rect) -> [Rect; 5] {
+fn sections(state: &State, area: Rect) -> [Rect; 6] {
     Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(3),
+        Constraint::Length(
+            if !state.details && (state.screen == Screen::Search || state.focus == Focus::Range) {
+                3
+            } else {
+                0
+            },
+        ),
         Constraint::Min(1),
-        Constraint::Length(2),
+        Constraint::Length(
+            if state.status.is_empty() || state.request_error.is_some() {
+                0
+            } else {
+                2
+            },
+        ),
+        Constraint::Length(if state.activity.is_some() { 2 } else { 0 }),
         Constraint::Length(2),
     ])
     .areas(area)
 }
 
-fn panels(area: Rect) -> (Rect, Rect) {
-    let body = sections(area)[2];
-    if area.width >= 88 {
-        let [list, preview] =
-            Layout::horizontal([Constraint::Percentage(43), Constraint::Percentage(57)])
-                .areas(body);
+fn panels(state: &State, area: Rect) -> (Rect, Rect) {
+    let body = sections(state, area)[2];
+    if state.details {
+        return (Rect::default(), body);
+    }
+    if state.selected_anime().is_none() {
+        return (body, Rect::default());
+    }
+    if area.width >= 72 && body.height >= 12 {
+        let share = if state.screen == Screen::Episodes {
+            65
+        } else {
+            55
+        };
+        let [list, preview] = Layout::horizontal([
+            Constraint::Percentage(share),
+            Constraint::Percentage(100 - share),
+        ])
+        .areas(body);
         (list, preview)
-    } else if area.height >= 32 && area.width >= 40 {
+    } else if area.width >= 40 && body.height >= 27 {
         let [list, preview] =
-            Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(body);
+            Layout::vertical([Constraint::Min(12), Constraint::Length(13)]).areas(body);
         (list, preview)
     } else {
         (body, Rect::default())
     }
 }
 
-pub fn cover_area(area: Rect) -> Rect {
-    let (_, panel) = panels(area);
-    if panel.width < 8 || panel.height < 10 {
+fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
+    if area.width < 8 || area.height < 3 {
+        return (Rect::default(), Rect::default());
+    }
+    let inner = area.inner(Margin::new(2, 1));
+    if inner.height < 6 {
+        return (Rect::default(), inner);
+    }
+    let metadata_height = if state.details {
+        (inner.height / 2).max(3)
+    } else if inner.height >= 25 {
+        10
+    } else if inner.height >= 16 {
+        7
+    } else {
+        4
+    };
+    let image_height = inner.height.saturating_sub(metadata_height + 1);
+    let image_height = if state.screen == Screen::Episodes && !state.details {
+        image_height.min(12)
+    } else {
+        image_height
+    };
+    let cover = Rect::new(inner.x, inner.y, inner.width, image_height);
+    let metadata = Rect::new(
+        inner.x,
+        inner.y + image_height + 1,
+        inner.width,
+        inner.height.saturating_sub(image_height + 1),
+    );
+    (cover, metadata)
+}
+
+pub fn cover_area(state: &State, area: Rect) -> Rect {
+    if area.width < 32 || area.height < 12 || state.help {
         return Rect::default();
     }
-    Rect::new(
-        panel.x + 2,
-        panel.y + 1,
-        panel.width.saturating_sub(4),
-        panel.height.saturating_sub(metadata_rows(panel) + 2),
-    )
-}
-
-fn empty_preview_area(state: &State, area: Rect) -> Rect {
-    if state.selected_anime().is_some() {
-        cover_area(area)
-    } else {
-        // No series metadata needs this space until a result is selected.
-        panels(area).1.inner(Margin::new(2, 1))
-    }
-}
-
-fn metadata_rows(panel: Rect) -> u16 {
-    if panel.height < 19 { 3 } else { 6 }
+    preview_regions(state, panels(state, area).1).0
 }
 
 fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
@@ -86,11 +125,7 @@ fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
         } else {
             BorderType::Rounded
         })
-        .border_style(if focused {
-            Style::default().fg(ACCENT)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(Style::default().fg(if focused { ACCENT } else { Color::DarkGray }))
         .padding(Padding::horizontal(1))
         .title(Line::from(title).style(if focused {
             accent()
@@ -113,7 +148,7 @@ fn panel(title: String, ascii: bool, focused: bool) -> Block<'static> {
     }
 }
 
-pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
+pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().fg(Color::Reset).bg(Color::Reset)),
@@ -127,59 +162,108 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
         );
         return;
     }
-    let [header, search, _, status, footer] = sections(area);
-    let mode = state.mode.as_str().to_uppercase();
-    let header_text = if area.width >= 60 {
-        Line::from(vec![
-            Span::styled("  ani", accent()),
-            Span::styled(" / watch", Style::default().bold()),
-            Span::styled("     YOUR NEXT STORY", muted()),
-            Span::raw(format!("     {mode}  /  {}", state.quality)),
-        ])
+    let [header, input, body, status, activity, footer] = sections(state, area);
+    let location = match state.screen {
+        Screen::Home => "Home",
+        Screen::Search => "Search",
+        Screen::History => "History",
+        Screen::Episodes => "Episodes",
+    };
+    let subtitle = if state.details {
+        "Series details / Esc back".into()
+    } else if state.screen == Screen::Episodes {
+        state
+            .anime
+            .as_ref()
+            .map(|a| a.title.clone())
+            .unwrap_or_default()
     } else {
-        Line::from(vec![
-            Span::styled(" ani / watch", accent()),
-            Span::raw(format!("   {mode} / {}", state.quality)),
-        ])
+        match state.screen {
+            Screen::Home => "Your watch shelf".into(),
+            Screen::Search => "Find your next series".into(),
+            _ => "Previously played / Enter opens episodes".into(),
+        }
     };
     frame.render_widget(
         Paragraph::new(vec![
-            header_text,
-            Line::styled(
-                match state.screen {
-                    Screen::Search => "  DISCOVER   /   Search the catalogue".to_string(),
-                    Screen::Episodes => format!(
-                        "  SERIES / {}",
-                        state
-                            .anime
-                            .as_ref()
-                            .map(|a| a.title.as_str())
-                            .unwrap_or("Episodes")
-                    ),
-                    Screen::History => "  LIBRARY   /   Continue watching".to_string(),
-                },
-                muted(),
-            ),
+            Line::from(vec![
+                Span::styled(" ani / watch", accent()),
+                Span::raw(format!(
+                    "   {location}   {} / {}",
+                    state.mode.as_str().to_uppercase(),
+                    state.quality
+                )),
+            ]),
+            Line::raw(format!(" {subtitle}")),
         ]),
         header,
     );
+    if input.height > 0 {
+        render_input(frame, state, input);
+    }
+    if state.welcome() && !state.details {
+        empty_art(
+            frame,
+            state,
+            body.inner(Margin::new(2, 1)),
+            "Your next story starts here",
+            "/ Search for your first series",
+            true,
+        );
+    } else {
+        let (list, preview) = panels(state, area);
+        if list.width > 0 {
+            render_list(frame, state, list);
+        }
+        if preview.width > 0 {
+            render_preview(frame, state, art, preview);
+        }
+    }
+    if status.height > 0 {
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {}{}",
+                if state.error { "! " } else { "" },
+                state.status
+            ))
+            .style(if state.error {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            })
+            .wrap(Wrap { trim: true }),
+            status,
+        );
+    }
+    render_activity(frame, state, activity);
+    let hints = key_hints(state, area.width as usize);
+    frame.render_widget(Paragraph::new(hints), footer);
+    if state.help {
+        render_help(frame, state, art);
+    }
+}
 
-    let search_title = if state.focus == Focus::Range {
-        " Range / 1-3, 5 or 0--1 / Enter marks "
+fn render_input(frame: &mut Frame, state: &State, area: Rect) {
+    let title = if state.focus == Focus::Range {
+        " Mark episodes / 1-3, 5 "
     } else if state.focus == Focus::Search {
         " Search / typing "
     } else {
         " Search / press / to edit "
     };
-    let search_block = panel(
+    let block = panel(
         format!(
-            "{search_title}{}",
-            if state.exact { "[EXACT] " } else { "" }
+            "{title}{}",
+            if state.exact && state.focus != Focus::Range {
+                "[EXACT] "
+            } else {
+                ""
+            }
         ),
         state.ascii,
-        matches!(state.focus, Focus::Search | Focus::Range),
+        state.focus != Focus::List,
     );
-    let inner = search_block.inner(search);
+    let inner = block.inner(area);
     let input = if state.focus == Focus::Range {
         &state.range
     } else {
@@ -190,291 +274,380 @@ pub fn render(frame: &mut Frame, state: &State, art: &Artwork) {
         input.cursor,
         inner.width.saturating_sub(1) as usize,
     );
-    frame.render_widget(search_block, search);
-    frame.render_widget(
-        Paragraph::new(if input.text.is_empty() && state.focus == Focus::List {
-            "Search anime..."
-        } else {
-            &text
-        }),
-        inner,
-    );
-    if matches!(state.focus, Focus::Search | Focus::Range) && !state.help {
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(text), inner);
+    if state.focus != Focus::List && !state.help {
         frame.set_cursor_position((inner.x + cursor as u16, inner.y));
-    }
-
-    let (list, preview) = panels(area);
-    render_list(frame, state, list);
-    if preview.width > 0 {
-        render_preview(frame, state, art, preview, cover_area(area));
-    }
-    let spinner = if state.loading || (state.busy && state.playing.is_none()) {
-        [".  ", ".. ", "..."][state.frame / 3 % 3]
-    } else if state.error {
-        "!  "
-    } else {
-        "   "
-    };
-    frame.render_widget(
-        Paragraph::new(format!(" {spinner}{}", state.status))
-            .style(if state.error {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default()
-            })
-            .wrap(Wrap { trim: true }),
-        status,
-    );
-    let keys = if state.screen == Screen::History {
-        if area.width >= 72 {
-            " Enter Continue   / Search   Delete Remove   ? Help   q Quit"
-        } else {
-            " Enter Continue  / Search  ? Help"
-        }
-    } else if state.screen == Screen::Search {
-        if area.width >= 90 {
-            " / Search   Enter Episodes   h History   D SUB/DUB   Q Quality   ? Help   q Quit"
-        } else {
-            " / Search  Enter Select  ? Help"
-        }
-    } else if area.width >= 90 {
-        " Enter Play  d Download  : Range  Tab Mark  n/p Next/Prev  ? Help"
-    } else {
-        " Enter Play  Esc Back  ? Help"
-    };
-    let navigation = if state.ascii {
-        " Up/Down Navigate"
-    } else {
-        " ↑↓ Navigate"
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(keys, accent()),
-            Line::styled(
-                format!("{navigation}   Ctrl+C Quit   {} covers", art.label),
-                muted(),
-            ),
-        ]),
-        footer,
-    );
-    if state.help {
-        render_help(frame, state);
     }
 }
 
-fn render_list(frame: &mut Frame, state: &State, area: Rect) {
-    let count = if state.screen == Screen::Search {
-        state.visible().len()
-    } else if state.screen == Screen::History {
-        state.history.len()
-    } else {
-        state.episodes.len()
-    };
-    let title = format!(
-        " {} / {:02} ",
-        if state.screen == Screen::Search {
-            "Results"
-        } else if state.screen == Screen::History {
-            "History"
+fn fit_hints(hints: &[String], width: usize) -> String {
+    let mut line = String::from(" ");
+    for hint in hints {
+        let separator = if line.len() == 1 { "" } else { "   " };
+        if line.width() + separator.len() + hint.width() <= width {
+            line.push_str(separator);
+            line.push_str(hint);
+        }
+    }
+    line
+}
+
+fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
+    let primary: Vec<String> = if state.details {
+        vec!["Esc Back".into(), "Up/Down Scroll".into()]
+    } else if state.focus == Focus::Search {
+        vec![
+            "Enter Results".into(),
+            "Esc Leave input".into(),
+            "Ctrl+E Exact".into(),
+        ]
+    } else if state.focus == Focus::Range {
+        vec!["Enter Mark range".into(), "Esc Cancel".into()]
+    } else if state.request_error.is_some() {
+        vec!["F5 Retry".into(), "/ Edit search".into(), "Esc Back".into()]
+    } else if state.screen == Screen::Episodes {
+        let count = state.marked.len();
+        let suffix = if count > 0 {
+            format!(" {count}")
         } else {
-            "Episodes"
-        },
-        count
-    );
+            String::new()
+        };
+        vec![
+            format!("Enter Play{suffix}"),
+            format!("d Download{suffix}"),
+            "Space Mark".into(),
+            "Esc Back".into(),
+            ": Range".into(),
+            "i Details".into(),
+        ]
+    } else {
+        let mut hints = vec![
+            "Enter Episodes".into(),
+            "/ Search".into(),
+            "i Details".into(),
+        ];
+        if state.welcome() {
+            hints = vec!["/ Search".into()];
+        }
+        if state.screen == Screen::History {
+            hints.push("Delete Remove".into());
+        }
+        hints
+    };
+    let mut global = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
+    if state.activity.is_some() {
+        global.insert(0, "x Stop / dismiss".into());
+    }
+    // Printable shortcuts are text while editing.
+    if matches!(state.focus, Focus::Search | Focus::Range) {
+        global = vec!["F1 Help".into(), "F5 Retry".into(), "Ctrl+C Quit".into()];
+    } else if !state.details {
+        global.extend([
+            "H Home".into(),
+            "h History".into(),
+            "D SUB/DUB".into(),
+            "Q Quality".into(),
+        ]);
+    }
+    vec![
+        Line::raw(fit_hints(&primary, width)),
+        Line::raw(fit_hints(&global, width)),
+    ]
+}
+
+fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
+    let visible = state.visible();
+    let (label, count, selected) = match state.screen {
+        Screen::Home => (
+            "Recently played",
+            state.history.len().min(8),
+            state.home_selected,
+        ),
+        Screen::Search => ("Results", visible.len(), state.selected),
+        Screen::History => ("History", state.history.len(), state.history_selected),
+        Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
+    };
+    let title = if state.marked.is_empty() || state.screen != Screen::Episodes {
+        format!(" {label} / {count} ")
+    } else {
+        format!(" {label} / {count} / {} marked ", state.marked.len())
+    };
     let block = panel(title, state.ascii, state.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if count == 0 {
-        let title = if state.screen == Screen::History {
-            "Your watch shelf"
-        } else if state.loading {
-            "Searching for a story"
-        } else if state.query.text.is_empty() {
-            "A story starts here"
+    if let Some(error) = &state.request_error {
+        let title = if state.screen == Screen::Search {
+            "Search unavailable"
         } else {
-            "Nothing here yet"
+            "Episodes unavailable"
         };
-        let hint = if state.screen == Screen::History {
-            "Play an episode to add it here."
-        } else if state.loading {
-            "You can keep typing."
-        } else if state.query.text.is_empty() {
-            "Type a title above."
-        } else {
-            "Try another title. R retries."
-        };
-        // The cover panel owns the scene when it has room. Compact layouts keep
-        // it with the empty list instead of drawing the same scene twice.
-        let cover = empty_preview_area(state, frame.area());
-        let show_scene = cover.width < 24 || cover.height < 9;
-        empty_art(frame, state, inner, title, hint, show_scene);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::raw(""),
+                Line::styled(title, Style::default().fg(Color::Red).bold()),
+                Line::raw(""),
+                Line::raw(error.clone()),
+                Line::raw(""),
+                Line::raw("F5 Retry / F1 Details"),
+            ])
+            .wrap(Wrap { trim: true }),
+            inner,
+        );
         return;
     }
-    let items: Vec<ListItem> = if state.screen == Screen::Search {
-        state
-            .visible()
-            .iter()
-            .enumerate()
-            .map(|(position, i)| {
-                let selected = position == state.selected;
-                let anime = &state.results[*i];
-                ListItem::new(vec![
-                    Line::styled(
-                        anime.title.clone(),
-                        if selected {
-                            Style::default().bold().reversed()
-                        } else {
-                            Style::default().bold()
-                        },
-                    ),
-                    Line::styled(
-                        if anime.info.is_empty() {
-                            "Series".into()
-                        } else {
-                            anime.info.clone()
-                        },
-                        muted(),
-                    ),
-                    Line::raw(""),
-                ])
-            })
-            .collect()
-    } else if state.screen == Screen::History {
-        state
+    if count == 0 {
+        let (title, hint) = if state.loading {
+            if state.screen == Screen::Episodes {
+                ("Loading episodes...", "You can browse while this loads.")
+            } else {
+                ("Searching...", "You can keep typing.")
+            }
+        } else if state.screen == Screen::History {
+            (
+                "No recently played series",
+                "/ Search for your first series",
+            )
+        } else if state.screen == Screen::Episodes {
+            ("No episodes available", "F5 Refresh / Esc Back")
+        } else if state.query.text.trim().is_empty() {
+            ("Search the catalogue", "Type an anime title above.")
+        } else {
+            (
+                "No matching series",
+                "Edit your search or toggle exact matching with Ctrl+E.",
+            )
+        };
+        empty_art(frame, state, inner, title, hint, false);
+        return;
+    }
+    let items: Vec<ListItem> = match state.screen {
+        Screen::Home | Screen::History => state
             .history
             .iter()
-            .enumerate()
-            .map(|(position, entry)| {
+            .take(count)
+            .map(|entry| {
                 ListItem::new(vec![
-                    Line::styled(
-                        entry.anime.title.clone(),
-                        if position == state.history_selected {
-                            Style::default().bold().reversed()
-                        } else {
-                            Style::default().bold()
-                        },
-                    ),
-                    Line::styled(
-                        format!(
-                            "Last played {} / {}",
-                            entry.episode,
-                            entry.mode.as_str().to_uppercase()
-                        ),
-                        muted(),
-                    ),
+                    Line::styled(entry.anime.title.clone(), Style::default().bold()),
+                    Line::raw(format!(
+                        "Last played: {} / {}",
+                        entry.episode,
+                        entry.mode.as_str().to_uppercase()
+                    )),
                     Line::raw(""),
                 ])
             })
-            .collect()
-    } else {
-        state
+            .collect(),
+        Screen::Search => visible
+            .iter()
+            .map(|i| {
+                let anime = &state.results[*i];
+                ListItem::new(vec![
+                    Line::styled(anime.title.clone(), Style::default().bold()),
+                    Line::raw(anime.info.clone()),
+                    Line::raw(""),
+                ])
+            })
+            .collect(),
+        Screen::Episodes => state
             .episodes
             .iter()
             .enumerate()
             .map(|(i, ep)| {
+                let playing =
+                    state.activity.as_ref().is_some_and(|a| {
+                        a.kind == JobKind::Playback && a.phase == JobPhase::Running
+                    }) && state.current_episode_index() == Some(i);
                 let mark = if state.marked.contains(&i) {
-                    if state.ascii { "* " } else { "✓ " }
-                } else if Some(i) == state.playing {
-                    if state.ascii { "> " } else { "▶ " }
+                    if state.ascii { "*" } else { "✓" }
                 } else {
-                    "  "
+                    " "
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{mark}{:>5}  ", ep.number),
-                        if i == state.episode_selected {
-                            Style::default().bold()
-                        } else {
-                            accent()
-                        },
-                    ),
-                    Span::raw(ep.title.clone()),
-                ]))
+                let indicator = if playing {
+                    if state.ascii { ">" } else { "▶" }
+                } else {
+                    " "
+                };
+                ListItem::new(Line::raw(format!(
+                    "{mark}{indicator} {:>4}  {}",
+                    ep.number, ep.title
+                )))
             })
-            .collect()
-    };
-    let selected = if state.screen == Screen::Search {
-        state.selected
-    } else if state.screen == Screen::History {
-        state.history_selected
-    } else {
-        state.episode_selected
+            .collect(),
     };
     let list = List::new(items)
         .highlight_symbol(if state.ascii { "> " } else { "▸ " })
-        .highlight_style(if state.screen == Screen::Episodes {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-        } else {
-            Style::default()
-        });
+        .highlight_style(Style::default().reversed().bold());
     let mut selection = ListState::default().with_selected(Some(selected));
+    *selection.offset_mut() = state.list_offsets[state.screen as usize];
     frame.render_stateful_widget(list, inner, &mut selection);
+    state.list_offsets[state.screen as usize] = selection.offset();
 }
 
-fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: Rect, cover: Rect) {
-    frame.render_widget(
-        panel(" Cover / selected series ".into(), state.ascii, false),
-        panel_area,
-    );
-    if let Some(protocol) = &art.protocol {
-        let size = protocol.size();
-        if size.width <= cover.width && size.height <= cover.height {
-            let centered = Rect::new(
-                cover.x + (cover.width - size.width) / 2,
-                cover.y + (cover.height - size.height) / 2,
-                size.width,
-                size.height,
-            );
-            frame.render_widget(Image::new(protocol), centered);
-        }
-    } else {
-        let hint = if art.error.is_some() {
-            "Browsing is still available."
-        } else if state.selected_anime().is_some_and(|a| a.cover.is_some()) {
-            if art.enabled {
-                "Preparing cover..."
-            } else {
-                "Artwork disabled / text mode"
-            }
+fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
+    let block = panel(
+        if state.details {
+            " Series details / Esc back "
         } else {
-            "A little space for imagination."
-        };
+            " Selected series "
+        }
+        .into(),
+        state.ascii,
+        state.details,
+    );
+    frame.render_widget(block, area);
+    let (cover, metadata) = preview_regions(state, area);
+    let Some(anime) = state.selected_anime() else {
         empty_art(
             frame,
             state,
-            empty_preview_area(state, frame.area()),
-            if art.error.is_some() {
-                "Cover unavailable"
-            } else {
-                "ani / watch"
-            },
-            hint,
-            true,
+            area.inner(Margin::new(2, 1)),
+            "Choose a series",
+            "Its cover and details will appear here.",
+            false,
         );
-    }
-    if let Some(anime) = state.selected_anime() {
-        let metadata = Rect::new(
-            panel_area.x + 2,
-            panel_area
-                .bottom()
-                .saturating_sub(metadata_rows(panel_area) + 1),
-            panel_area.width.saturating_sub(4),
-            metadata_rows(panel_area).min(panel_area.height),
-        );
-        let mut details = vec![
-            Line::styled(anime.title.clone(), Style::default().bold()),
-            Line::styled(anime.info.clone(), accent()),
-        ];
-        if metadata_rows(panel_area) > 3 {
-            details.extend([
-                Line::raw(""),
-                Line::styled(anime.description.clone(), muted()),
-            ]);
+        return;
+    };
+    if let Some(protocol) = &art.protocol {
+        let size = protocol.size();
+        if size.width <= cover.width && size.height <= cover.height {
+            frame.render_widget(
+                Image::new(protocol),
+                Rect::new(
+                    cover.x + (cover.width - size.width) / 2,
+                    cover.y + (cover.height - size.height) / 2,
+                    size.width,
+                    size.height,
+                ),
+            );
         }
-        frame.render_widget(Paragraph::new(details).wrap(Wrap { trim: true }), metadata);
+    } else if cover.height > 0 {
+        let label = if !art.enabled {
+            "Covers disabled"
+        } else if art.error.is_some() {
+            "Cover unavailable / F5 Retry"
+        } else if anime.cover.is_some() {
+            "Loading cover..."
+        } else {
+            "No cover available"
+        };
+        empty_art(frame, state, cover, label, "", false);
     }
+    let mut details = vec![
+        Line::styled(anime.title.clone(), Style::default().bold()),
+        Line::raw(anime.info.clone()),
+    ];
+    let entry = match state.screen {
+        Screen::Home => state.history.get(state.home_selected),
+        Screen::History => state.history.get(state.history_selected),
+        _ => state
+            .history
+            .iter()
+            .find(|e| e.anime.id == anime.id && e.mode == state.mode),
+    };
+    if let Some(entry) = entry {
+        details.push(Line::raw(format!(
+            "Last played: episode {} / {}",
+            entry.episode,
+            entry.mode.as_str().to_uppercase()
+        )));
+    }
+    if state.screen == Screen::Episodes
+        && let Some(ep) = state.episodes.get(state.episode_selected)
+    {
+        details.push(Line::raw(""));
+        details.push(Line::styled(
+            format!("Episode {} / {}", ep.number, ep.title),
+            accent(),
+        ));
+    }
+    if !anime.description.is_empty() {
+        details.push(Line::raw(""));
+        details.push(Line::raw(anime.description.clone()));
+    }
+    if !state.details {
+        details.push(Line::raw(""));
+        details.push(Line::raw("i Full details"));
+    }
+    frame.render_widget(
+        Paragraph::new(details).wrap(Wrap { trim: true }).scroll((
+            if state.details {
+                state.details_scroll
+            } else {
+                0
+            },
+            0,
+        )),
+        metadata,
+    );
 }
 
+fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
+    let Some(activity) = &state.activity else {
+        return;
+    };
+    let phase = match activity.phase {
+        JobPhase::Resolving => "Resolving",
+        JobPhase::Running if activity.kind == JobKind::Download => "Downloading",
+        JobPhase::Running => "Playing",
+        JobPhase::Finished => "Finished",
+        JobPhase::Failed => "Failed",
+    };
+    let episode = &activity.episodes[activity.index];
+    let queue = if activity.remaining.is_empty() {
+        String::new()
+    } else {
+        format!(" / {} queued", activity.remaining.len())
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                format!(
+                    " {phase}: {} / Ep {} / {}{queue}",
+                    activity.anime.title,
+                    episode.number,
+                    activity.mode.as_str().to_uppercase()
+                ),
+                if activity.phase == JobPhase::Failed {
+                    Style::default().fg(Color::Red)
+                } else {
+                    accent()
+                },
+            ),
+            Line::raw(format!(" {}", activity.message)),
+        ]),
+        area,
+    );
+}
+
+fn render_help(frame: &mut Frame, state: &State, art: &Artwork) {
+    let area = frame.area();
+    let block = panel(" Help / Up,Down scroll / Esc ".into(), state.ascii, true);
+    frame.render_widget(Clear, area);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let text = "ANI / WATCH\n\nH                 Home / recently played\n/                 Search the catalogue\nh                 Full watch history\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\ni                 Full cover and series details\nCtrl+E            Toggle exact title matching\nD / Q             Language / quality for a new queue\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss the active job\nF5 or R           Retry request and cover\nDelete            Remove an entry in History\nEsc               Leave input / return to previous screen\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop owned jobs\n\nWhile typing, printable shortcuts are text.\nBrowsing leaves playback and downloads running.\nA queue keeps its series, language and quality.\nHistory records launches, not completion or position.\nUse --no-animation for a still welcome scene.\nUse --images off or --ascii for simpler rendering.";
+    let job = state
+        .activity
+        .as_ref()
+        .map(|a| {
+            format!(
+                "\n\nActivity: {} / Episode {}\n{}",
+                a.anime.title, a.episodes[a.index].number, a.message
+            )
+        })
+        .unwrap_or_default();
+    let cover = art.error.as_deref().unwrap_or(&art.label);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{text}\n\nCurrent status:\n{}{job}\n\nCovers: {cover}",
+            state.status
+        ))
+        .wrap(Wrap { trim: false })
+        .scroll((state.help_scroll, 0)),
+        inner,
+    );
+}
 fn empty_art(
     frame: &mut Frame,
     state: &State,
@@ -523,21 +696,6 @@ fn empty_art(
     );
 }
 
-fn render_help(frame: &mut Frame, state: &State) {
-    let area = frame.area();
-    let block = panel(" Help / Up,Down scroll / Esc ".into(), state.ascii, true);
-    frame.render_widget(Clear, area);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let text = "ANI / WATCH\n\n/                 Edit search (300 ms debounce)\nEnter             Browse series / play episode\nUp/Down or j/k    Navigate; PgUp/PgDn jump\nHome/End or g/G   First / last item\nCtrl+E            Toggle exact title matching\nD                 Toggle SUB / DUB\nQ                 Cycle quality (best to worst)\nh                 Watch history / continue\nTab or Space      Mark episodes\n:                 Enter ranges (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop player / cancel resolving\nR                 Retry current request\nEsc               Back / leave search input\nq or Ctrl+C       Quit and stop owned player\n\nSearch stays live while covers load.\nPlayer controls also work in the player window.\nUse --ascii, --no-animation, or --images off\nfor a quieter interface. Colors use your palette.";
-    frame.render_widget(
-        Paragraph::new(format!("{text}\n\nCurrent status:\n{}", state.status))
-            .wrap(Wrap { trim: false })
-            .scroll((state.help_scroll, 0)),
-        inner,
-    );
-}
-
 pub fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
     let mut start = 0;
     for (i, g) in text[..cursor].grapheme_indices(true) {
@@ -559,26 +717,128 @@ pub fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Anime, Episode, Mode};
     use ratatui::{Terminal, backend::TestBackend};
     use ratatui_image::picker::Picker;
+
+    fn render_text(state: &mut State, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+        terminal.draw(|f| render(f, state, &art)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn responsive_layouts_do_not_overlap_or_panic() {
-        for (w, h) in [(140, 45), (88, 24), (60, 40), (40, 18), (32, 12), (20, 8)] {
-            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-            let state = State::new(
-                "日本語 title".into(),
-                crate::model::Mode::Sub,
-                "best".into(),
-                false,
-                false,
-                false,
-            );
-            let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
-            terminal.draw(|f| render(f, &state, &art)).unwrap();
-            let cover = cover_area(Rect::new(0, 0, w, h));
-            assert!(cover.right() <= w && cover.bottom() <= h);
+    fn responsive_screens_keep_primary_actions_and_cover_inside_terminal() {
+        for (w, h) in [
+            (140, 45),
+            (120, 40),
+            (80, 24),
+            (60, 40),
+            (40, 18),
+            (32, 12),
+            (20, 8),
+        ] {
+            for screen in [
+                Screen::Home,
+                Screen::Search,
+                Screen::History,
+                Screen::Episodes,
+            ] {
+                let mut state = State::new(
+                    "日本語 title".into(),
+                    Mode::Sub,
+                    "best".into(),
+                    false,
+                    false,
+                    false,
+                );
+                state.screen = screen;
+                state.focus = Focus::List;
+                state.anime = Some(Anime {
+                    title: "A long series title 日本語".into(),
+                    ..Default::default()
+                });
+                for details in [false, true] {
+                    state.details = details;
+                    let text = render_text(&mut state, w, h);
+                    let cover = cover_area(&state, Rect::new(0, 0, w, h));
+                    assert!(
+                        cover.right() <= w && cover.bottom() <= h,
+                        "{screen:?} {w}x{h}"
+                    );
+                    if w >= 32 && h >= 12 {
+                        assert!(text.contains("F1 Help"));
+                    } else {
+                        assert!(text.contains("Resize"));
+                    }
+                }
+            }
         }
     }
+
+    #[test]
+    fn typing_hints_and_failed_search_describe_the_available_actions() {
+        let mut state = State::new(
+            "frieren".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(0, Err(anyhow::anyhow!("Service unavailable")));
+        let text = render_text(&mut state, 80, 24);
+        assert!(text.contains("Search unavailable"));
+        assert!(text.contains("F5 Retry"));
+        assert!(text.contains("Enter Results"));
+        assert!(!text.contains("? Help"));
+        assert!(!text.contains("No matching series"));
+        assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
+    }
+
+    #[test]
+    fn home_previews_selected_series_and_episode_selection_keeps_scroll_position() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.history.push(crate::persistence::Entry {
+            anime: Anime {
+                id: "1".into(),
+                title: "Frieren".into(),
+                ..Default::default()
+            },
+            episode: "6".into(),
+            mode: Mode::Sub,
+            watched_at: 0,
+        });
+        let text = render_text(&mut state, 120, 40);
+        assert!(text.contains("Recently played"));
+        assert!(text.contains("Selected series"));
+        assert!(text.contains("No cover available") || text.contains("Covers disabled"));
+        assert!(!text.contains("Your next story starts here"));
+        state.screen = Screen::Episodes;
+        state.episodes = (1..=100)
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: format!("Title {n}"),
+            })
+            .collect();
+        state.episode_selected = 60;
+        render_text(&mut state, 80, 24);
+        let offset = state.list_offsets[Screen::Episodes as usize];
+        state.episode_selected = 59;
+        render_text(&mut state, 80, 24);
+        assert_eq!(state.list_offsets[Screen::Episodes as usize], offset);
+    }
+
     #[test]
     fn input_scroll_uses_display_width() {
         let (text, cursor) = input_window("ab日本語", "ab日本語".len(), 5);

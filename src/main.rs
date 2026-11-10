@@ -280,7 +280,7 @@ async fn main() -> Result<()> {
     if cli.resume {
         state.screen = app::Screen::History;
         state.focus = app::Focus::List;
-        state.status = "Enter continues at the next episode. / searches.".into();
+        state.status = "Enter opens episodes with the next episode selected.".into();
     }
     let options = app::Options {
         player: cli.player,
