@@ -37,7 +37,7 @@ enum Images {
 #[command(
     version,
     about = "A terminal-native anime browser",
-    after_help = "Keys: / search, Enter select/play, D sub/dub, Q quality, ? help.\nThe shell ani-cli installation and history are left untouched."
+    after_help = "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\nThe shell ani-cli installation and history are left untouched."
 )]
 struct Cli {
     /// Title to search for

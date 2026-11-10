@@ -1413,7 +1413,11 @@ impl App {
             key.code = match key.code {
                 KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => KeyCode::Esc,
                 KeyCode::Char('l') | KeyCode::Right if !self.state.details && !self.state.help => {
-                    KeyCode::Enter
+                    if self.state.screen == Screen::Episodes {
+                        KeyCode::Char('i')
+                    } else {
+                        KeyCode::Enter
+                    }
                 }
                 _ => key.code,
             };
@@ -1450,6 +1454,23 @@ impl App {
         }
         if key.code == KeyCode::F(6) {
             self.retry_activity();
+            return;
+        }
+        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
+            self.state.mode.toggle();
+            self.settings();
+            self.state.message(
+                format!(
+                    "Audio: {}{}",
+                    self.state.mode.as_str().to_uppercase(),
+                    if self.state.activity.as_ref().is_some_and(Activity::active) {
+                        " / applies to the next queue"
+                    } else {
+                        ""
+                    }
+                ),
+                false,
+            );
             return;
         }
         if self.state.details {
@@ -1554,18 +1575,6 @@ impl App {
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
                 self.start_selection(true)
-            }
-            KeyCode::Char('D') => {
-                self.state.mode.toggle();
-                self.settings();
-                self.state.message(
-                    if self.state.activity.as_ref().is_some_and(Activity::active) {
-                        "Language applies to the next queue."
-                    } else {
-                        ""
-                    },
-                    false,
-                );
             }
             KeyCode::Char('Q') => {
                 let choices = ["best", "1080p", "720p", "480p", "360p", "worst"];
@@ -2328,6 +2337,52 @@ mod tests {
         assert!(!state.accept_search(old + 1, Ok(vec![Anime::default()])));
         assert!(state.results.is_empty());
     }
+    #[tokio::test]
+    async fn episode_forward_navigation_opens_details_without_starting_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.anime = Some(anime("series", "Series"));
+        state.episodes = vec![Episode {
+            id: "1".into(),
+            number: "1".into(),
+            title: "Opening".into(),
+        }];
+        let mut app = test_app(state, dir.path());
+        for code in [KeyCode::Right, KeyCode::Char('l')] {
+            app.state.details = false;
+            app.key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert!(
+                app.state.activity.is_none(),
+                "{code:?} must not start media"
+            );
+            assert!(app.state.details);
+        }
+    }
+
+    #[tokio::test]
+    async fn language_shortcut_accepts_uppercase_and_explicit_shift_events() {
+        for key in [
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = Screen::Episodes;
+            let mut app = test_app(state, dir.path());
+            app.key(key);
+            assert_eq!(app.state.mode, Mode::Dub, "{key:?}");
+            assert!(app.state.activity.is_none());
+            app.state.details = true;
+            app.key(key);
+            assert_eq!(app.state.mode, Mode::Sub, "{key:?}");
+            assert!(app.state.status.contains("Audio: SUB"));
+        }
+    }
+
     #[test]
     fn readline_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);

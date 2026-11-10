@@ -45,13 +45,13 @@ outside the terminal input loop.
 | `/` | Open or edit catalogue search |
 | `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
 | Enter | Focus results / browse series / play episode(s) |
-| → / `l` | Browse series / play episode(s), outside text input |
+| → / `l` | Open a series; in Episodes, open details without playing |
 | ↑ ↓ or `j` `k` | Navigate |
 | Page Up / Page Down, Ctrl+d/u, Ctrl+f/b | Move ten items, or scroll ten lines |
 | Ctrl+n / Ctrl+p | Next / previous item, outside text input |
 | Home / End or `g` / `G` | First / last item or line; `gg` also works |
 | Alt+e | Toggle normalized exact title matching |
-| `D` | Toggle SUB / DUB |
+| `s` (or Shift+D) | Toggle SUB / DUB, including in Details |
 | `Q` | Cycle best, 1080p, 720p, 480p, 360p, worst |
 | Alt+h | Open watch history |
 | Tab / Space in episodes | Mark or unmark an episode |
