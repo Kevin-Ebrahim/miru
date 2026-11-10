@@ -366,6 +366,8 @@ pub struct State {
     pub text_selection: Option<TextSelection>,
     pub help: bool,
     pub help_scroll: u16,
+    pub help_query: Input,
+    pub help_filtering: bool,
     pub frame: usize,
     pub ascii: bool,
     pub colorless: bool,
@@ -433,6 +435,8 @@ impl State {
             text_selection: None,
             help: false,
             help_scroll: 0,
+            help_query: Input::default(),
+            help_filtering: false,
             frame: 0,
             ascii,
             colorless: false,
@@ -1252,7 +1256,19 @@ impl App {
     }
 
     fn mouse(&mut self, event: MouseEvent) -> Option<String> {
-        if self.state.help || (!self.state.details && self.state.text_view.is_none()) {
+        if self.state.help {
+            match event.kind {
+                MouseEventKind::ScrollDown => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_add(3)
+                }
+                MouseEventKind::ScrollUp => {
+                    self.state.help_scroll = self.state.help_scroll.saturating_sub(3)
+                }
+                _ => {}
+            }
+            return None;
+        }
+        if !self.state.details && self.state.text_view.is_none() {
             return None;
         }
         match event.kind {
@@ -1317,10 +1333,15 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
-        if self.state.help || self.state.details || self.state.focus == Focus::List {
+        if self.state.help && !self.state.help_filtering {
             return;
         }
-        let input = if self.state.focus == Focus::Range {
+        if !self.state.help && (self.state.details || self.state.focus == Focus::List) {
+            return;
+        }
+        let input = if self.state.help {
+            &mut self.state.help_query
+        } else if self.state.focus == Focus::Range {
             &mut self.state.range
         } else {
             &mut self.state.query
@@ -1336,11 +1357,24 @@ impl App {
             };
             changed |= input.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
+        if self.state.help {
+            if changed {
+                self.state.help_scroll = 0;
+            }
+            return;
+        }
         if changed && self.state.focus == Focus::Search {
             self.state.invalidate_search();
             abort(&mut self.search_task);
             self.search_due = Some(Instant::now() + Duration::from_millis(300));
         }
+    }
+
+    fn open_help(&mut self) {
+        self.state.help = true;
+        self.state.help_scroll = 0;
+        self.state.help_filtering = false;
+        self.state.help_query.set(String::new());
     }
 
     fn key(&mut self, mut key: KeyEvent) {
@@ -1349,6 +1383,42 @@ impl App {
         }
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+        if key.code == KeyCode::F(1) {
+            if self.state.help {
+                self.state.help = false;
+            } else {
+                self.open_help();
+            }
+            return;
+        }
+        if self.state.help && self.state.help_filtering {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
+                KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.state.help_filtering = false
+                }
+                KeyCode::Down | KeyCode::PageDown => {
+                    self.state.help_filtering = false;
+                    self.state.help_scroll = self
+                        .state
+                        .help_scroll
+                        .saturating_add(if key.code == KeyCode::Down { 1 } else { 10 });
+                }
+                KeyCode::Up | KeyCode::PageUp => {
+                    self.state.help_filtering = false;
+                    self.state.help_scroll = self
+                        .state
+                        .help_scroll
+                        .saturating_sub(if key.code == KeyCode::Up { 1 } else { 10 });
+                }
+                _ => {
+                    if self.state.help_query.edit(key) {
+                        self.state.help_scroll = 0;
+                    }
+                }
+            }
             return;
         }
         // Modified navigation must not fall through to playback/download shortcuts.
@@ -1426,6 +1496,10 @@ impl App {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
                 KeyCode::Char('q') => self.state.help = false,
+                KeyCode::Char('/') => {
+                    self.state.help_filtering = true;
+                    self.state.help_query.cursor = self.state.help_query.text.len();
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.state.help_scroll = self.state.help_scroll.saturating_add(1)
                 }
@@ -1442,10 +1516,6 @@ impl App {
                 KeyCode::End | KeyCode::Char('G') => self.state.help_scroll = u16::MAX,
                 _ => {}
             }
-            return;
-        }
-        if key.code == KeyCode::F(1) {
-            self.state.help = true;
             return;
         }
         if key.code == KeyCode::F(5) {
@@ -1539,7 +1609,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_requested = true,
-            KeyCode::Char('?') => self.state.help = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
                 self.navigate(Screen::Search);
                 self.state.focus = Focus::Search;
@@ -1747,7 +1817,7 @@ impl App {
                 if std::mem::take(&mut self.copy_requested) {
                     self.copy_text();
                 }
-                let capture = self.state.text_view.is_some() && !self.state.help;
+                let capture = self.state.help || self.state.text_view.is_some();
                 if capture != mouse_capture {
                     if capture {
                         execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -1832,6 +1902,48 @@ mod tests {
                 download_dir: dir.join("downloads"),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn help_filter_isolates_input_and_preserves_the_underlying_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(
+            "anime query".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        let mut app = test_app(state, dir.path());
+        let original_focus = app.state.focus;
+        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        for c in "qhsD".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.paste(" downloads");
+        assert_eq!(app.state.help_query.text, "qhsD downloads");
+        assert_eq!(app.state.query.text, "anime query");
+        assert_eq!(app.state.mode, Mode::Sub);
+        assert_eq!(app.state.focus, original_focus);
+        assert!(!app.quit && app.state.help);
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(app.state.help_query.text.is_empty());
+        app.paste("quality");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.state.help && !app.state.help_filtering);
+        assert_eq!(app.state.help_query.text, "quality");
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.state.help_scroll, 1);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.state.help && !app.quit);
+        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.state.help_query.text.is_empty());
+        assert_eq!(app.state.help_scroll, 0);
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(!app.state.help);
     }
 
     #[tokio::test]

@@ -62,7 +62,7 @@ outside the terminal input loop.
 | F5 or `R` | Retry the current view and artwork; F5 also works while typing |
 | F6 | Retry the failed episode and remaining queue, keeping its original settings |
 | Delete in history | Remove the highlighted history entry |
-| `?` or F1 | Help; ↑/↓ scroll the guide |
+| `?` or F1 | Help; `/` filters by key or action, ↑/↓ scroll |
 | Esc | Leave input / return to the previous screen / close help or details |
 | ← / `h` / Backspace outside input | Return to the previous screen / close help or details |
 | `q` outside text input | Close Help/Details, otherwise quit and stop owned jobs |

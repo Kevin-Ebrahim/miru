@@ -1304,17 +1304,253 @@ fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
     format!("{marker}{}", &text[start..])
 }
 
+const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Navigation",
+        &[
+            ("H", "Home"),
+            ("/", "Search"),
+            ("Alt+h", "History"),
+            ("j/k / Up/Down", "Move or scroll"),
+            ("Ctrl+n/p", "Next / previous item"),
+            ("PgUp/PgDn / Ctrl+u/d/f/b", "Jump ten items or lines"),
+            ("g/G / Home/End", "First / last item or line"),
+            ("Enter", "Open series / play episode"),
+            ("l / Right", "Open series / episode details"),
+            ("i", "Series details"),
+            ("Esc / h / Left", "Back (Esc leaves text input)"),
+            ("Alt+e", "Toggle exact search"),
+            ("Delete", "Remove highlighted history entry"),
+            ("Drag in text / y", "Select and copy / copy panel text"),
+        ],
+    ),
+    (
+        "Playback & downloads",
+        &[
+            ("s / D", "Switch SUB/DUB"),
+            ("Q", "Change quality"),
+            ("Space / Tab", "Mark episode"),
+            (":", "Mark range (1-3, 5 or 0--1)"),
+            ("d", "Download marked or current episodes"),
+            ("n / p / r", "Next / previous / replay"),
+            ("x", "Stop or dismiss activity"),
+            ("F5 / R", "Retry request and cover"),
+            ("F6", "Retry remaining queue"),
+        ],
+    ),
+    (
+        "Text editing",
+        &[
+            ("Ctrl+a/e / Home/End", "Start / end of line"),
+            ("Ctrl+b/f / Left/Right", "Previous / next character"),
+            ("Alt+b/f / Ctrl+Left/Right", "Previous / next word"),
+            ("Ctrl+u/k", "Cut to start / end of line"),
+            ("Ctrl+w", "Cut previous whitespace word"),
+            ("Alt+Backspace/d", "Cut previous / next word"),
+            ("Ctrl+y", "Restore last cut"),
+            ("Ctrl+h/d", "Backspace / delete character"),
+            ("Esc / Ctrl+g", "Leave text input"),
+            ("Enter / Ctrl+j/m", "Accept input"),
+        ],
+    ),
+    (
+        "App controls",
+        &[
+            ("? / F1", "Help (F1 also works while typing)"),
+            ("q", "Close Help/Details; otherwise quit"),
+            ("Ctrl+c", "Quit from anywhere"),
+        ],
+    ),
+    (
+        "Terminal options",
+        &[
+            ("--no-animation", "Disable animation"),
+            ("--images off", "Hide covers"),
+            ("--ascii", "Plain borders and symbols"),
+        ],
+    ),
+];
+
+fn help_matches(query: &str, text: &str) -> bool {
+    let text = text.to_lowercase();
+    query.split_whitespace().all(|term| text.contains(term))
+}
+
+fn help_key_aliases(keys: &str) -> String {
+    let mut aliases = String::new();
+    for group in keys.split(" / ") {
+        let mut modifier = "";
+        for key in group.split('/') {
+            let key = key.trim();
+            if let Some((prefix, _)) = key.rsplit_once('+') {
+                modifier = &key[..prefix.len() + 1];
+                aliases.push_str(key);
+            } else {
+                aliases.push_str(modifier);
+                aliases.push_str(key);
+            }
+            aliases.push(' ');
+        }
+    }
+    aliases
+}
+
+fn help_lines(state: &State, width: usize, diagnostics: &str) -> Vec<Line<'static>> {
+    let query = state.help_query.text.to_lowercase();
+    let mut lines = Vec::new();
+    let key_style = Style::default().fg(palette(state).text).bold();
+    for (group, entries) in HELP_GROUPS {
+        let entries: Vec<_> = entries
+            .iter()
+            .filter(|(key, action)| {
+                help_matches(
+                    &query,
+                    &format!("{group} {key} {action} {}", help_key_aliases(key)),
+                )
+            })
+            .collect();
+        if entries.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(*group, accent(state)));
+        for (key, action) in entries {
+            if width >= 64 {
+                for (index, description) in wrap_prose(action, width - 29).into_iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{:<29}", if index == 0 { key } else { "" }),
+                            key_style,
+                        ),
+                        Span::styled(description, muted(state)),
+                    ]));
+                }
+            } else {
+                lines.extend(
+                    wrap_prose(key, width)
+                        .into_iter()
+                        .map(|text| Line::styled(text, key_style)),
+                );
+                lines.extend(
+                    wrap_prose(action, width.saturating_sub(2))
+                        .into_iter()
+                        .map(|text| Line::styled(format!("  {text}"), muted(state))),
+                );
+            }
+        }
+    }
+    if query.trim().is_empty() {
+        lines.push(Line::default());
+        for note in [
+            "Printable keys stay text while typing.",
+            "Browsing keeps playback and downloads running.",
+            "Language and quality changes apply to the next queue.",
+            "History records launches, not completion or position.",
+        ] {
+            lines.extend(
+                wrap_prose(note, width)
+                    .into_iter()
+                    .map(|text| Line::styled(text, muted(state))),
+            );
+        }
+    }
+    let diagnostics: Vec<_> = diagnostics
+        .split("\n\n")
+        .filter(|text| {
+            !text.trim().is_empty() && help_matches(&query, &format!("Diagnostics {text}"))
+        })
+        .collect();
+    if !diagnostics.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled("Diagnostics", accent(state)));
+        for diagnostic in diagnostics {
+            lines.extend(wrap_prose(diagnostic, width).into_iter().map(Line::from));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled("No matching shortcuts", muted(state)));
+    }
+    lines
+}
+
 fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
-    let block = panel(" Help / Up,Down scroll / Esc ".into(), state, true).style(
-        Style::default()
-            .fg(palette(state).text)
-            .bg(palette(state).canvas),
-    );
+    let base = Style::default()
+        .fg(palette(state).text)
+        .bg(palette(state).canvas);
     frame.render_widget(Clear, area);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let text = "H                 Home\n/                 Search\nAlt+h             History\nEnter             Accept input / open / play\nl / Right         Open series / episode details\nUp/Down or j/k     Navigate or scroll\nCtrl+n/p          Next / previous item\nPgUp/PgDn         Jump ten items or lines\nCtrl+d/u, Ctrl+f/b Jump ten items or lines\nHome/End or g/G    First / last item or line\ni                 Series details\nDrag in text      Select and copy panel text\ny outside input   Copy selection or full text\nAlt+e             Exact match\ns (or D) / Q      Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc / h / Left    Back (Esc leaves input)\nF1                Help, including while typing\nq                 Close Help/Details; otherwise quit\nCtrl+C            Quit from anywhere\n\nText editing\nCtrl+a/e          Start / end of line\nCtrl+b/f          Previous / next character\nAlt+b/f, Ctrl+arrows Previous / next word\nCtrl+u/k          Cut to start / end of line\nCtrl+w            Cut previous whitespace word\nAlt+Backspace/d   Cut previous / next word\nCtrl+y            Restore last cut\nCtrl+h/d          Backspace / delete character\nCtrl+g            Leave input\nCtrl+j/m          Accept input\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
+    frame.render_widget(Block::default().style(base), area);
+    let width = area
+        .width
+        .saturating_sub(if area.width >= 40 { 4 } else { 0 })
+        .min(96);
+    let margin_y = u16::from(area.height >= 20);
+    let modal = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + margin_y,
+        width,
+        area.height.saturating_sub(margin_y * 2),
+    );
+    let block = panel(String::new(), state, true).style(base);
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let [header, filter, _, body, _, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(u16::from(inner.height >= 18)),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new("Keybindings").style(Style::default().bold()),
+        header,
+    );
+    let close = if state.help_filtering {
+        " F1 close "
+    } else {
+        " Esc close "
+    };
+    if header.width >= 26 {
+        frame.render_widget(
+            Paragraph::new(close).style(
+                Style::default()
+                    .fg(palette(state).canvas)
+                    .bg(palette(state).focus)
+                    .bold(),
+            ),
+            Rect::new(
+                header.right() - close.len() as u16,
+                header.y,
+                close.len() as u16,
+                1,
+            ),
+        );
+    }
+    if state.help_filtering || !state.help_query.text.is_empty() {
+        let (query, cursor) = input_window(
+            &state.help_query.text,
+            state.help_query.cursor,
+            usize::from(filter.width.saturating_sub(3)),
+        );
+        frame.render_widget(
+            Paragraph::new(format!("/ {query}")).style(accent(state)),
+            filter,
+        );
+        if state.help_filtering && filter.width > 2 && filter.height > 0 {
+            frame.set_cursor_position((filter.x + 2 + cursor as u16, filter.y));
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new("/ Filter by key or action").style(muted(state)),
+            filter,
+        );
+    }
     let job = state
         .activity
         .as_ref()
@@ -1356,17 +1592,31 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
         })
         .unwrap_or_default();
     let cover = art.error.as_deref().unwrap_or(&art.label);
-    let paragraph = Paragraph::new(format!(
-        "{text}{status}{request_error}{job}\n\nCovers: {cover}{synopsis_error}"
-    ))
-    .wrap(Wrap { trim: false });
-    let content_length = paragraph.line_count(inner.width);
-    let max_scroll = content_length
-        .saturating_sub(usize::from(inner.height))
-        .min(usize::from(u16::MAX)) as u16;
-    state.help_scroll = state.help_scroll.min(max_scroll);
-    frame.render_widget(paragraph.scroll((state.help_scroll, 0)), inner);
-    render_scrollbar(frame, state, inner, content_length, state.help_scroll);
+    let lines = help_lines(
+        state,
+        usize::from(body.width),
+        &format!("{status}{request_error}{job}\n\nCovers: {cover}{synopsis_error}"),
+    );
+    let content_length = lines.len();
+    state.help_scroll = state.help_scroll.min(
+        content_length
+            .saturating_sub(usize::from(body.height))
+            .min(usize::from(u16::MAX)) as u16,
+    );
+    frame.render_widget(Paragraph::new(lines).scroll((state.help_scroll, 0)), body);
+    render_scrollbar(frame, state, body, content_length, state.help_scroll);
+    let hint = if state.help_filtering {
+        if footer.width >= 55 {
+            "Enter/Esc Done   Ctrl+u Clear   Down Scroll"
+        } else {
+            "Enter/Esc Done"
+        }
+    } else if footer.width >= 64 {
+        "/ Filter   j/k or Up/Down Scroll   Esc Close"
+    } else {
+        "/ Filter  j/k Move  Esc Close"
+    };
+    frame.render_widget(Paragraph::new(hint).style(muted(state)), footer);
 }
 fn empty_art(
     frame: &mut Frame,
@@ -1525,7 +1775,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
         terminal.draw(|f| render(f, &mut state, &art)).unwrap();
-        let cell = &terminal.backend().buffer()[(2, 2)];
+        let cell = &terminal.backend().buffer()[(4, 2)];
         assert_eq!(cell.bg, state.palette.canvas);
         assert_eq!(cell.fg, state.palette.text);
     }
@@ -1697,6 +1947,56 @@ mod tests {
                 assert!(text.contains("Saved /tmp/episode.mkv"), "{text}");
                 state.help = false;
             }
+        }
+    }
+
+    #[test]
+    fn help_finds_individual_shortcut_aliases() {
+        assert!(!help_key_aliases("Ctrl+a/e / Home/End").contains("Ctrl+Home"));
+        assert!(!help_key_aliases("Ctrl+b/f / Left/Right").contains("Ctrl+Right"));
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        for (query, expected) in [
+            ("Ctrl+e", "Start / end of line"),
+            ("Ctrl+f", "Previous / next character"),
+            ("Ctrl+p", "Next / previous item"),
+            ("Alt+d", "Cut previous / next word"),
+            ("Ctrl+Right", "Previous / next word"),
+        ] {
+            state.help_query.set(query.into());
+            let text = help_lines(&state, 92, "")
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains(expected), "{query}: {text}");
+        }
+    }
+
+    #[test]
+    fn help_filters_keys_actions_and_groups_at_all_sizes() {
+        for (width, height) in [(32, 12), (80, 24), (160, 50)] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.help = true;
+            state.help_filtering = true;
+            for (query, expected) in [
+                ("sUb/DuB", "s / D"),
+                ("Ctrl+y", "Restore last cut"),
+                ("playback quality", "Change quality"),
+            ] {
+                state.help_query.set(query.into());
+                state.help_scroll = u16::MAX;
+                let text = render_text(&mut state, width, height);
+                assert!(text.contains(expected), "{text}");
+                assert!(
+                    text.contains("Keybindings") && text.contains("Enter/Esc Done"),
+                    "{text}"
+                );
+                assert!(!text.contains("Terminal options"));
+                assert_eq!(state.help_scroll, 0);
+            }
+            state.help_query.set("no-such-shortcut".into());
+            assert!(render_text(&mut state, width, height).contains("No matching shortcuts"));
         }
     }
 
@@ -2015,6 +2315,7 @@ mod tests {
         let text = render_text(&mut state, 80, 24);
         assert!(!text.contains("Refresh failed"));
         state.help = true;
+        state.help_scroll = u16::MAX;
         let text = render_text(&mut state, 120, 60);
         assert!(
             text.contains("Episodes: Persistent provider failure"),
