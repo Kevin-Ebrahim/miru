@@ -614,8 +614,10 @@ impl App {
             self.state.mode = entry.mode;
         }
         let same_series = self.state.anime.as_ref().is_some_and(|a| a.id == anime.id);
-        if !same_series {
+        if entry.is_some() || !same_series {
             self.state.marked.clear();
+        }
+        if !same_series {
             self.state.episodes.clear();
             self.state.episode_selected = 0;
             self.state.list_offsets[Screen::Episodes as usize] = 0;
@@ -859,9 +861,7 @@ impl App {
                         self.select_continuation();
                     }
                     Err(err) => {
-                        let message = format!("{err:#}");
-                        self.state.request_error = Some(message.clone());
-                        self.state.message(message, true);
+                        self.state.request_error = Some(format!("{err:#}"));
                     }
                 }
             }
@@ -960,20 +960,23 @@ impl App {
                 Ok(library) => {
                     let selected =
                         [self.state.home_selected, self.state.history_selected].map(|i| {
-                            self.state
-                                .history
-                                .get(i)
-                                .map(|e| (e.anime.id.clone(), e.mode))
+                            (
+                                i,
+                                self.state
+                                    .history
+                                    .get(i)
+                                    .map(|e| (e.anime.id.clone(), e.mode)),
+                            )
                         });
                     self.state.history = library.entries;
-                    let positions = selected.map(|key| {
+                    let positions = selected.map(|(previous, key)| {
                         key.and_then(|(id, mode)| {
                             self.state
                                 .history
                                 .iter()
                                 .position(|e| e.anime.id == id && e.mode == mode)
                         })
-                        .unwrap_or(0)
+                        .unwrap_or_else(|| previous.min(self.state.history.len().saturating_sub(1)))
                     });
                     self.state.home_selected = positions[0].min(7);
                     self.state.history_selected = positions[1];
@@ -1117,6 +1120,7 @@ impl App {
             KeyCode::Char('H') => self.home(),
             KeyCode::Char('h') => self.history(),
             KeyCode::Char('i') if self.state.selected_anime().is_some() => {
+                self.state.message("", false);
                 self.state.details = true;
                 self.state.details_scroll = 0;
                 self.load_synopsis(false);
@@ -1358,6 +1362,107 @@ mod tests {
             ..Default::default()
         }
     }
+    fn test_app(state: State, dir: &std::path::Path) -> App {
+        App::new(
+            state,
+            Provider::new("http://127.0.0.1:9").unwrap(),
+            Options {
+                player: "does-not-exist".into(),
+                player_args: vec![],
+                cache: dir.join("cache"),
+                state_dir: dir.into(),
+                images: false,
+                download_dir: dir.join("downloads"),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn home_and_history_continuations_play_the_highlighted_episode_without_old_marks() {
+        for screen in [Screen::Home, Screen::History] {
+            for (last, expected) in [("1", "2"), ("3", "3")] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut state =
+                    State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+                state.screen = screen;
+                state.anime = Some(anime("series", "A series"));
+                state.history.push(crate::persistence::Entry {
+                    anime: state.anime.clone().unwrap(),
+                    episode: last.into(),
+                    mode: Mode::Dub,
+                    watched_at: 1,
+                });
+                state.episodes = (1..=3)
+                    .map(|n| Episode {
+                        id: n.to_string(),
+                        number: n.to_string(),
+                        title: String::new(),
+                    })
+                    .collect();
+                state.marked = [0, 1].into();
+                let mut app = test_app(state, dir.path());
+                let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                app.key(enter);
+                assert!(app.state.marked.is_empty());
+                assert_eq!(
+                    app.state.episodes[app.state.episode_selected].number,
+                    expected
+                );
+                app.key(enter);
+                let activity = app.state.activity.as_ref().unwrap();
+                assert_eq!(activity.episodes[activity.index].number, expected);
+                assert!(activity.remaining.is_empty());
+                assert_eq!(activity.mode, Mode::Dub);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn history_deletion_keeps_the_nearest_row_and_updates_preserve_identity() {
+        for removed in [0, 2, 3] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.history = (0..4)
+                .map(|n| crate::persistence::Entry {
+                    anime: anime(&n.to_string(), &format!("Series {n}")),
+                    episode: "1".into(),
+                    mode: Mode::Sub,
+                    watched_at: n,
+                })
+                .collect();
+            state.home_selected = removed;
+            state.history_selected = removed;
+            let mut entries = state.history.clone();
+            entries.remove(removed);
+            let mut app = test_app(state, dir.path());
+            app.message(Message::Library(Ok(crate::persistence::Library {
+                entries: entries.clone(),
+                ..Default::default()
+            })));
+            assert_eq!(app.state.home_selected, removed.min(2));
+            assert_eq!(app.state.history_selected, removed.min(2));
+            let selected = app.state.history[app.state.history_selected]
+                .anime
+                .id
+                .clone();
+            entries.reverse();
+            app.message(Message::Library(Ok(crate::persistence::Library {
+                entries,
+                ..Default::default()
+            })));
+            assert_eq!(
+                app.state.history[app.state.history_selected].anime.id,
+                selected
+            );
+            app.message(Message::Library(Ok(crate::persistence::Library::default())));
+            assert_eq!(
+                (app.state.home_selected, app.state.history_selected),
+                (0, 0)
+            );
+        }
+    }
+
     #[test]
     fn provider_alias_matches_remain_visible_and_cached_refresh_keeps_selection() {
         let mut state = State::new(

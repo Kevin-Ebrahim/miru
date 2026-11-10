@@ -31,6 +31,14 @@ fn symbol<'a>(state: &State, unicode: &'a str, ascii: &'a str) -> &'a str {
     if state.ascii { ascii } else { unicode }
 }
 
+fn episode_refresh_error(state: &State) -> Option<&str> {
+    if state.screen == Screen::Episodes && !state.details && !state.episodes.is_empty() {
+        state.request_error.as_deref()
+    } else {
+        None
+    }
+}
+
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     Layout::vertical([
         Constraint::Length(if state.screen == Screen::Episodes && !state.details {
@@ -47,8 +55,8 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         ),
         Constraint::Min(1),
         Constraint::Length(
-            if state.request_blocks_list()
-                || (state.status.is_empty() && state.request_error.is_none())
+            if episode_refresh_error(state).is_none()
+                && (state.status.is_empty() || state.request_blocks_list())
             {
                 0
             } else {
@@ -231,12 +239,18 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         }
     }
     if status.height > 0 {
-        let (text, error) = if let Some(error) = &state.request_error {
-            (format!(" ! Refresh failed / F5 Retry\n {error}"), true)
-        } else {
+        let (text, error) = if !state.status.is_empty() {
             (
                 format!(" {}{}", if state.error { "! " } else { "" }, state.status),
                 state.error,
+            )
+        } else {
+            (
+                format!(
+                    " ! Refresh failed / F5 Retry\n {}",
+                    episode_refresh_error(state).unwrap_or_default()
+                ),
+                true,
             )
         };
         frame.render_widget(
@@ -388,7 +402,7 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
     // Printable shortcuts are text while editing.
     if matches!(state.focus, Focus::Search | Focus::Range) {
         global = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
-        if state.request_error.is_some() {
+        if state.request_error.is_some() && !state.details {
             global.insert(0, "F5 Retry".into());
         }
     } else if !state.details {
@@ -908,14 +922,30 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
         })
         .map(|message| format!("\n\nSynopsis: {message}"))
         .unwrap_or_default();
-    let status = if state.status.is_empty() {
+    let status = if state.status.is_empty()
+        || state.request_error.as_deref() == Some(state.status.as_str())
+    {
         String::new()
     } else {
         format!("\n\nStatus: {}", state.status)
     };
+    let request_error = state
+        .request_error
+        .as_ref()
+        .map(|error| {
+            format!(
+                "\n\n{}: {error}",
+                if state.screen == Screen::Episodes {
+                    "Episodes"
+                } else {
+                    "Search"
+                }
+            )
+        })
+        .unwrap_or_default();
     let cover = art.error.as_deref().unwrap_or(&art.label);
     let paragraph = Paragraph::new(format!(
-        "{text}{status}{job}\n\nCovers: {cover}{synopsis_error}"
+        "{text}{status}{request_error}{job}\n\nCovers: {cover}{synopsis_error}"
     ))
     .wrap(Wrap { trim: false });
     let content_length = paragraph.line_count(inner.width);
@@ -1245,6 +1275,48 @@ mod tests {
         let text = render_text(&mut state, 80, 24);
         assert!(text.contains("Episodes unavailable"));
         assert!(!text.contains("Enter Play"));
+    }
+
+    #[test]
+    fn refresh_errors_do_not_mask_validation_or_follow_the_user_into_details() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.anime = Some(Anime {
+            id: "series".into(),
+            title: "A series".into(),
+            ..Default::default()
+        });
+        state.episodes = vec![Episode {
+            id: "1".into(),
+            number: "1".into(),
+            title: "The beginning".into(),
+        }];
+        state.request_error = Some("Persistent provider failure".into());
+        state.status = "Range must go forward".into();
+        state.error = true;
+        state.focus = Focus::Range;
+        state.range.set("3-1".into());
+        for (w, h) in [(80, 24), (32, 12)] {
+            let text = render_text(&mut state, w, h);
+            assert!(text.contains("Range must go forward"), "{text}");
+            assert!(text.contains("Cached"));
+        }
+        state.status.clear();
+        state.focus = Focus::List;
+        let text = render_text(&mut state, 80, 24);
+        assert!(text.contains("Refresh failed / F5 Retry"));
+        state.details = true;
+        let text = render_text(&mut state, 80, 24);
+        assert!(!text.contains("Refresh failed"));
+        state.help = true;
+        let text = render_text(&mut state, 120, 60);
+        assert!(
+            text.contains("Episodes: Persistent provider failure"),
+            "{text}"
+        );
+        state.status = state.request_error.clone().unwrap();
+        let text = render_text(&mut state, 120, 60);
+        assert_eq!(text.matches("Persistent provider failure").count(), 1);
     }
 
     #[test]
