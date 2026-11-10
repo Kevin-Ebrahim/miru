@@ -27,6 +27,10 @@ to browse episodes. `H` returns Home, `h` opens full history, and Esc retraces
 your navigation, preserving queries, selections and scroll positions. `i` opens
 full cover/details, including in compact terminals. This view fetches the full
 synopsis instead of the provider's shortened search snippet; F5 retries it.
+Drag over the text in Details or a series preview to select it; releasing the mouse
+copies only that selection. This includes the title, episode, metadata and synopsis.
+Outside text input, press `y` to copy the selection again, or the full text panel
+when nothing is selected. The mouse wheel over a text panel scrolls its content.
 Browsing leaves playback and downloads running; `x` stops the current job or
 dismisses its result.
 Network requests, cover downloads, image decoding, and image encoding run

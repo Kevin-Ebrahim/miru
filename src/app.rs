@@ -7,8 +7,13 @@ use crate::{
 };
 use anyhow::Result;
 use crossterm::SynchronizedUpdate;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use crossterm::{clipboard::CopyToClipboard, execute};
 use lru::LruCache;
+use ratatui::layout::{Position, Rect};
 use ratatui_image::picker::Picker;
 use std::num::NonZeroUsize;
 use std::{
@@ -152,6 +157,83 @@ pub enum Synopsis {
     Failed(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TextPosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TextSelection {
+    pub anchor: TextPosition,
+    pub end: TextPosition,
+    pub dragging: bool,
+}
+
+impl TextSelection {
+    pub fn range(&self) -> (TextPosition, TextPosition) {
+        (self.anchor.min(self.end), self.anchor.max(self.end))
+    }
+}
+
+pub struct TextView {
+    pub area: Rect,
+    pub offset: usize,
+    pub lines: Vec<String>,
+}
+
+impl TextView {
+    pub fn position(&self, column: u16, row: u16) -> TextPosition {
+        use unicode_width::UnicodeWidthStr;
+        let line =
+            self.offset + usize::from(row.clamp(self.area.y, self.area.bottom() - 1) - self.area.y);
+        let requested =
+            usize::from(column.saturating_sub(self.area.x)).min(usize::from(self.area.width));
+        let mut position = 0;
+        for grapheme in self.lines[line].graphemes(true) {
+            if position + grapheme.width() > requested {
+                break;
+            }
+            position += grapheme.width();
+        }
+        TextPosition {
+            line,
+            column: position,
+        }
+    }
+
+    pub fn selected_text(&self, selection: TextSelection) -> String {
+        use unicode_width::UnicodeWidthStr;
+        let (start, end) = selection.range();
+        let mut selected = Vec::new();
+        for (i, line) in self
+            .lines
+            .iter()
+            .enumerate()
+            .take(end.line + 1)
+            .skip(start.line)
+        {
+            let left = if i == start.line { start.column } else { 0 };
+            let right = if i == end.line {
+                end.column
+            } else {
+                line.width()
+            };
+            let mut column = 0;
+            let text: String = line
+                .graphemes(true)
+                .filter(|grapheme| {
+                    let matches = column < right && column + grapheme.width() > left;
+                    column += grapheme.width();
+                    matches
+                })
+                .collect();
+            selected.push(text);
+        }
+        selected.join("\n").trim_end().to_owned()
+    }
+}
+
 pub struct State {
     pub screen: Screen,
     pub focus: Focus,
@@ -180,6 +262,9 @@ pub struct State {
     pub request_error: Option<String>,
     pub details: bool,
     pub details_scroll: u16,
+    pub preview_scroll: u16,
+    pub text_view: Option<TextView>,
+    pub text_selection: Option<TextSelection>,
     pub help: bool,
     pub help_scroll: u16,
     pub frame: usize,
@@ -244,6 +329,9 @@ impl State {
             request_error: None,
             details: false,
             details_scroll: 0,
+            preview_scroll: 0,
+            text_view: None,
+            text_selection: None,
             help: false,
             help_scroll: 0,
             frame: 0,
@@ -1007,6 +1095,84 @@ impl App {
         }
     }
 
+    fn copy_text(&self) {
+        if let Some(view) = &self.state.text_view {
+            let text = self
+                .state
+                .text_selection
+                .map(|selection| view.selected_text(selection))
+                .unwrap_or_else(|| view.lines.join("\n"));
+            if !text.is_empty() {
+                let _ = execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text));
+            }
+        }
+    }
+
+    fn mouse(&mut self, event: MouseEvent) -> Option<String> {
+        if self.state.help || (!self.state.details && self.state.text_view.is_none()) {
+            return None;
+        }
+        match event.kind {
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let down = event.kind == MouseEventKind::ScrollDown;
+                let over_text =
+                    self.state.text_view.as_ref().is_some_and(|view| {
+                        view.area.contains(Position::new(event.column, event.row))
+                    });
+                if self.state.details || over_text {
+                    let scroll = if self.state.details {
+                        &mut self.state.details_scroll
+                    } else {
+                        &mut self.state.preview_scroll
+                    };
+                    *scroll = if down {
+                        scroll.saturating_add(3)
+                    } else {
+                        scroll.saturating_sub(3)
+                    };
+                } else {
+                    self.key(KeyEvent::new(
+                        if down { KeyCode::Down } else { KeyCode::Up },
+                        KeyModifiers::NONE,
+                    ));
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.state.text_selection = self
+                    .state
+                    .text_view
+                    .as_ref()
+                    .filter(|view| view.area.contains(Position::new(event.column, event.row)))
+                    .map(|view| {
+                        let point = view.position(event.column, event.row);
+                        TextSelection {
+                            anchor: point,
+                            end: point,
+                            dragging: true,
+                        }
+                    });
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(selection) = &mut self.state.text_selection
+                    && selection.dragging
+                    && let Some(view) = &self.state.text_view
+                {
+                    selection.end = view.position(event.column, event.row);
+                    if event.kind == MouseEventKind::Up(MouseButton::Left) {
+                        selection.dragging = false;
+                        let text = view.selected_text(*selection);
+                        if !text.is_empty() {
+                            return Some(text);
+                        }
+                        self.state.text_selection = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     fn paste(&mut self, text: &str) {
         if self.state.help || self.state.details || self.state.focus == Focus::List {
             return;
@@ -1095,6 +1261,7 @@ impl App {
                 KeyCode::End => self.state.details_scroll = u16::MAX,
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char('x') => self.stop(),
+                KeyCode::Char('y') => self.copy_text(),
                 _ => {}
             }
             return;
@@ -1144,6 +1311,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_text(),
             KeyCode::Char('?') => self.state.help = true,
             KeyCode::Char('/') => {
                 self.navigate(Screen::Search);
@@ -1156,6 +1324,8 @@ impl App {
                 self.state.message("", false);
                 self.state.details = true;
                 self.state.details_scroll = 0;
+                self.state.text_view = None;
+                self.state.text_selection = None;
                 self.load_synopsis(false);
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
@@ -1297,6 +1467,7 @@ impl App {
         let mut animation = Instant::now();
         let mut dirty = true;
         let mut art_revision = 0;
+        let mut mouse_capture = false;
         let [mut interrupt, mut terminate, mut hangup] = signals;
         while !self.quit {
             if self.search_due.is_some_and(|at| Instant::now() >= at) {
@@ -1304,10 +1475,29 @@ impl App {
                 dirty = true;
             }
             while crossterm::event::poll(Duration::ZERO)? {
+                let event = crossterm::event::read()?;
+                if matches!(
+                    event,
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Moved,
+                        ..
+                    })
+                ) {
+                    continue;
+                }
                 dirty = true;
-                match crossterm::event::read()? {
+                match event {
                     Event::Key(key) => self.key(key),
                     Event::Paste(text) => self.paste(&text),
+                    Event::Mouse(event) => {
+                        if let Some(text) = self.mouse(event) {
+                            execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))?;
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        self.state.text_selection = None;
+                        self.state.text_view = None;
+                    }
                     _ => {}
                 }
             }
@@ -1333,6 +1523,15 @@ impl App {
                     terminal.draw(|frame| ui::render(frame, &mut self.state, &art))?;
                     Ok(())
                 })??;
+                let capture = self.state.text_view.is_some() && !self.state.help;
+                if capture != mouse_capture {
+                    if capture {
+                        execute!(std::io::stdout(), EnableMouseCapture)?;
+                    } else {
+                        execute!(std::io::stdout(), DisableMouseCapture)?;
+                    }
+                    mouse_capture = capture;
+                }
                 dirty = false;
             }
             tokio::select! {
@@ -1349,6 +1548,9 @@ impl App {
                 _ = hangup.recv() => self.quit = true,
                 _ = interrupt.recv() => self.quit = true,
             }
+        }
+        if mouse_capture {
+            execute!(std::io::stdout(), DisableMouseCapture)?;
         }
         self.stop();
         abort(&mut self.search_task);
@@ -1443,6 +1645,61 @@ mod tests {
                 assert_eq!(activity.mode, Mode::Dub);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn synopsis_mouse_selection_clamps_to_prose_and_copies_no_surrounding_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.details = true;
+        state.text_view = Some(TextView {
+            area: Rect::new(10, 5, 12, 3),
+            offset: 0,
+            lines: vec!["First line".into(), "".into(), "Second line".into()],
+        });
+        let mut app = test_app(state, dir.path());
+        let mouse = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 5));
+        assert!(app.state.text_selection.is_none());
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 5));
+        app.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 60, 20));
+        let copied = app.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 60, 20));
+        assert_eq!(copied.as_deref(), Some("First line\n\nSecond line"));
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 21, 7));
+        let copied = app.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 0, 0));
+        assert_eq!(copied.as_deref(), Some("First line\n\nSecond line"));
+        app.state.help = true;
+        assert!(
+            app.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 20, 7))
+                .is_none()
+        );
+        app.state.help = false;
+        app.state.text_view = Some(TextView {
+            area: Rect::new(10, 5, 12, 1),
+            offset: 0,
+            lines: vec!["A日e\u{301} B".into()],
+        });
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 11, 5));
+        let copied = app.mouse(mouse(MouseEventKind::Up(MouseButton::Left), 14, 5));
+        assert_eq!(copied.as_deref(), Some("日e\u{301}"));
+        app.state.details = false;
+        app.mouse(mouse(MouseEventKind::ScrollDown, 11, 5));
+        assert_eq!(app.state.preview_scroll, 3);
+        app.state.screen = Screen::Episodes;
+        app.state.episodes = (1..=3)
+            .map(|n| Episode {
+                id: n.to_string(),
+                number: n.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        app.mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
+        assert_eq!(app.state.episode_selected, 1);
     }
 
     #[tokio::test]

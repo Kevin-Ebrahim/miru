@@ -12,7 +12,7 @@ mod ui;
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
     execute,
 };
 use model::{Mode, normalized};
@@ -115,7 +115,8 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             io::stdout(),
             crossterm::terminal::EndSynchronizedUpdate,
-            DisableBracketedPaste
+            DisableBracketedPaste,
+            DisableMouseCapture
         );
         ratatui::restore();
     }
@@ -251,7 +252,8 @@ async fn main() -> Result<()> {
         let _ = execute!(
             io::stdout(),
             crossterm::terminal::EndSynchronizedUpdate,
-            DisableBracketedPaste
+            DisableBracketedPaste,
+            DisableMouseCapture
         );
         original_hook(info);
     }));

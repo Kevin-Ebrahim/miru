@@ -10,6 +10,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import select
 import signal
 import struct
@@ -182,6 +183,12 @@ while not (root / str(os.getpid())).exists():
             send(b"i")
             # Cursor moves may split the sentence when only changed cells are drawn.
             wait_for(lambda: b"snippet." in output)
+            output.clear()
+            send(b"y")
+            payloads = re.findall(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)", output)
+            copied = base64.b64decode(payloads[-1]).decode()
+            assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
+            assert "F1 Help" not in copied and "Enter Episodes" not in copied
             send(b"\x1b")
             send(b"i")
             assert requests.count("/original-1") == 1, "Reopening details should reuse the full synopsis"

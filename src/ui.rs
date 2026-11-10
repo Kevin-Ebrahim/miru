@@ -1,5 +1,5 @@
 use crate::{
-    app::{Focus, JobKind, JobPhase, Screen, State, Synopsis},
+    app::{Focus, JobKind, JobPhase, Screen, State, Synopsis, TextView},
     artwork::Artwork,
     palette::Palette,
     scene::Dusk,
@@ -114,7 +114,7 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
     }
     if state.details && inner.width >= 72 {
         let cover_width = (inner.width / 3).min(32);
-        let text_width = inner.width.saturating_sub(cover_width + 3).min(78);
+        let text_width = inner.width.saturating_sub(cover_width + 3).min(72);
         let left = inner.x + inner.width.saturating_sub(cover_width + text_width + 3) / 2;
         return (
             Rect::new(left, inner.y, cover_width, inner.height.min(26)),
@@ -192,6 +192,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         area,
     );
     if area.width < 32 || area.height < 12 {
+        state.text_view = None;
+        state.text_selection = None;
         frame.render_widget(
             Paragraph::new("ani-watch\nResize to at least 32 x 12\nCtrl+C quit")
                 .wrap(Wrap { trim: true }),
@@ -243,6 +245,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         render_input(frame, state, input);
     }
     if state.welcome() && !state.details {
+        state.text_view = None;
+        state.text_selection = None;
         empty_art(frame, state, body.inner(Margin::new(2, 1)), "", "", true);
     } else {
         let (list, preview) = panels(state, area);
@@ -251,6 +255,9 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         }
         if preview.width > 0 {
             render_preview(frame, state, art, preview);
+        } else {
+            state.text_view = None;
+            state.text_selection = None;
         }
     }
     if status.height > 0 {
@@ -436,6 +443,16 @@ fn key_hints(state: &State, width: usize) -> Vec<Line<'static>> {
                 "F6 Retry"
             } else {
                 "F6 Retry remaining"
+            }
+            .into(),
+        );
+    }
+    if state.details || state.text_view.is_some() {
+        global.push(
+            if state.text_selection.is_some() && (state.details || state.focus == Focus::List) {
+                "y Copy"
+            } else {
+                "Drag Select"
             }
             .into(),
         );
@@ -662,6 +679,8 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     frame.render_widget(block, area);
     let (cover, metadata) = preview_regions(state, area);
     let Some(anime) = state.selected_anime() else {
+        state.text_view = None;
+        state.text_selection = None;
         empty_art(
             frame,
             state,
@@ -746,58 +765,91 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         push("", Style::default());
     }
     push("Synopsis", accent(state));
+    if !compact_details && state.details {
+        push("", Style::default());
+    }
     let synopsis = state.synopses.peek(&anime.id);
     let description = if let Some(Synopsis::Ready(text)) = synopsis {
         text.as_str()
     } else {
         anime.description.as_str()
     };
-    push(
+    let prose = synopsis_lines(
         if description.is_empty() {
             "No synopsis"
         } else {
             description
         },
-        Style::default(),
+        metadata.width as usize,
+        state,
     );
-    if state.details {
-        match synopsis {
-            Some(Synopsis::Loading) => {
-                if !compact_details {
-                    push("", Style::default());
-                }
-                push(
-                    "Loading synopsis...",
-                    Style::default().fg(palette(state).pending),
-                );
-            }
-            Some(Synopsis::Failed(_)) => {
-                if !compact_details {
-                    push("", Style::default());
-                }
-                push(
-                    "! Synopsis unavailable / F5 Retry",
-                    Style::default().fg(palette(state).error),
-                );
-            }
-            _ => {}
+    details.extend(prose);
+    let feedback = match (state.details, synopsis) {
+        (true, Some(Synopsis::Loading)) => Some(("Loading synopsis...", palette(state).pending)),
+        (true, Some(Synopsis::Failed(_))) => {
+            Some(("! Synopsis unavailable / F5 Retry", palette(state).error))
         }
+        _ => None,
+    };
+    if let Some((message, color)) = feedback {
+        if !compact_details {
+            details.push(Line::raw(""));
+        }
+        details.extend(
+            wrap_prose(message, metadata.width as usize)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(color))),
+        );
+    }
+    let text_lines: Vec<_> = details.iter().map(ToString::to_string).collect();
+    if state
+        .text_view
+        .as_ref()
+        .is_none_or(|view| view.area.width != metadata.width || view.lines != text_lines)
+    {
+        state.text_selection = None;
+        state.preview_scroll = 0;
     }
     let max_scroll = details
         .len()
         .saturating_sub(metadata.height as usize)
         .min(u16::MAX as usize) as u16;
-    if state.details {
-        state.details_scroll = state.details_scroll.min(max_scroll);
-    }
     let scroll = if state.details {
-        state.details_scroll
+        &mut state.details_scroll
     } else {
-        0
+        &mut state.preview_scroll
     };
+    *scroll = (*scroll).min(max_scroll);
+    let scroll = *scroll;
     let content_length = details.len();
+    let offset = usize::from(scroll).min(text_lines.len());
+    let height = usize::from(metadata.height).min(text_lines.len() - offset);
+    state.text_view = (height > 0).then(|| TextView {
+        area: Rect::new(metadata.x, metadata.y, metadata.width, height as u16),
+        offset,
+        lines: text_lines,
+    });
     frame.render_widget(Paragraph::new(details).scroll((scroll, 0)), metadata);
-    if state.details {
+    {
+        if let (Some(view), Some(selection)) = (&state.text_view, state.text_selection) {
+            let (start, end) = selection.range();
+            for row in 0..view.area.height {
+                let line = view.offset + usize::from(row);
+                if line < start.line || line > end.line {
+                    continue;
+                }
+                let from = if line == start.line { start.column } else { 0 };
+                let to = if line == end.line {
+                    end.column
+                } else {
+                    view.lines[line].width()
+                };
+                for column in from..to.min(view.lines[line].width()) {
+                    frame.buffer_mut()[(view.area.x + column as u16, view.area.y + row)]
+                        .set_style(palette(state).selection);
+                }
+            }
+        }
         render_scrollbar(frame, state, metadata, content_length, scroll);
     }
 }
@@ -847,6 +899,76 @@ fn wrap_prose(text: &str, width: usize) -> Vec<String> {
             }
         }
         lines.push(line);
+    }
+    lines
+}
+
+fn synopsis_lines(text: &str, width: usize, state: &State) -> Vec<Line<'static>> {
+    let mut body = text.trim();
+    let mut credit = None;
+    for (open, close) in [('[', ']'), ('(', ')')] {
+        if body.ends_with(close)
+            && let Some(start) = body.rfind(open)
+        {
+            let candidate = &body[start + 1..body.len() - close.len_utf8()];
+            let label = candidate.to_ascii_lowercase();
+            if label.starts_with("written by ") || label.starts_with("source:") {
+                credit = Some(&body[start..]);
+                body = body[..start].trim_end();
+                break;
+            }
+        }
+    }
+    let paragraphs: Vec<_> = body
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let mut lines = Vec::new();
+    for paragraph in &paragraphs {
+        let normalized = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        // Some providers flatten all paragraphs into one text node.
+        let chunks = if paragraphs.len() == 1 && normalized.width() > 480 {
+            let mut sentences: Vec<String> = Vec::new();
+            for sentence in normalized.unicode_sentences() {
+                let abbreviated = sentences.last().is_some_and(|previous| {
+                    let word = previous.split_whitespace().last().unwrap_or("");
+                    word.strip_suffix('.').is_some_and(|initial| {
+                        initial.chars().count() == 1 && initial.chars().all(char::is_uppercase)
+                    }) || matches!(
+                        word,
+                        "Mr." | "Mrs." | "Ms." | "Dr." | "Prof." | "St." | "Jr." | "Sr."
+                    )
+                });
+                if abbreviated {
+                    sentences.last_mut().unwrap().push_str(sentence);
+                } else {
+                    sentences.push(sentence.to_owned());
+                }
+            }
+            sentences
+                .chunks(2)
+                .map(|sentences| sentences.concat().trim().to_owned())
+                .collect::<Vec<_>>()
+        } else {
+            vec![normalized]
+        };
+        for chunk in chunks {
+            if !lines.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            lines.extend(wrap_prose(&chunk, width).into_iter().map(Line::raw));
+        }
+    }
+    if let Some(credit) = credit {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(
+            wrap_prose(credit, width)
+                .into_iter()
+                .map(|line| Line::styled(line, muted(state))),
+        );
     }
     lines
 }
@@ -977,7 +1099,7 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
+    let text = "H                 Home\n/                 Search\nh                 History\nEnter             Results / episodes / play\nUp/Down or j/k    Navigate or scroll\nPgUp/PgDn         Jump ten items or lines\nHome/End or g/G   First / last item\ni                 Series details\nDrag in text      Select and copy panel text\ny outside input   Copy selection or full text\nCtrl+E            Exact match\nD / Q             Language / quality\nSpace or Tab      Mark episodes\n:                 Mark a range (1-3, 5 or 0--1)\nd                 Download marked/current episodes\nn / p / r         Next / previous / replay\nx                 Stop or dismiss\nF5 or R           Retry request and cover\nF6                Retry remaining queue\nDelete            Remove history entry\nEsc               Leave input / go back\nF1                Help, including while typing\nq or Ctrl+C       Quit and stop playback/downloads\n\nPrintable shortcuts are text while typing.\nBrowsing keeps playback and downloads running.\nLanguage and quality changes apply to the next queue.\nHistory records launches, not completion or position.\n--no-animation    Disable animation\n--images off      Hide covers\n--ascii           Plain borders and symbols";
     let job = state
         .activity
         .as_ref()
@@ -1431,6 +1553,20 @@ mod tests {
         ] {
             assert!(text.contains(content), "{text}");
         }
+        let view = state.text_view.as_ref().unwrap();
+        let line = view
+            .lines
+            .iter()
+            .position(|line| line.contains("Episode 6 / Arrival"))
+            .unwrap();
+        assert_eq!(
+            view.selected_text(crate::app::TextSelection {
+                anchor: crate::app::TextPosition { line, column: 0 },
+                end: crate::app::TextPosition { line, column: 19 },
+                dragging: false,
+            }),
+            "Episode 6 / Arrival"
+        );
     }
 
     #[test]
@@ -1631,6 +1767,131 @@ mod tests {
             Some(' ')
         );
         assert_eq!(state.details_scroll, 0);
+    }
+
+    #[test]
+    fn text_selection_includes_metadata_and_resets_when_wrapping_changes() {
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(
+            0,
+            Ok(vec![Anime {
+                id: "1".into(),
+                title: "A series title".into(),
+                info: "TV / SUB 12".into(),
+                description: "The first paragraph.\n\nThe second paragraph. [Written by Someone]"
+                    .into(),
+                ..Default::default()
+            }]),
+        );
+        state.details = true;
+        render_text(&mut state, 120, 40);
+        let view = state.text_view.as_ref().unwrap();
+        let text = view.lines.join("\n");
+        assert!(text.contains("The first paragraph.") && text.contains("[Written by Someone]"));
+        assert!(
+            text.contains("Synopsis")
+                && text.contains("A series title")
+                && text.contains("TV / SUB")
+        );
+        state.text_selection = Some(crate::app::TextSelection {
+            anchor: crate::app::TextPosition { line: 0, column: 0 },
+            end: crate::app::TextPosition { line: 0, column: 3 },
+            dragging: false,
+        });
+        render_text(&mut state, 120, 40);
+        assert!(state.text_selection.is_some());
+        assert_eq!(
+            state
+                .text_view
+                .as_ref()
+                .unwrap()
+                .selected_text(state.text_selection.unwrap()),
+            "A s"
+        );
+        render_text(&mut state, 32, 12);
+        assert!(state.text_selection.is_none());
+        state.details = false;
+        render_text(&mut state, 120, 40);
+        assert!(state.text_view.is_some());
+        render_text(&mut state, 20, 8);
+        assert!(state.text_view.is_none());
+        let anime = state.results[0].clone();
+        state.anime = Some(anime.clone());
+        state.history = vec![crate::persistence::Entry {
+            anime,
+            episode: "1".into(),
+            mode: Mode::Sub,
+            watched_at: 1,
+        }];
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::Episodes,
+            Screen::History,
+        ] {
+            state.screen = screen;
+            render_text(&mut state, 120, 40);
+            let view = state.text_view.as_ref().unwrap();
+            assert!(
+                view.lines.join("\n").contains("A series title"),
+                "{screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn synopsis_formatting_preserves_paragraphs_and_distinguishes_credits() {
+        let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        let lines = synopsis_lines(
+            "An unexpected message arrives. The journey begins.\n\nA second chapter follows. [Written by MAL Rewrite]",
+            72,
+            &state,
+        );
+        let text: Vec<_> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            text,
+            [
+                "An unexpected message arrives. The journey begins.",
+                "",
+                "A second chapter follows.",
+                "",
+                "[Written by MAL Rewrite]",
+            ]
+        );
+        assert_eq!(lines.last().unwrap().style, muted(&state));
+        let initials = format!("{}Written by Chiaki J. Konaka, this story follows a difficult journey. The story continues.",
+            "A long journey continues through unfamiliar places and brings new questions for the characters. ".repeat(5));
+        let text = synopsis_lines(&initials, 72, &state)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("J.\n\n"), "{text}");
+        let original = format!("{} [Written by MAL Rewrite]",
+            "日本語の物語。 A message arrives from an old friend. The journey continues through unfamiliar places. ".repeat(8));
+        for width in [28, 48, 72] {
+            let lines = synopsis_lines(&original, width, &state);
+            assert!(lines.iter().any(|line| line.to_string().is_empty()));
+            let rendered = lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let without_space = |text: &str| {
+                text.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>()
+            };
+            assert_eq!(without_space(&rendered), without_space(&original));
+            assert!(lines.iter().all(|line| line.width() <= width));
+        }
     }
 
     #[test]
