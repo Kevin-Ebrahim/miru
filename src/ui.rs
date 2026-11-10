@@ -50,11 +50,7 @@ fn inline_search(state: &State, width: u16) -> bool {
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     let gap = u16::from(area.height >= 20);
     let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
-        Constraint::Length(if state.screen == Screen::Episodes && !state.details {
-            2
-        } else {
-            1
-        }),
+        Constraint::Length(1 + u16::from(area.height >= 24)),
         Constraint::Length(gap),
         Constraint::Length(
             if !state.details
@@ -92,7 +88,8 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 area.width as usize,
                 (state.details || state.selected_anime().is_some()).then_some("Drag Select"),
             )
-            .len() as u16,
+            .len() as u16
+                + u16::from(area.height >= 24),
         ),
     ])
     .areas(area);
@@ -302,7 +299,11 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     );
     let hint_rows = hints.len() as u16;
     frame.render_widget(
-        Paragraph::new(hints).style(Style::default().bg(palette(state).surface)),
+        Block::default().style(Style::default().bg(palette(state).surface)),
+        footer,
+    );
+    frame.render_widget(
+        Paragraph::new(hints).style(Style::default().bg(palette(state).surface).bold()),
         Rect::new(
             footer.x,
             footer.bottom().saturating_sub(hint_rows),
@@ -332,7 +333,7 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
     };
     let settings = format!("{} / {}", state.mode.as_str().to_uppercase(), state.quality);
     let context = format!("   {location}   {settings}");
-    let mut heading = vec![Line::from(
+    let heading = vec![Line::from(
         if " ani / watch".width() + context.width() > usize::from(header.width) {
             vec![
                 Span::styled(format!(" {location}"), accent(state)),
@@ -345,21 +346,8 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
             ]
         },
     )];
-    if state.screen == Screen::Episodes
-        && !state.details
-        && let Some(anime) = &state.anime
-    {
-        heading.push(Line::raw(format!(
-            " {}",
-            ellipsize(
-                &anime.title,
-                usize::from(header.width.saturating_sub(1)),
-                state
-            )
-        )));
-    }
     frame.render_widget(
-        Paragraph::new(heading).style(Style::default().bg(palette(state).surface)),
+        Paragraph::new(heading).style(Style::default().bg(palette(state).surface).bold()),
         header,
     );
 }
@@ -367,7 +355,8 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
 fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     let bar = Style::default()
         .fg(palette(state).text)
-        .bg(palette(state).surface);
+        .bg(palette(state).surface)
+        .bold();
     frame.render_widget(Block::default().style(bar), area);
     let shortcuts = state.focus == Focus::List && !state.details;
     let settings = if shortcuts {
@@ -389,8 +378,8 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         for (screen, key, label) in [
             (Screen::Home, "H", "Home"),
-            (Screen::Search, "/", "Search"),
             (Screen::History, "h", "History"),
+            (Screen::Search, "/", "Search"),
         ] {
             if screen == Screen::History && state.history.is_empty() && state.screen != screen {
                 continue;
@@ -401,12 +390,22 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
             }
             nav.push(Span::styled(
                 label,
-                if active { accent(state) } else { muted(state) },
+                if active {
+                    accent(state).underlined()
+                } else {
+                    muted(state)
+                },
             ));
-            nav.push(Span::raw("   "));
+            nav.push(Span::raw(
+                if screen == Screen::Search && inline_search(state, area.width) {
+                    " "
+                } else {
+                    "   "
+                },
+            ));
         }
         if state.screen == Screen::Episodes {
-            nav.push(Span::styled("Episodes", accent(state)));
+            nav.push(Span::styled("Episodes", accent(state).underlined()));
         }
     }
     let navigation = Line::from(nav);
@@ -421,7 +420,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     frame.render_widget(Paragraph::new(settings).style(muted(state)), right);
     if inline_search(state, area.width) {
         let label = if state.exact { "[EXACT] " } else { "" };
-        let field = middle.inner(Margin::new(2, 0));
+        let field = Rect::new(middle.x, middle.y, middle.width.saturating_sub(2), 1);
         let content = Rect::new(
             field.x + label.len() as u16,
             field.y,
@@ -445,18 +444,6 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         if state.focus == Focus::Search && !state.help {
             frame.set_cursor_position((content.x + cursor as u16, content.y));
         }
-    }
-    if state.screen == Screen::Episodes
-        && !state.details
-        && let Some(anime) = &state.anime
-    {
-        frame.render_widget(
-            Paragraph::new(format!(
-                " {}",
-                ellipsize(&anime.title, area.width.saturating_sub(2) as usize, state)
-            )),
-            Rect::new(area.x, area.y + 1, area.width, 1),
-        );
     }
 }
 
@@ -773,6 +760,16 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     }
     if state.request_error.is_some() && !state.request_blocks_list() {
         title.push_str("/ Cached ");
+    }
+    if state.screen == Screen::Episodes
+        && let Some(anime) = &state.anime
+    {
+        let available = usize::from(area.width.saturating_sub(2)).saturating_sub(title.width() + 3);
+        if available >= 4 {
+            title.push_str("/ ");
+            title.push_str(&ellipsize(&anime.title, available, state));
+            title.push(' ');
+        }
     }
     let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);

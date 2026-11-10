@@ -70,7 +70,9 @@ The footer shows the actions available for the current focus; F1 lists all
 shortcuts. At 120 columns and above, navigation and language/quality controls
 move to the top toolbar, alongside the search input on Search. Secondary actions
 sit at the bottom left, with Help, Quit and the primary action on the right.
-The footer uses one row when everything fits and wraps when needed. Narrower
+The footer controls use one row when everything fits and wrap when needed.
+Taller terminals give both bars extra height, with labels at the outer edges.
+The episode panel border includes the selected anime title. Narrower
 terminals retain the separate search field and compact shortcut rows.
 Loading and error feedback stays with the affected view.
 
