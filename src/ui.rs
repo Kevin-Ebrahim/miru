@@ -48,12 +48,14 @@ fn inline_search(state: &State, width: u16) -> bool {
 }
 
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
-    Layout::vertical([
+    let gap = u16::from(area.height >= 20);
+    let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
         Constraint::Length(if state.screen == Screen::Episodes && !state.details {
             2
         } else {
             1
         }),
+        Constraint::Length(gap),
         Constraint::Length(
             if !state.details
                 && (state.focus == Focus::Range
@@ -81,6 +83,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 2
             }
         })),
+        Constraint::Length(gap),
         // Preview rendering updates text_view later; reserve its hint now so a resize
         // cannot clip the primary-action row on the first frame.
         Constraint::Length(
@@ -92,7 +95,8 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
             .len() as u16,
         ),
     ])
-    .areas(area)
+    .areas(area);
+    [header, input, body, status, activity, footer]
 }
 
 fn panels(state: &State, area: Rect) -> (Rect, Rect) {
