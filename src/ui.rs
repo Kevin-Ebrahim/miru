@@ -692,29 +692,13 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         state,
         state.details,
     );
-    // A bottom-aligned top rule meets the surface in the next terminal row.
-    let block = if state.ascii {
-        block
-    } else {
-        block.border_set(ratatui::symbols::border::Set {
-            top_left: "▁",
-            top_right: "▁",
-            horizontal_top: "▁",
-            ..if state.details {
-                ratatui::symbols::border::DOUBLE
-            } else {
-                ratatui::symbols::border::THICK
-            }
-        })
-    };
-    frame.render_widget(block, area);
     frame.render_widget(
-        Block::default().style(
+        block.style(
             Style::default()
                 .bg(palette(state).surface)
                 .fg(palette(state).text),
         ),
-        area.inner(Margin::new(1, 1)),
+        area,
     );
     let (cover, metadata) = preview_regions(state, area);
     let Some(anime) = state.selected_anime() else {
