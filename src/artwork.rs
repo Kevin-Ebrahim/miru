@@ -27,7 +27,6 @@ pub struct Artwork {
     pub picker: Picker,
     pub protocol: Option<Protocol>,
     pub error: Option<String>,
-    pub label: String,
     pub generation: u64,
     key: Option<(String, Size)>,
     decoded: Arc<Mutex<LruCache<String, Arc<DynamicImage>>>>,
@@ -42,16 +41,10 @@ pub struct Artwork {
 
 impl Artwork {
     pub fn new(picker: Picker, cache: PathBuf, enabled: bool) -> Self {
-        let label = if enabled {
-            format!("{:?}", picker.protocol_type())
-        } else {
-            "text".into()
-        };
         Self {
             picker,
             protocol: None,
             error: None,
-            label,
             generation: 0,
             key: None,
             decoded: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(12).unwrap()))),

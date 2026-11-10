@@ -253,7 +253,7 @@ impl Input {
 pub enum Synopsis {
     Loading,
     Ready(String),
-    Failed(String),
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -897,7 +897,7 @@ impl App {
         if let Some(id) = target
             && !matches!(
                 self.state.synopses.get(&id),
-                Some(Synopsis::Ready(_) | Synopsis::Failed(_))
+                Some(Synopsis::Ready(_) | Synopsis::Failed)
             )
         {
             self.state.synopses.put(id, Synopsis::Loading);
@@ -914,7 +914,7 @@ impl App {
         if !force
             && matches!(
                 self.state.synopses.get(&anime.id),
-                Some(Synopsis::Ready(_) | Synopsis::Failed(_))
+                Some(Synopsis::Ready(_) | Synopsis::Failed)
             )
         {
             return;
@@ -1061,7 +1061,7 @@ impl App {
                     id,
                     match result {
                         Ok(text) => Synopsis::Ready(text),
-                        Err(err) => Synopsis::Failed(format!("{err:#}")),
+                        Err(_) => Synopsis::Failed,
                     },
                 );
             }

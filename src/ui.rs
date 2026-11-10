@@ -307,7 +307,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         ),
     );
     if state.help {
-        render_help(frame, state, art);
+        render_help(frame, state);
     }
 }
 
@@ -997,9 +997,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     details.extend(prose);
     let feedback = match synopsis {
         Some(Synopsis::Loading) => Some(("Loading full synopsis...", palette(state).pending)),
-        Some(Synopsis::Failed(_)) => {
-            Some(("! Synopsis unavailable / F5 Retry", palette(state).error))
-        }
+        Some(Synopsis::Failed) => Some(("! Synopsis unavailable / F5 Retry", palette(state).error)),
         _ => None,
     };
     if let Some((message, color)) = feedback {
@@ -1361,14 +1359,6 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+c", "Quit from anywhere"),
         ],
     ),
-    (
-        "Terminal options",
-        &[
-            ("--no-animation", "Disable animation"),
-            ("--images off", "Hide covers"),
-            ("--ascii", "Plain borders and symbols"),
-        ],
-    ),
 ];
 
 fn help_matches(query: &str, text: &str) -> bool {
@@ -1395,7 +1385,7 @@ fn help_key_aliases(keys: &str) -> String {
     aliases
 }
 
-fn help_lines(state: &State, width: usize, diagnostics: &str) -> Vec<Line<'static>> {
+fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     let query = state.help_query.text.to_lowercase();
     let mut lines = Vec::new();
     let key_style = Style::default().fg(palette(state).text).bold();
@@ -1441,43 +1431,13 @@ fn help_lines(state: &State, width: usize, diagnostics: &str) -> Vec<Line<'stati
             }
         }
     }
-    if query.trim().is_empty() {
-        lines.push(Line::default());
-        for note in [
-            "Printable keys stay text while typing.",
-            "Browsing keeps playback and downloads running.",
-            "Language and quality changes apply to the next queue.",
-            "History records launches, not completion or position.",
-        ] {
-            lines.extend(
-                wrap_prose(note, width)
-                    .into_iter()
-                    .map(|text| Line::styled(text, muted(state))),
-            );
-        }
-    }
-    let diagnostics: Vec<_> = diagnostics
-        .split("\n\n")
-        .filter(|text| {
-            !text.trim().is_empty() && help_matches(&query, &format!("Diagnostics {text}"))
-        })
-        .collect();
-    if !diagnostics.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.push(Line::styled("Diagnostics", accent(state)));
-        for diagnostic in diagnostics {
-            lines.extend(wrap_prose(diagnostic, width).into_iter().map(Line::from));
-        }
-    }
     if lines.is_empty() {
         lines.push(Line::styled("No matching shortcuts", muted(state)));
     }
     lines
 }
 
-fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
+fn render_help(frame: &mut Frame, state: &mut State) {
     let area = frame.area();
     let base = Style::default()
         .fg(palette(state).text)
@@ -1551,52 +1511,7 @@ fn render_help(frame: &mut Frame, state: &mut State, art: &Artwork) {
             filter,
         );
     }
-    let job = state
-        .activity
-        .as_ref()
-        .map(|a| {
-            format!(
-                "\n\nActivity: {} / Episode {}\n{}\n{}",
-                a.anime.title, a.episodes[a.index].number, a.quality_note, a.message
-            )
-        })
-        .unwrap_or_default();
-    let synopsis_error = state
-        .selected_anime()
-        .and_then(|a| state.synopses.peek(&a.id))
-        .and_then(|synopsis| match synopsis {
-            Synopsis::Failed(message) => Some(message.as_str()),
-            _ => None,
-        })
-        .map(|message| format!("\n\nSynopsis: {message}"))
-        .unwrap_or_default();
-    let status = if state.status.is_empty()
-        || state.request_error.as_deref() == Some(state.status.as_str())
-    {
-        String::new()
-    } else {
-        format!("\n\nStatus: {}", state.status)
-    };
-    let request_error = state
-        .request_error
-        .as_ref()
-        .map(|error| {
-            format!(
-                "\n\n{}: {error}",
-                if state.screen == Screen::Episodes {
-                    "Episodes"
-                } else {
-                    "Search"
-                }
-            )
-        })
-        .unwrap_or_default();
-    let cover = art.error.as_deref().unwrap_or(&art.label);
-    let lines = help_lines(
-        state,
-        usize::from(body.width),
-        &format!("{status}{request_error}{job}\n\nCovers: {cover}{synopsis_error}"),
-    );
+    let lines = help_lines(state, usize::from(body.width));
     let content_length = lines.len();
     state.help_scroll = state.help_scroll.min(
         content_length
@@ -1943,8 +1858,8 @@ mod tests {
                 state.help = true;
                 state.help_scroll = u16::MAX;
                 let text = render_text(&mut state, w, h);
-                assert!(text.contains("1080p unavailable"), "{text}");
-                assert!(text.contains("Saved /tmp/episode.mkv"), "{text}");
+                assert!(!text.contains("1080p unavailable"), "{text}");
+                assert!(!text.contains("Saved /tmp/episode.mkv"), "{text}");
                 state.help = false;
             }
         }
@@ -1963,7 +1878,7 @@ mod tests {
             ("Ctrl+Right", "Previous / next word"),
         ] {
             state.help_query.set(query.into());
-            let text = help_lines(&state, 92, "")
+            let text = help_lines(&state, 92)
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -2001,27 +1916,25 @@ mod tests {
     }
 
     #[test]
-    fn help_reaches_wrapped_diagnostics_and_clamps_after_resize() {
+    fn help_reaches_last_shortcuts_and_clamps_after_resize() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
-        state.screen = Screen::Episodes;
-        state.anime = Some(Anime {
-            id: "1".into(),
-            ..Default::default()
-        });
-        state.synopses.put(
-            "1".into(),
-            Synopsis::Failed(format!(
-                "{}LAST DETAIL",
-                "A detailed failure message. ".repeat(30)
-            )),
-        );
         state.help = true;
         state.help_scroll = u16::MAX;
         let text = render_text(&mut state, 32, 12);
-        assert!(text.contains("LAST DETAIL"), "{text}");
+        assert!(text.contains("Quit from anywhere"), "{text}");
         assert!(state.help_scroll > 40 && state.help_scroll < u16::MAX);
         let text = render_text(&mut state, 120, 80);
-        assert!(text.contains("LAST DETAIL") && text.contains("Plain borders and symbols"));
+        assert!(text.contains("App controls"));
+        for removed in [
+            "Terminal options",
+            "Printable keys",
+            "Browsing keeps",
+            "History records",
+            "Diagnostics",
+            "Covers:",
+        ] {
+            assert!(!text.contains(removed), "{text}");
+        }
         assert_eq!(state.help_scroll, 0);
     }
 
@@ -2317,13 +2230,7 @@ mod tests {
         state.help = true;
         state.help_scroll = u16::MAX;
         let text = render_text(&mut state, 120, 60);
-        assert!(
-            text.contains("Episodes: Persistent provider failure"),
-            "{text}"
-        );
-        state.status = state.request_error.clone().unwrap();
-        let text = render_text(&mut state, 120, 60);
-        assert_eq!(text.matches("Persistent provider failure").count(), 1);
+        assert!(!text.contains("Persistent provider failure"), "{text}");
     }
 
     #[test]
