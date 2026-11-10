@@ -5,6 +5,7 @@ mod model;
 mod persistence;
 mod player;
 mod provider;
+mod scene;
 mod ui;
 
 use anyhow::{Context, Result, ensure};
@@ -274,6 +275,7 @@ async fn main() -> Result<()> {
         cli.ascii,
         !cli.no_animation,
     );
+    state.colorless = colorless;
     state.history = library.entries;
     if cli.resume {
         state.screen = app::Screen::History;

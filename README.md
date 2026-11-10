@@ -108,11 +108,22 @@ codes to identify the image. If your launcher exports it unintentionally, use
 `env -u NO_COLOR ./target/release/ani-watch` for native images. `--ascii` changes
 interface borders and indicators; it does not transliterate anime titles.
 
-Colors come from the terminal palette, with its default foreground/background.
+Interface colors come from the terminal palette, with its default foreground/background.
 Wide layouts show results and a large, aspect-preserving, centered cover. Below
 88 columns, sufficiently tall terminals stack the cover below results; compact
 terminals prioritize navigation. Below 32 × 12 the app displays a resize hint.
-Help remains scrollable. The welcome/loading art is inexpensive and optional.
+Help remains scrollable. Empty views and missing covers show
+[Kyoto Dusk from ascii.rest](https://ascii.rest/kyoto-dusk/): a cherry tree, a
+five-storey pagoda, a crescent moon, and a glowing stone lantern reflected in a
+pond. Coloured Unicode dots preserve the scene's dusk palette and shading as it
+scales to the panel. `--ascii` uses ASCII shading instead; `NO_COLOR` uses
+monochrome ASCII shading. `--no-animation` holds a still frame. Very small panels
+show just the status text.
+
+The animation is bundled and plays natively in Rust, without network access or
+a JavaScript runtime. Its MIT-licensed source and licence are in
+[`assets/kyoto-dusk/`](assets/kyoto-dusk/). To regenerate the compressed cell
+frames with Node 22.18 or newer, run `node scripts/generate-dusk.mjs`.
 
 Search is debounced by 300 ms and immediately filters currently loaded results
 while new results are pending. Provider alias matches remain visible when the

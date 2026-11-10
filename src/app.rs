@@ -134,6 +134,7 @@ pub struct State {
     pub help_scroll: u16,
     pub frame: usize,
     pub ascii: bool,
+    pub colorless: bool,
     pub animate: bool,
     pub playing: Option<usize>,
     pub busy: bool,
@@ -178,6 +179,7 @@ impl State {
             help_scroll: 0,
             frame: 0,
             ascii,
+            colorless: false,
             animate,
             playing: None,
             busy: false,
@@ -982,7 +984,7 @@ impl App {
             }
             tokio::select! {
                 _ = tick.tick() => {
-                    if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
+                    if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
                         dirty = self.state.loading || self.state.busy || art.protocol.is_none();

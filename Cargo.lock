@@ -31,6 +31,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "crossterm",
+ "flate2",
  "image",
  "lru 0.16.4",
  "ratatui",

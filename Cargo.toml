@@ -12,6 +12,7 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.29"
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 lru = "0.16"
 ratatui = "0.30.2"

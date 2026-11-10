@@ -1,10 +1,11 @@
 use crate::{
     app::{Focus, Screen, State},
     artwork::Artwork,
+    scene::Dusk,
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -62,6 +63,15 @@ pub fn cover_area(area: Rect) -> Rect {
         panel.width.saturating_sub(4),
         panel.height.saturating_sub(metadata_rows(panel) + 2),
     )
+}
+
+fn empty_preview_area(state: &State, area: Rect) -> Rect {
+    if state.selected_anime().is_some() {
+        cover_area(area)
+    } else {
+        // No series metadata needs this space until a result is selected.
+        panels(area).1.inner(Margin::new(2, 1))
+    }
 }
 
 fn metadata_rows(panel: Rect) -> u16 {
@@ -293,7 +303,11 @@ fn render_list(frame: &mut Frame, state: &State, area: Rect) {
         } else {
             "Try another title. R retries."
         };
-        empty_art(frame, inner, title, hint, state.frame, state.animate);
+        // The cover panel owns the scene when it has room. Compact layouts keep
+        // it with the empty list instead of drawing the same scene twice.
+        let cover = empty_preview_area(state, frame.area());
+        let show_scene = cover.width < 24 || cover.height < 9;
+        empty_art(frame, state, inner, title, hint, show_scene);
         return;
     }
     let items: Vec<ListItem> = if state.screen == Screen::Search {
@@ -413,7 +427,7 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: R
             );
             frame.render_widget(Image::new(protocol), centered);
         }
-    } else if cover.height > 0 {
+    } else {
         let hint = if art.error.is_some() {
             "Browsing is still available."
         } else if state.selected_anime().is_some_and(|a| a.cover.is_some()) {
@@ -427,15 +441,15 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: R
         };
         empty_art(
             frame,
-            cover,
+            state,
+            empty_preview_area(state, frame.area()),
             if art.error.is_some() {
                 "Cover unavailable"
             } else {
                 "ani / watch"
             },
             hint,
-            state.frame,
-            state.animate,
+            true,
         );
     }
     if let Some(anime) = state.selected_anime() {
@@ -461,32 +475,51 @@ fn render_preview(frame: &mut Frame, state: &State, art: &Artwork, panel_area: R
     }
 }
 
-fn empty_art(frame: &mut Frame, area: Rect, title: &str, hint: &str, tick: usize, animate: bool) {
-    let lines = if area.height >= 11 && area.width >= 25 {
-        let spark = if animate && tick / 8 % 2 == 1 {
-            "       .     *       "
-        } else {
-            "       *     .       "
-        };
-        vec![
-            Line::raw(spark),
-            Line::raw("       _..._         "),
-            Line::raw("     .'     '.       "),
-            Line::raw("    /  .   .  \\      "),
-            Line::raw("    |    ~    |      "),
-            Line::raw("  ~~'._   _.'~~      "),
-            Line::raw("       ~~~           "),
-            Line::raw(""),
-            Line::styled(title, accent()),
-            Line::styled(hint, muted()),
-        ]
+fn empty_art(
+    frame: &mut Frame,
+    state: &State,
+    area: Rect,
+    title: &str,
+    hint: &str,
+    show_scene: bool,
+) {
+    let lines = vec![Line::styled(title, accent()), Line::styled(hint, muted())];
+    let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
+    // These short captions need at most two rows each in a scene-sized panel.
+    // Reserve an extra row for each wrapped line without an unstable Ratatui API.
+    let caption_height = (2
+        + u16::from(title.width() > usize::from(area.width))
+        + u16::from(hint.width() > usize::from(area.width)))
+    .min(area.height);
+    let art_height = area.height.saturating_sub(caption_height + 1).min(24);
+    let (min_width, min_height) = if state.ascii || state.colorless {
+        (40, 10)
     } else {
-        vec![Line::styled(title, accent()), Line::styled(hint, muted())]
+        (24, 6)
     };
-    let y = area.y + area.height.saturating_sub(lines.len() as u16) / 2;
+    let has_scene = show_scene && area.width >= min_width && art_height >= min_height;
+    let content_height = caption_height + if has_scene { art_height + 1 } else { 0 };
+    let y = area.y + area.height.saturating_sub(content_height) / 2;
+    if has_scene {
+        frame.render_widget(
+            Dusk {
+                tick: state.frame,
+                animate: state.animate,
+                ascii: state.ascii,
+                monochrome: state.colorless,
+            },
+            Rect::new(area.x, y, area.width, art_height),
+        );
+    }
+    let caption_y = y + if has_scene { art_height + 1 } else { 0 };
     frame.render_widget(
-        Paragraph::new(lines).centered().wrap(Wrap { trim: false }),
-        Rect::new(area.x, y, area.width, area.bottom().saturating_sub(y)),
+        caption,
+        Rect::new(
+            area.x,
+            caption_y,
+            area.width,
+            area.bottom().saturating_sub(caption_y),
+        ),
     );
 }
 
