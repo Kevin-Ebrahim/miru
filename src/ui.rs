@@ -331,6 +331,16 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
     }
 }
 
+fn wordmark_inner_color(state: &State) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    let colors = palette(state);
+    let Color::Rgb(r, g, b) = colors.canvas else {
+        return None;
+    };
+    let light = u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 >= 128_000;
+    wordmark_style(state, colors.text, if light { 32 } else { 16 }).fg
+}
+
 fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let activity_height = state.activity.as_ref().map_or(0, |a| {
         if a.message.is_empty() && a.quality_note.is_empty() {
@@ -409,24 +419,44 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
                 } else {
                     100
                 };
-                let scanlines = |text: &str| {
-                    if large_logo {
-                        text.replace('█', "▇")
-                    } else {
-                        text.to_owned()
-                    }
+                let interior: &[usize] = match (large_logo, i) {
+                    (true, 4) => &[2, 3, 6, 7, 24, 25, 26, 27, 34, 35, 36, 37],
+                    (true, 5) => &[2, 3, 6, 7, 14, 15, 16, 17, 24, 25, 26, 27, 34, 35, 36, 37],
+                    (false, 2) => &[1, 3, 7, 8, 12, 13, 17, 18],
+                    _ => &[],
                 };
-                Line::from(vec![
-                    Span::styled(
-                        scanlines(left),
-                        wordmark_style(state, palette(state).secondary, strength),
-                    ),
-                    Span::styled(
-                        scanlines(right),
-                        wordmark_style(state, palette(state).text, strength),
-                    ),
-                ])
-                .centered()
+                let inner = wordmark_inner_color(state);
+                let left_width = left.chars().count();
+                let spans: Vec<_> = left
+                    .chars()
+                    .chain(right.chars())
+                    .enumerate()
+                    .map(|(column, glyph)| {
+                        let color = if column < left_width {
+                            palette(state).secondary
+                        } else {
+                            palette(state).text
+                        };
+                        let mut style = wordmark_style(state, color, strength);
+                        let mut glyph = if large_logo && glyph == '█' {
+                            '▇'
+                        } else {
+                            glyph
+                        };
+                        if interior.contains(&column)
+                            && let Some(fill) = inner
+                        {
+                            if glyph == ' ' {
+                                glyph = if large_logo { '▇' } else { '█' };
+                                style = Style::default().fg(fill);
+                            } else {
+                                style = style.bg(fill);
+                            }
+                        }
+                        Span::styled(glyph.to_string(), style)
+                    })
+                    .collect();
+                Line::from(spans).centered()
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), Rect::new(x, y, width, logo_height));
