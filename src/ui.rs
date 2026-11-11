@@ -633,7 +633,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
 }
 
 fn render_header(frame: &mut Frame, state: &State, header: Rect) {
-    if header.width >= 120 {
+    if header.width >= 120 || (state.screen == Screen::Episodes && !state.details) {
         render_wide_header(frame, state, header);
         return;
     }
@@ -718,6 +718,18 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         }
         if state.screen == Screen::Episodes {
             nav.push(Span::styled("Episodes", accent(state).underlined()));
+            if let Some(anime) = &state.anime {
+                let separator = symbol(state, " · ", " / ");
+                let available = usize::from(area.width)
+                    .saturating_sub(settings.width() + " Episodes".width() + separator.width() + 2);
+                if available > 0 {
+                    nav.push(Span::styled(separator, muted(state)));
+                    nav.push(Span::styled(
+                        ellipsize(&anime.title, available, state),
+                        Style::default().fg(palette(state).text),
+                    ));
+                }
+            }
         } else if state.screen == Screen::History {
             nav.push(Span::styled("History", accent(state).underlined()));
         }
@@ -1041,7 +1053,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             state.visible_history().len(),
             state.history_selected,
         ),
-        Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
+        Screen::Episodes => ("List", state.episodes.len(), state.episode_selected),
     };
     let mut title = if state.marked.is_empty() || state.screen != Screen::Episodes {
         format!(" {label} / {count} ")
@@ -1061,16 +1073,6 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     }
     if state.request_error.is_some() && !state.request_blocks_list() {
         title.push_str("/ Cached ");
-    }
-    if state.screen == Screen::Episodes
-        && let Some(anime) = &state.anime
-    {
-        let available = usize::from(area.width.saturating_sub(2)).saturating_sub(title.width() + 3);
-        if available >= 4 {
-            title.push_str("/ ");
-            title.push_str(&ellipsize(&anime.title, available, state));
-            title.push(' ');
-        }
     }
     let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);
