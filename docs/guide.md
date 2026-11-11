@@ -209,3 +209,15 @@ The smoke tests use isolated temporary state and local provider fixtures. The
 media and navigation checks need ffmpeg; the media check also needs mpv and
 ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
 testing in every terminal.
+
+### CodeQL schedule
+
+The `CodeQL weekly` workflow scans Rust, Python and JavaScript/TypeScript on
+Mondays at 02:17 UTC (04:17 South African time), with a manual-run option in
+Actions. It has no push or pull-request triggers and should not be a required
+PR check. Scheduled runs analyze the default branch.
+
+When switching from GitHub's CodeQL Default setup, merge this workflow first,
+then disable Default setup under Settings > Advanced Security > CodeQL analysis.
+Default setup otherwise continues its own push and PR scans. After switching,
+manually run `CodeQL weekly` once to verify analysis and result uploads.
