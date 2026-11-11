@@ -1,5 +1,5 @@
 use crate::{
-    app::{Focus, JobKind, JobPhase, Screen, State, Synopsis, TextView},
+    app::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis, TextView},
     artwork::Artwork,
     palette::Palette,
     scene::Dusk,
@@ -76,6 +76,12 @@ fn inline_search(state: &State, width: u16) -> bool {
     width >= 120 && state.screen == Screen::Search && !state.details
 }
 
+fn visible_activity(state: &State) -> Option<&Activity> {
+    state.activity.as_ref().filter(|activity| {
+        activity.kind != JobKind::Playback || activity.phase != JobPhase::Finished
+    })
+}
+
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     let gap = u16::from(area.height >= 20);
     let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
@@ -101,7 +107,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 2
             },
         ),
-        Constraint::Length(state.activity.as_ref().map_or(0, |a| {
+        Constraint::Length(visible_activity(state).map_or(0, |a| {
             if a.message.is_empty() && a.quality_note.is_empty() {
                 1
             } else {
@@ -369,7 +375,7 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
 }
 
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
-    let activity_height = state.activity.as_ref().map_or(0, |a| {
+    let activity_height = visible_activity(state).map_or(0, |a| {
         if a.message.is_empty() && a.quality_note.is_empty() {
             1
         } else {
@@ -387,11 +393,13 @@ fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
         }),
         Constraint::Length(activity_height),
         Constraint::Length(u16::from(activity_height > 0 && area.height >= 18)),
-        Constraint::Length(if state.activity.is_some() && area.width < 54 {
-            2
-        } else {
-            1
-        }),
+        Constraint::Length(
+            if state.activity.as_ref().is_some_and(|a| a.retryable()) && area.width < 54 {
+                2
+            } else {
+                1
+            },
+        ),
     ])
     .areas(area)
 }
@@ -593,16 +601,9 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         Paragraph::new(shortcut(state, "F1", "Help")).right_aligned(),
         footer,
     );
-    if state.activity.is_some() {
-        let action = if state.activity.as_ref().is_some_and(|a| a.retryable()) {
-            shortcut(state, "F6", "Retry")
-        } else if state.focus == Focus::List {
-            shortcut(state, "x", "Stop/Dismiss")
-        } else {
-            shortcut(state, "Esc", "Controls")
-        };
+    if state.activity.as_ref().is_some_and(|a| a.retryable()) {
         frame.render_widget(
-            Paragraph::new(action).centered(),
+            Paragraph::new(shortcut(state, "F6", "Retry")).centered(),
             if footer.width >= 54 {
                 footer
             } else {
@@ -854,7 +855,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         hints
     };
     let mut global: Vec<String> = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
-    if let Some(activity) = &state.activity {
+    if let Some(activity) = visible_activity(state) {
         global.insert(
             0,
             if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
@@ -1477,7 +1478,7 @@ fn synopsis_lines(text: &str, width: usize, state: &State) -> Vec<Line<'static>>
 }
 
 fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
-    let Some(activity) = &state.activity else {
+    let Some(activity) = visible_activity(state) else {
         return;
     };
     let phase = match activity.phase {
@@ -2226,6 +2227,8 @@ mod tests {
                         text.contains(if w < 60 { "1 left" } else { "1 queued" }),
                         "{text}"
                     );
+                    assert!(!text.contains("Stop/Dismiss"), "{text}");
+                    assert!(!text.contains("Esc Controls"), "{text}");
                     if phase == JobPhase::Failed {
                         assert!(text.contains("F6 Retry"), "{text}");
                     }
@@ -2442,7 +2445,6 @@ mod tests {
                 "Enter Play",
                 "F1 Help",
                 "Ctrl+C Quit",
-                "x Dismiss",
                 "Drag Select",
                 "d Download",
                 "Space Mark",
@@ -2451,6 +2453,9 @@ mod tests {
                 assert!(text.contains(hint), "{width} missing {hint}: {text}");
             }
             assert!(text.lines().last().unwrap().contains("Enter Play"));
+            assert!(!text.contains("Finished"), "{text}");
+            assert!(!text.contains("x Dismiss"), "{text}");
+            assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[4].height, 0);
         }
     }
 
