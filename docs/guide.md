@@ -67,8 +67,9 @@ Downloads are saved as Matroska files with the selected video, separate audio
 when available, and the default or English subtitle track when available.
 Playback and downloads use audio from the selected video's
 [HLS rendition group](https://www.rfc-editor.org/rfc/rfc8216#section-4.3.4.2).
-The group's default rendition is preferred; otherwise its first rendition is
-used. A variant without a separate audio rendition uses its embedded audio.
+The group's default rendition is preferred, then its first `AUTOSELECT=YES`
+rendition, then its first available rendition. Equal priorities retain playlist
+order. A variant without a separate audio rendition uses its embedded audio.
 Existing files are never overwritten; failed or cancelled downloads do not
 leave a completed file or mark episodes as watched.
 
@@ -220,3 +221,9 @@ the network check's temporary TLS fixture. The job checks need bubblewrap and
 use Python player/ffmpeg wrappers and Linux process identities to verify
 descendant termination and reaping. The terminal checks use a pseudo-terminal
 and do not replace visual testing in every terminal.
+
+Run just the optional HLS audio-default checks with
+`python3 tests/smoke.py target/release/miru --audio-fallback-only`. The fixture
+verifies the expected audio in downloads and mpv playback with `DEFAULT=YES`,
+`DEFAULT=NO`, and the attribute omitted. It also checks default/autoselect
+priority and stable selection among equally ranked renditions.

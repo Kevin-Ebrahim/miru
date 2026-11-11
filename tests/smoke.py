@@ -4,6 +4,7 @@
 Run after cargo build: python tests/smoke.py [path/to/miru]
 Everything, including history and downloaded media, lives in a temporary directory.
 """
+import argparse
 import array
 import base64
 import functools
@@ -54,8 +55,52 @@ def assert_tone(path, expected):
     assert energy(expected) > 10 * energy(other), f"Wrong audio group in {path}: expected {expected} Hz"
 
 
+def check_optional_audio_default(common, root):
+    master = root / "master.m3u8"
+    original = master.read_text()
+    try:
+        cases = (
+            ("yes", (("DEFAULT=YES,AUTOSELECT=YES", "audio.m3u8"),)),
+            ("omitted", (("AUTOSELECT=YES", "audio.m3u8"),)),
+            ("no", (("DEFAULT=NO,AUTOSELECT=YES", "audio.m3u8"),)),
+            ("autoselect", (("AUTOSELECT=NO", "audio-low.m3u8"), ("AUTOSELECT=YES", "audio.m3u8"))),
+            ("default-priority", (("AUTOSELECT=YES", "audio-low.m3u8"), ("DEFAULT=YES,AUTOSELECT=YES", "audio.m3u8"))),
+            ("first-autoselect", (("AUTOSELECT=YES", "audio.m3u8"), ("AUTOSELECT=YES", "audio-low.m3u8"))),
+        )
+        for label, renditions in cases:
+            audio = ''.join(
+                f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Track {index}",{flags},URI="{uri}"\n'
+                for index, (flags, uri) in enumerate(renditions))
+            master.write_text(
+                '#EXTM3U\n' + audio +
+                '#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=128x96,AUDIO="a"\nvideo.m3u8\n')
+            destination = root / f"optional-default-{label}"
+            run(common + ["--download", "Smoke", "--download-dir", str(destination)])
+            media = next(destination.glob("*.mkv"))
+            info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
+            kinds = {stream["codec_type"] for stream in info["streams"]}
+            assert {"video", "audio"} <= kinds, f"Audio {label}: successful download contains {kinds}"
+            decoded = root / f"optional-default-{label}.wav"
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(media),
+                 "-vn", "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", str(decoded)])
+            assert_tone(decoded, 440)
+            played = root / f"optional-default-{label}-playback.wav"
+            run(common + ["--play", "Smoke", "--player-arg=--no-config", "--player-arg=--vo=null",
+                          "--player-arg=--ao=pcm", "--player-arg=--audio-format=s16",
+                          "--player-arg=--audio-channels=mono", f"--player-arg=--ao-pcm-file={played}"])
+            assert_tone(played, 440)
+            print(f"PASS: audio {label} retains expected audio in downloads and mpv playback", flush=True)
+    finally:
+        master.write_text(original)
+
+
 def main():
-    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", nargs="?", default="target/debug/miru", type=pathlib.Path)
+    parser.add_argument("--audio-fallback-only", action="store_true",
+                        help="Check optional HLS DEFAULT flags using real downloads and playback")
+    options = parser.parse_args()
+    binary = options.binary.resolve()
     for command in ("ffmpeg", "ffprobe", "mpv"):
         if not shutil.which(command):
             raise SystemExit(f"Install {command} to run the media smoke test")
@@ -64,9 +109,10 @@ def main():
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
              "testsrc=size=128x96:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
              "-f", "hls", "-hls_playlist_type", "vod", str(root / "video.m3u8")])
-        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-             "sine=frequency=440:sample_rate=44100", "-t", "1", "-c:a", "aac",
-             "-f", "hls", "-hls_playlist_type", "vod", str(root / "audio.m3u8")])
+        for frequency, name in ((440, "audio"), (880, "audio-low")):
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                 f"sine=frequency={frequency}:sample_rate=44100", "-t", "1", "-c:a", "aac",
+                 "-f", "hls", "-hls_playlist_type", "vod", str(root / f"{name}.m3u8")])
         (root / "subtitle.vtt").write_text("WEBVTT\n\n00:00.000 --> 00:00.800\nSmoke test subtitle\n")
         (root / "master.m3u8").write_text(
             '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",DEFAULT=YES,URI="audio.m3u8"\n'
@@ -118,6 +164,9 @@ def main():
         thread.start()
         common = [str(binary), "--provider", f"http://127.0.0.1:{server.server_port}/", "--state-dir", str(root / "state")]
         try:
+            check_optional_audio_default(common, root)
+            if options.audio_fallback_only:
+                return
             found = json.loads(run(common + ["--list", "--exact", "  SMOKE  &  Test  "]).stdout)
             assert found[0]["id"] == "smoke-1"
             streams = [json.loads(line) for line in run(common + ["--resolve", "Smoke", "-e", "0--1"]).stdout.splitlines()]
@@ -170,9 +219,6 @@ def main():
             run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                  "testsrc=size=64x48:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                  "-f", "hls", "-hls_playlist_type", "vod", str(root / "video-low.m3u8")])
-            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                 "sine=frequency=880:sample_rate=44100", "-t", "1", "-c:a", "aac",
-                 "-f", "hls", "-hls_playlist_type", "vod", str(root / "audio-low.m3u8")])
             master = root / "master.m3u8"
             original_master = master.read_text()
             master.write_text(

@@ -412,6 +412,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
     );
     struct Rendition {
         is_default: bool,
+        autoselect: bool,
         url: Option<String>,
     }
     // Shared renditions and relative URLs can expand far beyond the input text.
@@ -438,6 +439,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
             .context("HLS audio rendition has no group identity")?;
         let rendition = Rendition {
             is_default: attributes.get("DEFAULT") == Some(&"YES"),
+            autoselect: attributes.get("AUTOSELECT") == Some(&"YES"),
             url: attributes
                 .get("URI")
                 .map(|uri| -> Result<String> {
@@ -452,7 +454,9 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
                 !(current.is_default && rendition.is_default),
                 "Multiple default audio renditions in HLS group {group:?}"
             );
-            if rendition.is_default {
+            if (rendition.is_default, rendition.autoselect)
+                > (current.is_default, current.autoselect)
+            {
                 *current = rendition;
             }
         } else {
@@ -724,6 +728,65 @@ mod tests {
             Some("https://cdn.example/chosen.m3u8?token=x,y")
         );
         assert_eq!(variants[0].audio.as_ref().unwrap().group, "late,group");
+    }
+
+    #[test]
+    fn hls_optional_default_keeps_the_available_audio_rendition() {
+        let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        let expected = "https://cdn.example/audio.m3u8";
+        for default in ["DEFAULT=YES,", "", "DEFAULT=NO,"] {
+            let text = format!(
+                "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Main\",AUTOSELECT=YES,{default}URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:RESOLUTION=128x96,AUDIO=\"a\"\nvideo.m3u8\n"
+            );
+            let stream = Stream {
+                variants: parse_playlist(&text, &master).unwrap(),
+                subtitle: None,
+                referer: String::new(),
+            };
+            assert_eq!(stream.select("best").0.audio_url(), Some(expected));
+            assert_eq!(serde_json::to_value(&stream).unwrap()["audio"], expected);
+            for player in ["mpv", "vlc"] {
+                let arguments = crate::player::player_args(player, &stream, "best", "Probe");
+                let audio = if player == "vlc" {
+                    format!(":input-slave={expected}")
+                } else {
+                    format!("--audio-file={expected}")
+                };
+                assert!(arguments.contains(&audio), "{default:?}: {arguments:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn hls_audio_priority_is_default_then_autoselect_then_first() {
+        let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        for renditions in [
+            [
+                ("AUTOSELECT=NO", "other.m3u8"),
+                ("AUTOSELECT=YES", "audio.m3u8"),
+            ],
+            [
+                ("AUTOSELECT=YES", "other.m3u8"),
+                ("DEFAULT=YES,AUTOSELECT=YES", "audio.m3u8"),
+            ],
+            [
+                ("AUTOSELECT=YES", "audio.m3u8"),
+                ("AUTOSELECT=YES", "other.m3u8"),
+            ],
+        ] {
+            let mut text = "#EXTM3U\n".to_owned();
+            for (index, (flags, uri)) in renditions.into_iter().enumerate() {
+                text.push_str(&format!(
+                    "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Track {index}\",{flags},URI=\"{uri}\"\n"
+                ));
+            }
+            text.push_str("#EXT-X-STREAM-INF:RESOLUTION=128x96,AUDIO=\"a\"\nvideo.m3u8\n");
+            let variants = parse_playlist(&text, &master).unwrap();
+            assert_eq!(
+                variants[0].audio_url(),
+                Some("https://cdn.example/audio.m3u8")
+            );
+        }
     }
 
     #[test]
