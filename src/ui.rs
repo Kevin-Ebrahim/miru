@@ -881,7 +881,11 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 "H Home" | "Alt+h History" | "s SUB/DUB" | "Q Quality"
             )
         });
-        let action = primary.remove(0);
+        let action = if matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit") {
+            None
+        } else {
+            Some(primary.remove(0))
+        };
         let mut secondary = primary;
         secondary.extend(
             global
@@ -889,9 +893,11 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 .filter(|hint| !matches!(hint.as_str(), "F1 Help" | "Ctrl+C Quit")),
         );
         let mut right = shortcut(state, "F1", "Help");
-        right.spans.push(Span::raw("    "));
-        let (key, label) = action.split_once(' ').unwrap_or((&action, ""));
-        right.spans.extend(shortcut(state, key, label).spans);
+        if let Some(action) = action {
+            right.spans.push(Span::raw("    "));
+            let (key, label) = action.split_once(' ').unwrap_or((&action, ""));
+            right.spans.extend(shortcut(state, key, label).spans);
+        }
         right.spans.push(Span::raw("  "));
         let secondary_width = 1
             + secondary.iter().map(|hint| hint.width()).sum::<usize>()
