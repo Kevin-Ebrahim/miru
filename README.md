@@ -1,30 +1,18 @@
 # Miru
 
-Browse and watch anime from your terminal. Miru is a Rust application with a
-keyboard-driven interface, cover art, watch history, playback queues, and
-downloads.
-
-- Search titles and browse episodes with SUB/DUB and quality selection.
-- Play an episode or a range in mpv, or download episodes with ffmpeg.
-- Continue from the last launched episode, with separate SUB and DUB history.
-- Use native terminal images where supported, with a text-based fallback.
-- Follow an Omarchy theme or use your terminal's own colors.
-- Use JSON output and direct playback or download commands in scripts.
-
-Miru currently uses the HiAnime site and its ZokoAnime server. It is an
-unofficial client: provider availability, challenges, and site changes can
-prevent search or playback. See [Provider and troubleshooting](#provider-and-troubleshooting).
+Miru is a Rust terminal app for searching, watching and downloading anime.
+It has cover art, playback queues, SUB/DUB selection and watch history.
 
 ## Requirements
 
 - Linux or another Unix-like system, and an interactive terminal for the UI.
-- Rust **1.90 or newer** and Cargo to build from source.
+- Rust 1.90 or newer and Cargo to build from source.
 - [mpv](https://mpv.io/) for playback; VLC is also supported but less tested.
 - [ffmpeg](https://ffmpeg.org/) for downloads. The media smoke tests also need
   `ffprobe` and Python 3.
 
-Playback and downloads require an internet connection. Search and history can
-be used without installing a player; downloads are optional.
+Search and playback need an internet connection. Browsing does not require a
+player or ffmpeg.
 
 ## Install from source
 
@@ -44,19 +32,18 @@ cargo build --release --locked
 ./target/release/miru
 ```
 
-There are no published prebuilt releases yet. Run `miru --help` for the full
-command-line reference and `miru --version` for the installed version.
+Run `miru --help` for all options and `miru --version` for the installed version.
 
 ## Getting started
 
-Launch `miru`, type a title on Home, and press **Enter**. Select a result and
-press **Enter** to see its episodes, then select an episode and press **Enter**
+Launch `miru`, type a title on Home, and press Enter. Select a result and
+press Enter to see its episodes, then select an episode and press Enter
 to play it. Use Tab on Home to select the SUB/DUB or quality setting; the arrow
 keys change the selected setting.
 
-Press **Alt+h** to open history. Selecting a series opens its episode list with
+Press Alt+h to open history. Selecting a series opens its episode list with
 the next episode highlighted. History records the last episode launched, not
-playback position or completion. Press **Ctrl+C** to quit and stop jobs started
+playback position or completion. Press Ctrl+C to quit and stop jobs started
 by Miru.
 
 ### Common controls
@@ -84,13 +71,11 @@ by Miru.
 | `q` | Close Help or Details |
 | Ctrl+C | Quit from anywhere and stop owned jobs |
 
-Printable keys enter text while an input is focused. Search and range inputs
-support familiar editing shortcuts such as Ctrl+a/e, Ctrl+w, Ctrl+u/k,
-Alt+b/f, and Ctrl+y. Help lists the complete bindings and the footer shows
-contextual actions.
+Printable keys enter text while an input has focus. Inputs support readline
+shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
 
-Ranges use the provider's episode order and can include decimal specials. For
-example: `1-3`, `1, 5, 8`, `1.5-3`, `0--1` (all), or `-1` (last). Miru
+Ranges use the provider's episode order and can include decimal specials. Use
+`1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru
 validates the whole range before starting a queue. A queue keeps its original
 series, episodes, language, and quality as you browse. If it fails, F6 retries
 from the failed episode without repeating completed ones.
@@ -124,8 +109,7 @@ leave a completed file or mark episodes as watched.
 Miru detects Kitty, Sixel, and iTerm2 image protocols and falls back to colored
 halfblocks when necessary. Use `--images kitty`, `--images sixel`,
 `--images iterm2`, `--images halfblocks`, or `--images off` to choose explicitly.
-Native Kitty rendering has been exercised locally; Sixel, iTerm2, and VLC have
-not received the same visual or playback testing.
+Kitty has had more local testing than Sixel, iTerm2 or VLC.
 
 By default `--theme auto` follows Omarchy's active palette when available and
 uses the terminal palette otherwise. `--theme terminal` always uses terminal
@@ -137,9 +121,7 @@ miru --theme terminal --images halfblocks
 miru --images off --ascii --no-animation
 ```
 
-The interface adapts to terminal size; use `i` for the full details view when
-space is limited. Some terminals may need additional configuration for images
-or clipboard copying.
+Use `i` for full details when the terminal is too small for a preview.
 
 ## Data and configuration
 
@@ -168,8 +150,8 @@ Command-line options take precedence over `MIRU_*` variables. The previous
 
 On first use, if the default Miru library does not exist, Miru copies and
 validates the old `$XDG_STATE_HOME/ani-watch/library.json` into its new state
-directory. The original remains in place; an existing Miru library is never
-overwritten. The two copies do not stay synchronized. An explicitly configured
+directory. It leaves the original intact and never overwrites an existing Miru library.
+The copies do not stay synchronized. An explicitly configured
 state directory is used directly instead of triggering this migration. Covers
 are cached again as needed; old cache and log files are left in place.
 
@@ -185,15 +167,12 @@ entries are treated as SUB.
 
 ## Provider and troubleshooting
 
-Miru defaults to `https://hianime.at/` and supports the ZokoAnime embed format.
+Miru is an unofficial client for `https://hianime.at/` and its ZokoAnime server.
 `--provider` and `MIRU_PROVIDER` change the base URL for a compatible provider;
 they do not add support for other sites' APIs. Site challenges, missing language
 sources, and changed markup may prevent playback. Errors appear in the affected
 view, and F5 retries it. Check the logs in the state directory for player or
 download errors.
-
-Miru does not currently implement ani-cli integrations such as Android intents,
-Chromecast, Syncplay, ani-skip, release countdowns, rofi/dmenu, or self-update.
 
 ## Development
 
