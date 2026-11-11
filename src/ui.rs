@@ -693,10 +693,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         nav.push(Span::styled("Details", accent(state)));
     } else {
         for (screen, key, label) in [(Screen::Search, "/", "Search")] {
-            if state.screen == Screen::History {
-                continue;
-            }
-            if screen == Screen::History && state.history.is_empty() && state.screen != screen {
+            if matches!(state.screen, Screen::History | Screen::Episodes) {
                 continue;
             }
             let active = state.screen == screen;
