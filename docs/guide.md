@@ -189,13 +189,16 @@ python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
 python3 tests/network_smoke.py target/release/miru
 python3 tests/parser_smoke.py target/release/miru
+python3 tests/jobs_smoke.py target/release/miru
 python3 tests/terminal_smoke.py target/release/miru
 python3 tests/navigation_smoke.py target/release/miru
 python3 tests/theme_smoke.py target/release/miru
 ```
 
 The smoke tests use isolated temporary state and local provider fixtures. The
-media and navigation checks need ffmpeg and bubblewrap; the media/network checks
-also need mpv, with ffprobe for the media check and OpenSSL for the network
-check's temporary TLS fixture. The terminal checks use a pseudo-terminal and do
-not replace visual testing in every terminal.
+media, network and navigation checks need ffmpeg and bubblewrap. The media and
+network checks also need mpv, with ffprobe for the media check and OpenSSL for
+the network check's temporary TLS fixture. The job checks need bubblewrap and
+use Python player/ffmpeg wrappers and Linux process identities to verify
+descendant termination and reaping. The terminal checks use a pseudo-terminal
+and do not replace visual testing in every terminal.

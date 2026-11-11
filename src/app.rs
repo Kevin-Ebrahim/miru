@@ -1250,7 +1250,7 @@ impl App {
         let mut art_revision = 0;
         let mut mouse_capture = false;
         let [mut interrupt, mut terminate, mut hangup] = signals;
-        while !self.quit {
+        while !self.quit && !crate::terminal::is_disconnected() {
             dirty |= self.prepare_synopsis();
             if self.synopsis_due.is_some_and(|at| Instant::now() >= at) {
                 self.load_synopsis(false);
@@ -1260,7 +1260,8 @@ impl App {
                 self.search();
                 dirty = true;
             }
-            while crossterm::event::poll(Duration::ZERO)? {
+            // The Unix tty reader needs a positive timeout to drain buffered input.
+            while crossterm::event::poll(Duration::from_millis(1))? {
                 let event = crossterm::event::read()?;
                 if matches!(
                     event,
