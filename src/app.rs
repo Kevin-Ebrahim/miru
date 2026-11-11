@@ -1448,14 +1448,7 @@ impl App {
                     if self.state.focus == Focus::Audio {
                         self.state.mode.toggle();
                         self.settings();
-                        self.state.message(
-                            if self.state.activity.as_ref().is_some_and(Activity::active) {
-                                "Audio applies to the next queue."
-                            } else {
-                                ""
-                            },
-                            false,
-                        );
+                        self.state.message("", false);
                     } else {
                         self.cycle_quality(matches!(
                             key.code,
@@ -1628,18 +1621,7 @@ impl App {
         if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
             self.state.mode.toggle();
             self.settings();
-            self.state.message(
-                format!(
-                    "Audio: {}{}",
-                    self.state.mode.as_str().to_uppercase(),
-                    if self.state.activity.as_ref().is_some_and(Activity::active) {
-                        " / applies to the next queue"
-                    } else {
-                        ""
-                    }
-                ),
-                false,
-            );
+            self.state.message("", false);
             return;
         }
         if self.state.details {
@@ -2690,7 +2672,7 @@ mod tests {
             app.state.details = true;
             app.key(key);
             assert_eq!(app.state.mode, Mode::Sub, "{key:?}");
-            assert!(app.state.status.contains("Audio: SUB"));
+            assert!(app.state.status.is_empty());
         }
     }
 
