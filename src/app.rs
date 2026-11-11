@@ -343,6 +343,7 @@ pub struct State {
     pub results_query: String,
     pub history: Vec<crate::persistence::Entry>,
     pub history_selected: usize,
+    pub history_query: Input,
     pub list_offsets: [usize; 4],
     pub range: Input,
     pub marked: BTreeSet<usize>,
@@ -408,6 +409,7 @@ impl State {
             results_query: String::new(),
             history: vec![],
             history_selected: 0,
+            history_query: Input::default(),
             list_offsets: [0; 4],
             range: Input::default(),
             marked: BTreeSet::new(),
@@ -462,6 +464,33 @@ impl State {
             .collect()
     }
 
+    pub fn visible_history(&self) -> Vec<usize> {
+        let query = self.history_query.text.trim().to_lowercase();
+        self.history
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                entry
+                    .anime
+                    .title
+                    .to_lowercase()
+                    .contains(&query)
+                    .then_some(i)
+            })
+            .collect()
+    }
+
+    pub fn selected_history(&self) -> Option<&crate::persistence::Entry> {
+        self.visible_history()
+            .get(self.history_selected)
+            .and_then(|i| self.history.get(*i))
+    }
+
+    fn history_filter_changed(&mut self) {
+        self.history_selected = 0;
+        self.list_offsets[Screen::History as usize] = 0;
+    }
+
     pub fn selected_anime(&self) -> Option<&Anime> {
         match self.screen {
             Screen::Home => None,
@@ -471,7 +500,7 @@ impl State {
                 .get(self.selected)
                 .and_then(|i| self.results.get(*i)),
             Screen::Episodes => self.anime.as_ref(),
-            Screen::History => self.history.get(self.history_selected).map(|e| &e.anime),
+            Screen::History => self.selected_history().map(|e| &e.anime),
         }
     }
 
@@ -801,7 +830,7 @@ impl App {
             return;
         };
         let entry = match self.state.screen {
-            Screen::History => self.state.history.get(self.state.history_selected),
+            Screen::History => self.state.selected_history(),
             _ => None,
         }
         .cloned();
@@ -1199,19 +1228,18 @@ impl App {
                     let previous = self.state.history_selected;
                     let key = self
                         .state
-                        .history
-                        .get(previous)
+                        .selected_history()
                         .map(|e| (e.anime.id.clone(), e.mode));
                     self.state.history = library.entries;
                     self.state.history_selected = key
                         .and_then(|(id, mode)| {
-                            self.state
-                                .history
-                                .iter()
-                                .position(|e| e.anime.id == id && e.mode == mode)
+                            self.state.visible_history().iter().position(|i| {
+                                let e = &self.state.history[*i];
+                                e.anime.id == id && e.mode == mode
+                            })
                         })
                         .unwrap_or_else(|| {
-                            previous.min(self.state.history.len().saturating_sub(1))
+                            previous.min(self.state.visible_history().len().saturating_sub(1))
                         });
                 }
                 Err(err) => self
@@ -1337,6 +1365,8 @@ impl App {
             &mut self.state.help_query
         } else if self.state.focus == Focus::Range {
             &mut self.state.range
+        } else if self.state.screen == Screen::History {
+            &mut self.state.history_query
         } else {
             &mut self.state.query
         };
@@ -1356,6 +1386,9 @@ impl App {
                 self.state.help_scroll = 0;
             }
             return;
+        }
+        if changed && self.state.screen == Screen::History {
+            self.state.history_filter_changed();
         }
         if changed && self.state.focus == Focus::Search && self.state.screen == Screen::Search {
             self.state.invalidate_search();
@@ -1541,7 +1574,8 @@ impl App {
                 KeyCode::Char('e')
                     if !self.state.help
                         && !self.state.details
-                        && self.state.focus != Focus::Range =>
+                        && self.state.focus != Focus::Range
+                        && self.state.screen != Screen::History =>
                 {
                     self.state.exact = !self.state.exact;
                     self.state.selected = 0;
@@ -1668,6 +1702,19 @@ impl App {
             }
             return;
         }
+        if self.state.focus == Focus::Search && self.state.screen == Screen::History {
+            match key.code {
+                KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
+                    self.state.focus = Focus::List
+                }
+                _ => {
+                    if self.state.history_query.edit(key) {
+                        self.state.history_filter_changed();
+                    }
+                }
+            }
+            return;
+        }
         if self.state.focus == Focus::Search {
             match key.code {
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
@@ -1692,7 +1739,7 @@ impl App {
             KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
-                if self.state.screen != Screen::Home {
+                if !matches!(self.state.screen, Screen::Home | Screen::History) {
                     self.navigate(Screen::Search);
                 }
                 self.state.focus = Focus::Search;
@@ -1708,7 +1755,7 @@ impl App {
                 self.load_synopsis(false);
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
-                if let Some(entry) = self.state.history.get(self.state.history_selected) {
+                if let Some(entry) = self.state.selected_history() {
                     self.persist(crate::persistence::Change::Remove {
                         id: entry.anime.id.clone(),
                         mode: entry.mode,
@@ -1770,7 +1817,7 @@ impl App {
                 let len = match self.state.screen {
                     Screen::Home => return,
                     Screen::Search => self.state.visible().len(),
-                    Screen::History => self.state.history.len(),
+                    Screen::History => self.state.visible_history().len(),
                     Screen::Episodes => self.state.episodes.len(),
                 };
                 let selected = if self.state.screen == Screen::Search {
@@ -2380,6 +2427,54 @@ mod tests {
         assert_eq!(activity.phase, JobPhase::Finished);
         assert_eq!(activity.quality_note, "720p (1080p unavailable)");
         assert!(activity.message.contains("Saved"));
+    }
+
+    #[tokio::test]
+    async fn history_filter_stays_local_and_opens_the_filtered_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "original search".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history = ["Frieren", "Cowboy Bebop", "Cowboy Bebop Movie"]
+            .iter()
+            .enumerate()
+            .map(|(i, title)| crate::persistence::Entry {
+                anime: anime(&i.to_string(), title),
+                episode: "4".into(),
+                mode: Mode::Sub,
+                watched_at: i as u64,
+            })
+            .collect();
+        let mut app = test_app(state, dir.path());
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.paste("BEBOP");
+        assert_eq!(app.state.screen, Screen::History);
+        assert_eq!(app.state.query.text, "original search");
+        assert!(app.search_due.is_none() && app.search_task.is_none());
+        assert_eq!(app.state.visible_history(), [1, 2]);
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.state.selected_history().unwrap().anime.id, "2");
+        let mut entries = app.state.history.clone();
+        entries.remove(2);
+        app.message(Message::Library(Ok(crate::persistence::Library {
+            entries,
+            ..Default::default()
+        })));
+        assert_eq!(app.state.selected_history().unwrap().anime.id, "1");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.state.screen, Screen::Episodes);
+        assert_eq!(app.state.anime.as_ref().unwrap().id, "1");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.state.screen, Screen::History);
+        assert_eq!(app.state.history_query.text, "BEBOP");
     }
 
     #[tokio::test]

@@ -126,6 +126,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         Constraint::Length(
             if !state.details
                 && (state.focus == Focus::Range
+                    || state.screen == Screen::History
                     || (state.screen == Screen::Search && !inline_search(state, area.width)))
             {
                 3
@@ -221,14 +222,7 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
     let image_height = if state.details {
         (inner.height / 3).min(8)
     } else {
-        // Search reserves three rows for its query at this width. Match its cover
-        // scale in History without adding an inactive search box.
-        let height = if state.screen == Screen::History {
-            inner.height.saturating_sub(3)
-        } else {
-            inner.height
-        };
-        (height * 2 / 5).min(if state.screen == Screen::Episodes {
+        (inner.height * 2 / 5).min(if state.screen == Screen::Episodes {
             12
         } else {
             16
@@ -699,6 +693,9 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         nav.push(Span::styled("Details", accent(state)));
     } else {
         for (screen, key, label) in [(Screen::Search, "/", "Search")] {
+            if state.screen == Screen::History {
+                continue;
+            }
             if screen == Screen::History && state.history.is_empty() && state.screen != screen {
                 continue;
             }
@@ -772,7 +769,7 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     let block = panel(
         format!(
             "{title}{}",
-            if state.exact && state.focus != Focus::Range {
+            if state.exact && state.focus != Focus::Range && state.screen != Screen::History {
                 "[EXACT] "
             } else {
                 ""
@@ -784,6 +781,8 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     let inner = block.inner(area);
     let input = if state.focus == Focus::Range {
         &state.range
+    } else if state.screen == Screen::History {
+        &state.history_query
     } else {
         &state.query
     };
@@ -821,7 +820,11 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
     let mut primary: Vec<String> = if state.details {
         vec!["Esc Back".into(), "Up/Down Scroll".into()]
     } else if state.focus == Focus::Search {
-        vec!["Alt+e Exact".into()]
+        if state.screen == Screen::History {
+            vec![]
+        } else {
+            vec!["Alt+e Exact".into()]
+        }
     } else if state.focus == Focus::Range {
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
     } else if state.request_blocks_list() {
@@ -870,6 +873,9 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         }
         hints
     };
+    if state.screen == Screen::History {
+        primary.retain(|hint| hint != "/ Search");
+    }
     let mut global: Vec<String> = vec!["F1 Help".into()];
     if let Some(activity) = visible_activity(state) {
         global.insert(
@@ -982,7 +988,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 fit_hints(&global, width, state),
             ];
         }
-        if state.screen != Screen::Episodes && state.selected_anime().is_some() {
+        if state.screen == Screen::Search && state.selected_anime().is_some() {
             let search = if state.screen == Screen::Search {
                 "/ Edit"
             } else {
@@ -1033,7 +1039,11 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     let (label, count, selected) = match state.screen {
         Screen::Home => return,
         Screen::Search => ("Results", visible.len(), state.selected),
-        Screen::History => ("History", state.history.len(), state.history_selected),
+        Screen::History => (
+            "History",
+            state.visible_history().len(),
+            state.history_selected,
+        ),
         Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
     };
     let mut title = if state.marked.is_empty() || state.screen != Screen::Episodes {
@@ -1096,7 +1106,11 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 ("Searching...", "")
             }
         } else if state.screen == Screen::History {
-            ("No history", "")
+            if state.history.is_empty() {
+                ("No history", "")
+            } else {
+                ("No matches", "")
+            }
         } else if state.screen == Screen::Episodes {
             ("No episodes", "")
         } else if state.query.text.trim().is_empty() {
@@ -1123,10 +1137,10 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     let items: Vec<ListItem> = match state.screen {
         Screen::Home => vec![],
         Screen::History => state
-            .history
-            .iter()
-            .take(count)
-            .map(|entry| {
+            .visible_history()
+            .into_iter()
+            .map(|i| {
+                let entry = &state.history[i];
                 series_item(
                     &entry.anime.title,
                     &format!(
@@ -1251,7 +1265,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         push(&anime.info, muted(state));
     }
     let entry = match state.screen {
-        Screen::History => state.history.get(state.history_selected),
+        Screen::History => state.selected_history(),
         _ => state
             .history
             .iter()
