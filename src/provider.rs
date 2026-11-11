@@ -1,4 +1,4 @@
-use crate::model::{Anime, Episode, Mode, Stream, Variant, clean, normalized};
+use crate::model::{Anime, Episode, Mode, ProviderId, Stream, Variant, clean, normalized};
 use crate::network::{Http, http_url};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -20,6 +20,7 @@ type SearchCache = Arc<Mutex<LruCache<String, (Instant, Vec<Anime>)>>>;
 #[derive(Clone)]
 pub struct Provider {
     http: Http,
+    id: ProviderId,
     base: Url,
     searches: SearchCache,
 }
@@ -29,6 +30,7 @@ impl Provider {
         let base = http_url(base)?;
         Ok(Self {
             http: Http::new(&base)?,
+            id: ProviderId::default(),
             base,
             searches: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap()))),
         })
@@ -67,6 +69,12 @@ impl Provider {
     }
 
     pub async fn synopsis(&self, anime: &Anime) -> Result<String> {
+        ensure!(
+            anime.provider == self.id,
+            "This item belongs to provider {}; the active provider is {}",
+            anime.provider,
+            self.id
+        );
         let mut url = self.base.clone();
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("Invalid provider base URL"))?
@@ -76,6 +84,12 @@ impl Provider {
     }
 
     pub async fn episodes(&self, anime: &Anime) -> Result<Vec<Episode>> {
+        ensure!(
+            anime.provider == self.id,
+            "This item belongs to provider {}; the active provider is {}",
+            anime.provider,
+            self.id
+        );
         let id = anime.id.rsplit('-').next().context("Missing anime ID")?;
         ensure!(
             id.chars().all(|c| c.is_ascii_digit()),
@@ -87,6 +101,12 @@ impl Provider {
     }
 
     pub async fn resolve(&self, episode: &Episode, mode: Mode) -> Result<Stream> {
+        ensure!(
+            episode.provider == self.id,
+            "This item belongs to provider {}; the active provider is {}",
+            episode.provider,
+            self.id
+        );
         let mut url = self.base.join("api/theme/episode/servers")?;
         url.query_pairs_mut().append_pair("episodeId", &episode.id);
         let response = self.text(url.as_str(), None).await?;
@@ -179,6 +199,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
             }
         }
         results.push(Anime {
+            provider: ProviderId::default(),
             id: id.into(),
             title,
             cover,
@@ -269,6 +290,7 @@ pub fn parse_episodes(html: &str, slug: &str) -> Result<Vec<Episode>> {
             continue;
         }
         episodes.push(Episode {
+            provider: Default::default(),
             id: id.into(),
             number: clean(number),
             title: clean(e.attr("title").unwrap_or("")),
@@ -522,5 +544,45 @@ mod tests {
         );
         assert!(parse_playlist("<html>error</html>", &url).is_err());
         assert!(http_url("file:///etc/passwd").is_err());
+    }
+    #[tokio::test]
+    async fn foreign_provider_items_are_rejected_before_network_access() {
+        let provider = Provider::new("http://127.0.0.1:9/").unwrap();
+        let foreign: ProviderId = "other".to_owned().try_into().unwrap();
+        let anime = Anime {
+            provider: foreign.clone(),
+            id: "series-1".into(),
+            ..Default::default()
+        };
+        let episode = Episode {
+            provider: foreign,
+            id: "1".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        assert!(
+            provider
+                .episodes(&anime)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("active provider")
+        );
+        assert!(
+            provider
+                .synopsis(&anime)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("active provider")
+        );
+        assert!(
+            provider
+                .resolve(&episode, Mode::Sub)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("active provider")
+        );
     }
 }

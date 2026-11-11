@@ -1,7 +1,7 @@
 mod writer;
 pub use writer::{Sender, Writer};
 
-use crate::model::{Anime, Episode, Mode};
+use crate::model::{Anime, Episode, Mode, SourceId};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,7 +29,7 @@ pub struct Library {
 impl Default for Library {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             entries: vec![],
             mode: Mode::Sub,
             quality: "best".into(),
@@ -54,7 +54,7 @@ pub enum Change {
     },
     Import(Vec<Entry>),
     Remove {
-        id: String,
+        source: SourceId,
         mode: Mode,
     },
 }
@@ -76,18 +76,20 @@ impl Store {
         Self::parse_library(&bytes, &self.path)
     }
     fn parse_library(bytes: &[u8], path: &Path) -> Result<Library> {
-        let library: Library = serde_json::from_slice(bytes).with_context(|| {
+        let mut library: Library = serde_json::from_slice(bytes).with_context(|| {
             format!(
                 "Invalid history in {}. Preserve this file and repair or rename it before retrying",
                 path.display()
             )
         })?;
         ensure!(
-            library.version == 1,
+            matches!(library.version, 1 | 2),
             "Unsupported history version {} in {}",
             library.version,
             path.display()
         );
+        // Version 1 omitted provenance. Serde supplies HiAnime; the next write persists v2.
+        library.version = 2;
         Ok(library)
     }
     fn lock(&self) -> Result<File> {
@@ -158,7 +160,7 @@ impl Store {
                 } => {
                     library
                         .entries
-                        .retain(|e| e.anime.id != anime.id || e.mode != mode);
+                        .retain(|e| !e.anime.same_source(&anime) || e.mode != mode);
                     library.entries.insert(
                         0,
                         Entry {
@@ -179,15 +181,16 @@ impl Store {
                         if !library
                             .entries
                             .iter()
-                            .any(|e| e.anime.id == entry.anime.id && e.mode == entry.mode)
+                            .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode)
                         {
                             library.entries.push(entry);
                         }
                     }
                 }
-                Change::Remove { id, mode } => library
-                    .entries
-                    .retain(|e| e.anime.id != id || e.mode != mode),
+                Change::Remove { source, mode } => library.entries.retain(|e| {
+                    (e.anime.provider != source.provider || e.anime.id != source.id)
+                        || e.mode != mode
+                }),
             }
         }
         let mut temp = tempfile::NamedTempFile::new_in(dir)?;
@@ -226,7 +229,7 @@ pub fn import_legacy(text: &str) -> Vec<Entry> {
 pub fn next_episode(entry: &Entry, episodes: &[Episode]) -> Option<usize> {
     episodes
         .iter()
-        .position(|e| e.number == entry.episode)
+        .position(|e| e.provider == entry.anime.provider && e.number == entry.episode)
         .and_then(|i| (i + 1 < episodes.len()).then_some(i + 1))
 }
 
@@ -270,6 +273,7 @@ mod tests {
         let episodes: Vec<_> = ["1", "1.5"]
             .iter()
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
@@ -351,5 +355,93 @@ mod tests {
         let library = store.update(Change::Import(entries)).unwrap();
         assert_eq!(library.entries.len(), 1);
         assert!(next_episode(&library.entries[0], &[]).is_none());
+    }
+    #[test]
+    fn v1_history_is_read_without_rewriting_and_the_next_save_uses_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let old = serde_json::json!({"version": 1, "mode": "dub", "quality": "720p",
+            "entries": [{"anime": {"id": "series-1", "title": "Series", "cover": null},
+                "episode": "1.5", "mode": "sub", "watched_at": 123}]})
+        .to_string();
+        fs::write(&store.path, &old).unwrap();
+        let migrated = store.load().unwrap();
+        assert_eq!(migrated.version, 2);
+        assert_eq!(migrated.entries[0].anime.provider.to_string(), "hianime");
+        assert_eq!(migrated.entries[0].episode, "1.5");
+        assert_eq!(migrated.entries[0].watched_at, 123);
+        assert_eq!(migrated.mode, Mode::Dub);
+        assert_eq!(fs::read_to_string(&store.path).unwrap(), old);
+        store
+            .update(Change::Settings {
+                mode: migrated.mode,
+                quality: migrated.quality,
+            })
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["entries"][0]["anime"]["provider"], "hianime");
+        let future = old.replace("\"version\":1", "\"version\":3");
+        fs::write(&store.path, &future).unwrap();
+        assert!(store.update(Change::Import(vec![])).is_err());
+        assert_eq!(fs::read_to_string(&store.path).unwrap(), future);
+    }
+
+    #[test]
+    fn identical_ids_on_different_providers_remain_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let first = Anime {
+            id: "same-1".into(),
+            ..Default::default()
+        };
+        let second = Anime {
+            provider: "other".to_owned().try_into().unwrap(),
+            ..first.clone()
+        };
+        for anime in [&first, &second] {
+            store
+                .update(Change::Record {
+                    anime: anime.clone(),
+                    episode: "1".into(),
+                    mode: Mode::Sub,
+                })
+                .unwrap();
+        }
+        assert_eq!(store.load().unwrap().entries.len(), 2);
+        let library = store
+            .update(Change::Remove {
+                source: first.source_id(),
+                mode: Mode::Sub,
+            })
+            .unwrap();
+        assert_eq!(library.entries.len(), 1);
+        assert!(library.entries[0].anime.same_source(&second));
+        let wrong_provider_episode = Episode {
+            provider: first.provider,
+            id: "ep-1".into(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        assert_eq!(
+            next_episode(
+                &library.entries[0],
+                &[
+                    wrong_provider_episode,
+                    Episode {
+                        provider: second.provider.clone(),
+                        id: "ep-2".into(),
+                        number: "2".into(),
+                        title: String::new(),
+                    }
+                ]
+            ),
+            None
+        );
+        let library = store
+            .update(Change::Import(library.entries.clone()))
+            .unwrap();
+        assert_eq!(library.entries.len(), 1);
     }
 }

@@ -1269,7 +1269,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             .history
             .entries()
             .iter()
-            .find(|e| e.anime.id == anime.id && e.mode == state.mode),
+            .find(|e| e.anime.same_source(anime) && e.mode == state.mode),
     };
     if let Some(entry) = entry
         && (state.details || state.screen != Screen::Home)
@@ -1302,7 +1302,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     if !compact_details && state.details {
         push("", Style::default());
     }
-    let synopsis = state.synopses.peek(&anime.id);
+    let synopsis = state.synopses.peek(&anime.source_id());
     let description = if let Some(Synopsis::Ready(text)) = synopsis {
         text.as_str()
     } else {
@@ -1997,6 +1997,7 @@ mod tests {
             ..Default::default()
         });
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "Asteroid Blues".into(),
@@ -2251,6 +2252,7 @@ mod tests {
             ..Default::default()
         });
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
@@ -2295,6 +2297,7 @@ mod tests {
                 },
                 episodes: (1..=3)
                     .map(|n| Episode {
+                        provider: Default::default(),
                         id: n.to_string(),
                         number: n.to_string(),
                         title: String::new(),
@@ -2364,6 +2367,7 @@ mod tests {
             let activity = state.activity.as_mut().unwrap();
             activity.episodes = (1..=1400)
                 .map(|n| Episode {
+                    provider: Default::default(),
                     id: n.to_string(),
                     number: n.to_string(),
                     title: String::new(),
@@ -2529,6 +2533,7 @@ mod tests {
             ..Default::default()
         });
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "Opening".into(),
@@ -2645,6 +2650,7 @@ mod tests {
             state.history.replace_entries(entries);
         }
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "6".into(),
             number: "6".into(),
             title: "Arrival".into(),
@@ -2704,6 +2710,7 @@ mod tests {
             ..Default::default()
         });
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
@@ -2734,6 +2741,7 @@ mod tests {
             ..Default::default()
         });
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
@@ -2789,6 +2797,7 @@ mod tests {
         state.focus = Focus::List;
         state.episodes.items = (1..=100)
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: format!("Title {n}"),
@@ -2833,7 +2842,10 @@ mod tests {
             "{}THE_END",
             "The journey continues across a changing world. ".repeat(100)
         );
-        state.synopses.put("series-1".into(), Synopsis::Ready(full));
+        state.synopses.put(
+            state.selected_anime().unwrap().source_id(),
+            Synopsis::Ready(full),
+        );
         for (w, h) in [(180, 45), (80, 24), (60, 40), (40, 18), (32, 12)] {
             state.view.details_scroll = 0;
             let text = render_text(&mut state, w, h);
@@ -2862,9 +2874,10 @@ mod tests {
                 Some('┃')
             );
         }
-        state
-            .synopses
-            .put("series-1".into(), Synopsis::Ready("Short synopsis.".into()));
+        state.synopses.put(
+            state.selected_anime().unwrap().source_id(),
+            Synopsis::Ready("Short synopsis.".into()),
+        );
         let text = render_text(&mut state, 80, 24);
         let (_, reading) = preview_regions(&state, panels(&state, Rect::new(0, 0, 80, 24)).1);
         assert_eq!(
@@ -3037,5 +3050,32 @@ mod tests {
         let text = render_text(&mut state, 120, 40);
         assert!(text.is_ascii());
         assert!(text.contains("==") && text.contains("--") && text.contains("> Series"));
+    }
+    #[test]
+    fn synopsis_cache_separates_matching_ids_from_different_providers() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Search;
+        let first = crate::model::Anime {
+            id: "same-1".into(),
+            title: "First source".into(),
+            ..Default::default()
+        };
+        let second = crate::model::Anime {
+            provider: "other".to_owned().try_into().unwrap(),
+            title: "Second source".into(),
+            ..first.clone()
+        };
+        state
+            .synopses
+            .put(first.source_id(), Synopsis::Ready("ALPHA_SYNOPSIS".into()));
+        state
+            .synopses
+            .put(second.source_id(), Synopsis::Ready("BETA_SYNOPSIS".into()));
+        state.search.replace_results(vec![first, second]);
+        let text = render_text(&mut state, 120, 30);
+        assert!(text.contains("ALPHA_SYNOPSIS") && !text.contains("BETA_SYNOPSIS"));
+        state.search.selected = 1;
+        let text = render_text(&mut state, 120, 30);
+        assert!(text.contains("BETA_SYNOPSIS") && !text.contains("ALPHA_SYNOPSIS"));
     }
 }

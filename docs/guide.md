@@ -88,7 +88,9 @@ Use `i` for full details when the terminal is too small for a preview.
 | Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
 
 When XDG variables are unset, state defaults to `~/.local/state` and cache to
-`~/.cache`. History is saved with a lock and atomic replacement. An invalid
+`~/.cache`. History is saved with a lock and atomic replacement. Lock contention is reported
+after two seconds instead of blocking exit indefinitely. Pending preference
+changes are coalesced; queued history changes are flushed on shutdown. An invalid
 history file is reported and left intact.
 
 | Environment variable | Command-line equivalent | Purpose |
@@ -101,6 +103,13 @@ history file is reported and left intact.
 Command-line options take precedence over `MIRU_*` variables. The previous
 `ANI_WATCH_STATE_DIR`, `ANI_WATCH_CACHE_DIR`, `ANI_WATCH_THEME`, and
 `ANI_WATCH_PROVIDER` variables remain supported as lower-priority fallbacks.
+
+Series and episode identities include a provider namespace. Existing version 1
+history is read as HiAnime data and saved in version 2 format on the next change,
+preserving titles, languages, episode numbers and timestamps. JSON output retains
+the existing `id` strings and adds a `provider` field. Different providers can use
+the same ID without sharing history or synopsis cache entries. Source identity
+does not automatically match series across providers.
 
 ### Moving from ani-watch
 

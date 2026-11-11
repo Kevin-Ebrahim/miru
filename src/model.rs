@@ -1,9 +1,53 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(try_from = "String", into = "String")]
+pub struct ProviderId(String);
+
+impl Default for ProviderId {
+    fn default() -> Self {
+        Self("hianime".into())
+    }
+}
+
+impl TryFrom<String> for ProviderId {
+    type Error = anyhow::Error;
+    fn try_from(value: String) -> Result<Self> {
+        ensure!(
+            !value.is_empty()
+                && value.len() <= 64
+                && value.bytes().all(|byte| byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || b".-".contains(&byte)),
+            "Invalid provider identity"
+        );
+        Ok(Self(value))
+    }
+}
+
+impl From<ProviderId> for String {
+    fn from(provider: ProviderId) -> Self {
+        provider.0
+    }
+}
+impl std::fmt::Display for ProviderId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SourceId {
+    pub provider: ProviderId,
+    pub id: String,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Anime {
     pub id: String,
+    #[serde(default)]
+    pub provider: ProviderId,
     pub title: String,
     pub cover: Option<String>,
     #[serde(default)]
@@ -15,8 +59,34 @@ pub struct Anime {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Episode {
     pub id: String,
+    #[serde(default)]
+    pub provider: ProviderId,
     pub number: String,
     pub title: String,
+}
+
+impl Anime {
+    pub fn source_id(&self) -> SourceId {
+        SourceId {
+            provider: self.provider.clone(),
+            id: self.id.clone(),
+        }
+    }
+    pub fn same_source(&self, other: &Self) -> bool {
+        self.provider == other.provider && self.id == other.id
+    }
+}
+
+impl Episode {
+    pub fn source_id(&self) -> SourceId {
+        SourceId {
+            provider: self.provider.clone(),
+            id: self.id.clone(),
+        }
+    }
+    pub fn same_source(&self, other: &Self) -> bool {
+        self.provider == other.provider && self.id == other.id
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,6 +210,7 @@ mod tests {
         ["1", "1.5", "2", "3"]
             .iter()
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),

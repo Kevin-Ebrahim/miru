@@ -1,7 +1,7 @@
 use crate::{
     filter::TitleList,
     input::Input,
-    model::{Anime, Episode, Mode},
+    model::{Anime, Episode, Mode, SourceId},
 };
 use anyhow::Result;
 use lru::LruCache;
@@ -144,7 +144,7 @@ pub struct State {
     pub ascii: bool,
     pub colorless: bool,
     pub palette: crate::palette::Palette,
-    pub synopses: LruCache<String, Synopsis>,
+    pub synopses: LruCache<SourceId, Synopsis>,
     pub animate: bool,
     pub activity: Option<Activity>,
 }
@@ -246,12 +246,15 @@ impl State {
     pub fn current_episode_index(&self) -> Option<usize> {
         let activity = self.activity.as_ref()?;
         if activity.kind != JobKind::Playback
-            || self.episodes.anime.as_ref()?.id != activity.anime.id
+            || !self.episodes.anime.as_ref()?.same_source(&activity.anime)
         {
             return None;
         }
         let episode = &activity.episodes[activity.index];
-        self.episodes.items.iter().position(|e| e.id == episode.id)
+        self.episodes
+            .items
+            .iter()
+            .position(|e| e.same_source(episode))
     }
 
     pub fn invalidate_search(&mut self) {
@@ -274,14 +277,15 @@ impl State {
         self.loading = false;
         match result {
             Ok(results) => {
-                let selected_id = self.selected_anime().map(|a| a.id.clone());
+                let selected_id = self.selected_anime().map(Anime::source_id);
                 self.search.replace_results(results);
                 self.search.results_query = self.search.query.text.clone();
                 self.search.selected = selected_id
                     .and_then(|id| {
-                        self.visible()
-                            .iter()
-                            .position(|i| self.search.results()[*i].id == id)
+                        self.visible().iter().position(|i| {
+                            self.search.results()[*i].provider == id.provider
+                                && self.search.results()[*i].id == id.id
+                        })
                     })
                     .unwrap_or(0);
                 self.error = false;

@@ -6,7 +6,7 @@ use crate::view::TextView;
 use crate::{
     artwork::Artwork,
     jobs::{self, Jobs},
-    model::{Anime, Episode, Mode},
+    model::{Anime, Episode, Mode, SourceId},
     provider::Provider,
     state::{
         Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
@@ -25,14 +25,14 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::PathBuf,
     time::{Duration, Instant},
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
 enum Message {
-    Synopsis(u64, String, Result<String>),
+    Synopsis(u64, SourceId, Result<String>),
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
     Library(Result<crate::persistence::Library>),
@@ -64,7 +64,7 @@ pub struct App {
     episode_task: Option<JoinHandle<()>>,
     synopsis_task: Option<JoinHandle<()>>,
     synopsis_generation: u64,
-    synopsis_target: Option<String>,
+    synopsis_target: Option<SourceId>,
     synopsis_due: Option<Instant>,
     jobs: Jobs,
     search_due: Option<Instant>,
@@ -247,7 +247,7 @@ impl App {
             .episodes
             .anime
             .as_ref()
-            .is_some_and(|a| a.id == anime.id);
+            .is_some_and(|a| a.same_source(&anime));
         if entry.is_some() || !same_series {
             self.state.episodes.marked.clear();
         }
@@ -325,7 +325,7 @@ impl App {
     }
 
     fn prepare_synopsis(&mut self) -> bool {
-        let target = self.state.selected_anime().map(|anime| anime.id.clone());
+        let target = self.state.selected_anime().map(Anime::source_id);
         if target == self.synopsis_target {
             return false;
         }
@@ -350,27 +350,29 @@ impl App {
         self.synopsis_due = None;
         if !force
             && matches!(
-                self.state.synopses.get(&anime.id),
+                self.state.synopses.get(&anime.source_id()),
                 Some(Synopsis::Ready(_) | Synopsis::Failed)
             )
         {
             return;
         }
         if !force
-            && self.synopsis_target.as_deref() == Some(anime.id.as_str())
+            && self.synopsis_target.as_ref() == Some(&anime.source_id())
             && self.synopsis_task.is_some()
         {
             return;
         }
         self.cancel_synopsis();
-        self.synopsis_target = Some(anime.id.clone());
+        self.synopsis_target = Some(anime.source_id());
         let generation = self.synopsis_generation;
-        self.state.synopses.put(anime.id.clone(), Synopsis::Loading);
+        self.state
+            .synopses
+            .put(anime.source_id(), Synopsis::Loading);
         let provider = self.provider.clone();
         let tx = self.tx.clone();
         self.synopsis_task = Some(tokio::spawn(async move {
             let result = provider.synopsis(&anime).await;
-            let _ = tx.send(Message::Synopsis(generation, anime.id, result));
+            let _ = tx.send(Message::Synopsis(generation, anime.source_id(), result));
         }));
     }
 
@@ -517,20 +519,20 @@ impl App {
                 match result {
                     Ok(episodes) => {
                         // Refreshes preserve marks by episode identity, not the old row number.
-                        let marked: Vec<_> = self
+                        let marked: HashSet<_> = self
                             .state
                             .episodes
                             .marked
                             .iter()
                             .filter_map(|i| self.state.episodes.items.get(*i))
-                            .map(|e| e.id.clone())
+                            .map(Episode::source_id)
                             .collect();
                         let selected = self
                             .state
                             .episodes
                             .items
                             .get(self.state.episodes.selected)
-                            .map(|e| e.id.clone());
+                            .map(Episode::source_id);
                         self.state.episodes.items = episodes;
                         self.state.episodes.marked = self
                             .state
@@ -538,12 +540,16 @@ impl App {
                             .items
                             .iter()
                             .enumerate()
-                            .filter(|(_, e)| marked.contains(&e.id))
+                            .filter(|(_, e)| marked.contains(&e.source_id()))
                             .map(|(i, _)| i)
                             .collect();
                         self.state.episodes.selected = selected
                             .and_then(|id| {
-                                self.state.episodes.items.iter().position(|e| e.id == id)
+                                self.state
+                                    .episodes
+                                    .items
+                                    .iter()
+                                    .position(|e| e.source_id() == id)
                             })
                             .unwrap_or(0);
                         self.state.request_error = None;
@@ -561,13 +567,15 @@ impl App {
                     let key = self
                         .state
                         .selected_history()
-                        .map(|e| (e.anime.id.clone(), e.mode));
+                        .map(|e| (e.anime.source_id(), e.mode));
                     self.state.history.replace_entries(library.entries);
                     self.state.history.selected = key
                         .and_then(|(id, mode)| {
                             self.state.visible_history().iter().position(|i| {
                                 let e = &self.state.history.entries()[*i];
-                                e.anime.id == id && e.mode == mode
+                                e.anime.provider == id.provider
+                                    && e.anime.id == id.id
+                                    && e.mode == mode
                             })
                         })
                         .unwrap_or_else(|| {
@@ -1110,7 +1118,7 @@ impl App {
             KeyCode::Delete if self.state.screen == Screen::History => {
                 if let Some(entry) = self.state.selected_history() {
                     self.persist(crate::persistence::Change::Remove {
-                        id: entry.anime.id.clone(),
+                        source: entry.anime.source_id(),
                         mode: entry.mode,
                     });
                 }
@@ -1361,6 +1369,13 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn source(id: &str) -> SourceId {
+        SourceId {
+            provider: Default::default(),
+            id: id.into(),
+        }
+    }
+
     fn anime(id: &str, title: &str) -> Anime {
         Anime {
             id: id.into(),
@@ -1577,6 +1592,7 @@ mod tests {
                 }
                 state.episodes.items = (1..=3)
                     .map(|n| Episode {
+                        provider: Default::default(),
                         id: n.to_string(),
                         number: n.to_string(),
                         title: String::new(),
@@ -1652,6 +1668,7 @@ mod tests {
         app.state.focus = Focus::List;
         app.state.episodes.items = (1..=3)
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
@@ -1683,27 +1700,27 @@ mod tests {
         assert!(app.prepare_synopsis());
         assert!(app.synopsis_due.is_some());
         assert!(matches!(
-            app.state.synopses.peek("first"),
+            app.state.synopses.peek(&source("first")),
             Some(Synopsis::Loading)
         ));
         assert!(!app.prepare_synopsis());
         app.state.search.selected = 1;
         assert!(app.prepare_synopsis());
-        assert!(app.state.synopses.peek("first").is_none());
+        assert!(app.state.synopses.peek(&source("first")).is_none());
         assert!(matches!(
-            app.state.synopses.peek("second"),
+            app.state.synopses.peek(&source("second")),
             Some(Synopsis::Loading)
         ));
         app.state
             .synopses
-            .put("second".into(), Synopsis::Ready("Full synopsis".into()));
+            .put(source("second"), Synopsis::Ready("Full synopsis".into()));
         app.state.search.selected = 0;
         app.prepare_synopsis();
         app.state.search.selected = 1;
         app.prepare_synopsis();
         assert!(app.synopsis_due.is_none());
         assert!(
-            matches!(app.state.synopses.peek("second"), Some(Synopsis::Ready(text)) if text == "Full synopsis")
+            matches!(app.state.synopses.peek(&source("second")), Some(Synopsis::Ready(text)) if text == "Full synopsis")
         );
     }
 
@@ -1736,6 +1753,7 @@ mod tests {
         app.state.focus = Focus::Range;
         app.state.episodes.items = (1..=5)
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
@@ -1758,6 +1776,7 @@ mod tests {
         app.state.episodes.range.set(String::new());
         app.state.episodes.items = (1..=13)
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
@@ -1791,6 +1810,7 @@ mod tests {
         state.focus = Focus::List;
         state.episodes.anime = Some(anime("series", "Series"));
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "First".into(),
@@ -1966,6 +1986,7 @@ mod tests {
         app.message(Message::Episodes(
             3,
             Ok(vec![Episode {
+                provider: Default::default(),
                 id: "1".into(),
                 number: "1".into(),
                 title: "stale".into(),
@@ -1981,17 +2002,17 @@ mod tests {
         });
         assert!(app.state.activity.is_none());
         app.synopsis_generation = 2;
-        app.message(Message::Synopsis(1, "old".into(), Ok("Stale text".into())));
+        app.message(Message::Synopsis(1, source("old"), Ok("Stale text".into())));
         assert!(app.state.synopses.is_empty());
         app.message(Message::Synopsis(
             2,
-            "current".into(),
+            source("current"),
             Ok("Full text".into()),
         ));
         assert!(
-            matches!(app.state.synopses.peek("current"), Some(Synopsis::Ready(s)) if s == "Full text")
+            matches!(app.state.synopses.peek(&source("current")), Some(Synopsis::Ready(s)) if s == "Full text")
         );
-        assert!(app.state.synopses.peek("old").is_none());
+        assert!(app.state.synopses.peek(&source("old")).is_none());
     }
     #[tokio::test]
     async fn range_entry_marks_actual_episode_order_without_launching() {
@@ -2003,6 +2024,7 @@ mod tests {
         state.episodes.items = ["1", "1.5", "2", "3"]
             .iter()
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
@@ -2058,11 +2080,13 @@ mod tests {
         app.key(enter);
         let episodes = vec![
             Episode {
+                provider: Default::default(),
                 id: "11".into(),
                 number: "1".into(),
                 title: "First episode".into(),
             },
             Episode {
+                provider: Default::default(),
                 id: "12".into(),
                 number: "2".into(),
                 title: "Second episode".into(),
@@ -2086,6 +2110,7 @@ mod tests {
         app.message(Message::Episodes(
             app.state.episode_generation,
             Ok(vec![Episode {
+                provider: Default::default(),
                 id: "21".into(),
                 number: "1".into(),
                 title: "Other episode".into(),
@@ -2142,6 +2167,7 @@ mod tests {
         state.focus = Focus::List;
         state.episodes.anime = Some(anime("series", "Series"));
         state.episodes.items = vec![Episode {
+            provider: Default::default(),
             id: "1".into(),
             number: "1".into(),
             title: "Opening".into(),
@@ -2249,6 +2275,7 @@ mod tests {
         app.state.focus = Focus::List;
         app.state.episodes.items = (1..=30)
             .map(|n| Episode {
+                provider: Default::default(),
                 id: n.to_string(),
                 number: n.to_string(),
                 title: String::new(),
