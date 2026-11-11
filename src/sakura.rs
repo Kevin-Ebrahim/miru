@@ -17,35 +17,20 @@ const BAYER: [f32; 16] = [
 
 pub struct Motion {
     step: u32,
-    quiet: u8,
-    strength: f32,
 }
 
 impl Default for Motion {
     fn default() -> Self {
-        Self {
-            step: 0,
-            quiet: 25,
-            strength: 0.0,
-        }
+        // Start mid-breeze, with petals already distributed across the canvas.
+        Self { step: 200 }
     }
 }
 
 impl Motion {
-    pub fn interact(&mut self) {
-        self.quiet = 42;
-    }
-
     // Called at the scene's 120 ms interval, only while Home is visible.
     pub fn advance(&mut self) -> bool {
-        self.quiet = self.quiet.saturating_sub(1);
-        let target = if self.quiet == 0 { 1.0 } else { 0.0 };
-        let previous = self.strength;
-        self.strength += (target - self.strength).clamp(-0.12, 0.08);
-        if self.strength > 0.0 {
-            self.step = self.step.wrapping_add(1);
-        }
-        self.strength > 0.0 || previous > 0.0
+        self.step = self.step.wrapping_add(1);
+        true
     }
 }
 
@@ -74,11 +59,7 @@ impl Widget for Sakura<'_> {
             _ => self.palette.focus,
         };
         let time = self.motion.step as f32 * 0.12;
-        let strength = if self.animate {
-            self.motion.strength
-        } else {
-            0.0
-        };
+        let strength = if self.animate { 1.0 } else { 0.0 };
         let breeze = (time * 0.62).sin() * (0.35 + 0.65 * (time * 0.17).sin().powi(2)) * strength;
         let atmosphere = matches!(
             (self.palette.canvas, self.palette.focus),
@@ -473,24 +454,35 @@ mod tests {
     }
 
     #[test]
-    fn typing_settles_motion_then_idle_resumes_without_restarting() {
+    fn petals_are_visible_on_the_first_frame_and_keep_moving() {
+        let area = Rect::new(0, 0, 133, 32);
+        let protected = Rect::new(32, 6, 68, 17);
         let mut motion = Motion::default();
-        for _ in 0..80 {
+        let first = draw(
+            area,
+            protected,
+            &motion,
+            true,
+            false,
+            Palette::terminal(false),
+        );
+        assert!(first.content.iter().any(|cell| cell.symbol() == "●"));
+        assert!(
+            area.positions()
+                .any(|p| p.x > area.width * 3 / 4 && matches!(first[p].symbol(), "●" | "•"))
+        );
+        for _ in 0..10 {
             motion.advance();
         }
-        let first = motion.step;
-        motion.interact();
-        for _ in 0..15 {
-            motion.advance();
-        }
-        assert_eq!(motion.strength, 0.0);
-        assert!(!motion.advance(), "settled scene must not request redraws");
-        let settled = motion.step;
-        assert!(settled >= first);
-        for _ in 0..50 {
-            motion.advance();
-        }
-        assert!(motion.step > settled && motion.strength > 0.0);
+        let later = draw(
+            area,
+            protected,
+            &motion,
+            true,
+            false,
+            Palette::terminal(false),
+        );
+        assert_ne!(first, later);
     }
 
     #[test]

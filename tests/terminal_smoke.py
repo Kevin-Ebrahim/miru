@@ -57,18 +57,15 @@ def check(binary, exit_method, animate=False):
             assert b"anime" in output, "Mado search did not draw"
             pump(0.2)
             drawn = len(output)
-            pump(0.4)
-            assert len(output) == drawn, "Home should start still before the first breeze"
             if animate:
-                pump(3.8)
-                assert len(output) > drawn, "Idle sakura never started animating"
-                os.write(master, b"frieren")
-                pump(2)
-                settled = len(output)
+                pump(0.4)
+                assert len(output) > drawn, "Sakura must animate immediately"
+                for letter in b"frieren":
+                    os.write(master, bytes([letter]))
+                    pump(0.1)
+                typing = len(output)
                 pump(0.5)
-                assert len(output) == settled, "Typing did not settle the sakura"
-                pump(4)
-                assert len(output) > settled, "Sakura did not resume after input stopped"
+                assert len(output) > typing, "Typing must not pause the sakura"
                 os.write(master, b"\x1bOP")  # F1
                 pump(0.4)
                 help_drawn = len(output)
@@ -76,6 +73,9 @@ def check(binary, exit_method, animate=False):
                 assert len(output) == help_drawn, "Hidden sakura kept redrawing Help"
                 os.write(master, b"\x1b")
                 pump(0.2)
+                returned = len(output)
+                pump(0.4)
+                assert len(output) > returned, "Returning Home must resume immediately"
             elif exit_method == "q":
                 pump(3.8)
                 assert len(output) == drawn, "--no-animation started the breeze"
@@ -114,4 +114,4 @@ if __name__ == "__main__":
     for method in ("q", "ctrl+c", signal.SIGTERM, signal.SIGHUP):
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
-    print("PASS: sakura idle/typing/resume, hidden/compact/reduced-motion stillness, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")
+    print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")

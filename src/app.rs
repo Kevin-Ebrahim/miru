@@ -719,7 +719,6 @@ impl App {
     }
 
     fn show(&mut self, screen: Screen) {
-        self.state.sakura.interact();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
@@ -1326,7 +1325,6 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
-        self.state.sakura.interact();
         if self.state.help && !self.state.help_filtering {
             return;
         }
@@ -1472,7 +1470,6 @@ impl App {
     }
 
     fn key(&mut self, mut key: KeyEvent) {
-        self.state.sakura.interact();
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -1990,6 +1987,59 @@ mod tests {
                 download_dir: dir.join("downloads"),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn petals_persist_through_typing_paste_and_search_return() {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        let render = |state: &State| {
+            let area = Rect::new(0, 0, 133, 32);
+            let mut buf = Buffer::empty(area);
+            crate::sakura::Sakura {
+                palette: state.palette,
+                protected: Rect::new(32, 6, 68, 17),
+                motion: &state.sakura,
+                animate: true,
+                ascii: false,
+            }
+            .render(area, &mut buf);
+            buf
+        };
+        let visible = |buf: &Buffer| buf.content.iter().any(|c| c.symbol() == "●");
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(String::new(), Mode::Sub, "best".into(), false, false, true),
+            dir.path(),
+        );
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(visible(&render(&app.state)));
+        for _ in 0..20 {
+            app.key(key(KeyCode::Char('a')));
+            app.paste("b");
+            app.state.sakura.advance();
+            assert!(
+                visible(&render(&app.state)),
+                "typing must not fade out petals"
+            );
+        }
+        let before = render(&app.state);
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.state.screen, Screen::Search);
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.state.screen, Screen::Home);
+        assert_eq!(
+            before,
+            render(&app.state),
+            "return must preserve the visible animation phase"
+        );
+        for _ in 0..20 {
+            app.state.sakura.advance();
+            assert!(
+                visible(&render(&app.state)),
+                "returning Home must not restart a fade"
+            );
+        }
+        assert_ne!(before, render(&app.state));
     }
 
     #[tokio::test]
