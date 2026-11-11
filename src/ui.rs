@@ -402,9 +402,26 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
     }
 }
 
+fn home_footer_hint(state: &State) -> Line<'static> {
+    let mut hint = Line::default();
+    if !state.history.entries().is_empty() {
+        hint.spans.extend(shortcut(state, "Alt+h", "History").spans);
+        hint.spans.push(Span::raw("  "));
+    }
+    hint.spans.extend(shortcut(state, "F1", "Help").spans);
+    hint
+}
+
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
-    let activity_height = activity_height(state);
-    Layout::vertical([
+    let footer_download = area.width >= 80
+        && visible_activity(state)
+            .is_some_and(|activity| activity.kind == JobKind::Download && activity.active());
+    let activity_height = if footer_download {
+        0
+    } else {
+        activity_height(state)
+    };
+    let [space, status, mut activity, gap, mut footer] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(if state.status.is_empty() {
             0
@@ -423,7 +440,18 @@ fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
             },
         ),
     ])
-    .areas(area)
+    .areas(area);
+    if footer_download {
+        let hint_width = home_footer_hint(state).width() as u16;
+        activity = Rect::new(
+            footer.x,
+            footer.y,
+            footer.width.saturating_sub(hint_width + 2),
+            1,
+        );
+        footer = Rect::new(footer.right() - hint_width, footer.y, hint_width, 1);
+    }
+    [space, status, activity, gap, footer]
 }
 
 pub fn home_scene_visible(state: &State, area: Rect) -> bool {
@@ -445,7 +473,6 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         u16::from(space.height >= 10)
     };
-    let history = !state.history.entries().is_empty();
     let hint_height = 1;
     let gap = u16::from(space.height >= 16);
     let box_height = if space.height >= 12 { 5 } else { 4 };
@@ -606,17 +633,10 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         );
     }
     render_activity(frame, state, activity);
-    let mut footer_hint = Line::default();
-    if history {
-        footer_hint
-            .spans
-            .extend(shortcut(state, "Alt+h", "History").spans);
-        footer_hint.spans.push(Span::raw("  "));
-    }
-    footer_hint
-        .spans
-        .extend(shortcut(state, "F1", "Help").spans);
-    frame.render_widget(Paragraph::new(footer_hint).right_aligned(), footer);
+    frame.render_widget(
+        Paragraph::new(home_footer_hint(state)).right_aligned(),
+        footer,
+    );
     if state.activity.as_ref().is_some_and(|a| a.retryable()) {
         frame.render_widget(
             Paragraph::new(shortcut(state, "F6", "Retry")).centered(),
@@ -2519,6 +2539,33 @@ mod tests {
                         assert!(
                             !text.contains("Downloading:") && !text.contains("Downloaded through")
                         );
+                    }
+                }
+            }
+            for history in [false, true] {
+                state.history.replace_entries(if history {
+                    vec![crate::persistence::Entry {
+                        anime: anime.clone(),
+                        episode: "1".into(),
+                        mode: Mode::Sub,
+                        watched_at: 1,
+                    }]
+                } else {
+                    vec![]
+                });
+                for width in [80, 120, 180] {
+                    for phase in [JobPhase::Resolving, JobPhase::Running] {
+                        state.activity.as_mut().unwrap().phase = phase;
+                        let text = render_text(&mut state, width, 24);
+                        let footer = text.lines().last().unwrap();
+                        for label in [&scan(&state), "Ep 1 SUB", "F1 Help"] {
+                            assert!(footer.contains(label), "{width}: {text}");
+                        }
+                        if history {
+                            assert!(footer.contains("Alt+h History"), "{text}");
+                        }
+                        assert_eq!(text.matches("Ep 1 SUB").count(), 1, "{text}");
+                        assert!(footer.find("Ep 1 SUB") < footer.find("F1 Help"));
                     }
                 }
             }
