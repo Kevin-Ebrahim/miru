@@ -424,7 +424,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         u16::from(space.height >= 10)
     };
     let history = !state.history.is_empty();
-    let hint_height = if history && width < 50 { 2 } else { 1 };
+    let hint_height = 1;
     let gap = u16::from(space.height >= 16);
     let box_height = if space.height >= 12 { 5 } else { 4 };
     let hint_gap = u16::from(space.height >= 10);
@@ -567,21 +567,8 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     if matches!(state.focus, Focus::Audio | Focus::Quality) {
         hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
     }
-    let mut hints = Vec::new();
-    if history {
-        if !hint.spans.is_empty() {
-            if width < 50 {
-                hints.push(hint);
-                hint = Line::default();
-            } else {
-                hint.spans.push(Span::raw("  "));
-            }
-        }
-        hint.spans.extend(shortcut(state, "Alt+h", "History").spans);
-    }
-    hints.push(hint);
     frame.render_widget(
-        Paragraph::new(hints),
+        Paragraph::new(hint),
         Rect::new(x, field.bottom() + hint_gap, width, hint_height),
     );
     if status.height > 0 {
@@ -597,10 +584,17 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         );
     }
     render_activity(frame, state, activity);
-    frame.render_widget(
-        Paragraph::new(shortcut(state, "F1", "Help")).right_aligned(),
-        footer,
-    );
+    let mut footer_hint = Line::default();
+    if history {
+        footer_hint
+            .spans
+            .extend(shortcut(state, "Alt+h", "History").spans);
+        footer_hint.spans.push(Span::raw("  "));
+    }
+    footer_hint
+        .spans
+        .extend(shortcut(state, "F1", "Help").spans);
+    frame.render_widget(Paragraph::new(footer_hint).right_aligned(), footer);
     if state.activity.as_ref().is_some_and(|a| a.retryable()) {
         frame.render_widget(
             Paragraph::new(shortcut(state, "F6", "Retry")).centered(),
