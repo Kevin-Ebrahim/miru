@@ -37,6 +37,8 @@ pub enum Focus {
     Search,
     List,
     Range,
+    Audio,
+    Quality,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,7 +343,6 @@ pub struct State {
     pub results_query: String,
     pub history: Vec<crate::persistence::Entry>,
     pub history_selected: usize,
-    pub home_selected: usize,
     pub list_offsets: [usize; 4],
     pub range: Input,
     pub marked: BTreeSet<usize>,
@@ -400,17 +401,12 @@ impl State {
             } else {
                 Screen::Home
             },
-            focus: if searching {
-                Focus::Search
-            } else {
-                Focus::List
-            },
+            focus: Focus::Search,
             query: input,
             results: vec![],
             results_query: String::new(),
             history: vec![],
             history_selected: 0,
-            home_selected: 0,
             list_offsets: [0; 4],
             range: Input::default(),
             marked: BTreeSet::new(),
@@ -466,7 +462,7 @@ impl State {
 
     pub fn selected_anime(&self) -> Option<&Anime> {
         match self.screen {
-            Screen::Home => self.history.get(self.home_selected).map(|e| &e.anime),
+            Screen::Home => None,
             Screen::Search if self.request_error.is_some() => None,
             Screen::Search => self
                 .visible()
@@ -484,10 +480,6 @@ impl State {
         }
         let episode = &activity.episodes[activity.index];
         self.episodes.iter().position(|e| e.id == episode.id)
-    }
-
-    pub fn welcome(&self) -> bool {
-        self.screen == Screen::Home && self.history.is_empty()
     }
 
     pub fn invalidate_search(&mut self) {
@@ -731,7 +723,11 @@ impl App {
         self.state.search_generation += 1;
         self.state.episode_generation += 1;
         self.state.screen = screen;
-        self.state.focus = Focus::List;
+        self.state.focus = if screen == Screen::Home {
+            Focus::Search
+        } else {
+            Focus::List
+        };
         self.state.details = false;
         self.state.loading = false;
         self.state.request_error = None;
@@ -803,7 +799,6 @@ impl App {
             return;
         };
         let entry = match self.state.screen {
-            Screen::Home => self.state.history.get(self.state.home_selected),
             Screen::History => self.state.history.get(self.state.history_selected),
             _ => None,
         }
@@ -1199,28 +1194,23 @@ impl App {
             }
             Message::Library(result) => match result {
                 Ok(library) => {
-                    let selected =
-                        [self.state.home_selected, self.state.history_selected].map(|i| {
-                            (
-                                i,
-                                self.state
-                                    .history
-                                    .get(i)
-                                    .map(|e| (e.anime.id.clone(), e.mode)),
-                            )
-                        });
+                    let previous = self.state.history_selected;
+                    let key = self
+                        .state
+                        .history
+                        .get(previous)
+                        .map(|e| (e.anime.id.clone(), e.mode));
                     self.state.history = library.entries;
-                    let positions = selected.map(|(previous, key)| {
-                        key.and_then(|(id, mode)| {
+                    self.state.history_selected = key
+                        .and_then(|(id, mode)| {
                             self.state
                                 .history
                                 .iter()
                                 .position(|e| e.anime.id == id && e.mode == mode)
                         })
-                        .unwrap_or_else(|| previous.min(self.state.history.len().saturating_sub(1)))
-                    });
-                    self.state.home_selected = positions[0].min(7);
-                    self.state.history_selected = positions[1];
+                        .unwrap_or_else(|| {
+                            previous.min(self.state.history.len().saturating_sub(1))
+                        });
                 }
                 Err(err) => self
                     .state
@@ -1336,7 +1326,9 @@ impl App {
         if self.state.help && !self.state.help_filtering {
             return;
         }
-        if !self.state.help && (self.state.details || self.state.focus == Focus::List) {
+        if !self.state.help
+            && (self.state.details || !matches!(self.state.focus, Focus::Search | Focus::Range))
+        {
             return;
         }
         let input = if self.state.help {
@@ -1363,7 +1355,7 @@ impl App {
             }
             return;
         }
-        if changed && self.state.focus == Focus::Search {
+        if changed && self.state.focus == Focus::Search && self.state.screen == Screen::Search {
             self.state.invalidate_search();
             abort(&mut self.search_task);
             self.search_due = Some(Instant::now() + Duration::from_millis(300));
@@ -1375,6 +1367,104 @@ impl App {
         self.state.help_scroll = 0;
         self.state.help_filtering = false;
         self.state.help_query.set(String::new());
+    }
+
+    fn cycle_quality(&mut self, backwards: bool) {
+        let choices = ["best", "1080p", "720p", "480p", "360p", "worst"];
+        let index = choices
+            .iter()
+            .position(|q| *q == self.state.quality)
+            .unwrap_or(0);
+        let step = if backwards { choices.len() - 1 } else { 1 };
+        self.state.quality = choices[(index + step) % choices.len()].into();
+        self.settings();
+        self.state.message(
+            if self.state.activity.as_ref().is_some_and(Activity::active) {
+                "Quality applies to the next queue."
+            } else {
+                ""
+            },
+            false,
+        );
+    }
+
+    fn home_key(&mut self, mut key: KeyEvent) -> bool {
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('h') {
+            self.history();
+            return true;
+        }
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('e') {
+            self.state.exact = !self.state.exact;
+            return true;
+        }
+        if key.code == KeyCode::F(5) || key.code == KeyCode::F(6) {
+            return false;
+        }
+        if key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                _ => {}
+            }
+        }
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                let focuses = [Focus::Search, Focus::Audio, Focus::Quality];
+                let index = focuses.iter().position(|f| *f == self.state.focus);
+                let backwards =
+                    key.code == KeyCode::BackTab || key.modifiers == KeyModifiers::SHIFT;
+                self.state.focus = index.map_or(Focus::Search, |i| {
+                    focuses[(i + if backwards { 2 } else { 1 }) % 3]
+                });
+            }
+            KeyCode::Enter if self.state.focus == Focus::Search => {
+                if !self.state.query.text.trim().is_empty() {
+                    self.navigate(Screen::Search);
+                }
+            }
+            KeyCode::Enter if matches!(self.state.focus, Focus::Audio | Focus::Quality) => {
+                self.state.focus = Focus::Search
+            }
+            KeyCode::Esc if self.state.focus == Focus::Search => self.state.focus = Focus::List,
+            KeyCode::Esc if matches!(self.state.focus, Focus::Audio | Focus::Quality) => {
+                self.state.focus = Focus::List
+            }
+            _ if self.state.focus == Focus::Search => {
+                self.state.query.edit(key);
+            }
+            _ if matches!(self.state.focus, Focus::Audio | Focus::Quality) => {
+                if key.modifiers.is_empty()
+                    && matches!(
+                        key.code,
+                        KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Up
+                            | KeyCode::Down
+                            | KeyCode::Char('h' | 'j' | 'k' | 'l')
+                    )
+                {
+                    if self.state.focus == Focus::Audio {
+                        self.state.mode.toggle();
+                        self.settings();
+                        self.state.message(
+                            if self.state.activity.as_ref().is_some_and(Activity::active) {
+                                "Audio applies to the next queue."
+                            } else {
+                                ""
+                            },
+                            false,
+                        );
+                    } else {
+                        self.cycle_quality(matches!(
+                            key.code,
+                            KeyCode::Left | KeyCode::Up | KeyCode::Char('h' | 'k')
+                        ));
+                    }
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn key(&mut self, mut key: KeyEvent) {
@@ -1419,6 +1509,13 @@ impl App {
                     }
                 }
             }
+            return;
+        }
+        if self.state.screen == Screen::Home
+            && !self.state.help
+            && !self.state.details
+            && self.home_key(key)
+        {
             return;
         }
         // Modified navigation must not fall through to playback/download shortcuts.
@@ -1611,7 +1708,9 @@ impl App {
             KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
-                self.navigate(Screen::Search);
+                if self.state.screen != Screen::Home {
+                    self.navigate(Screen::Search);
+                }
                 self.state.focus = Focus::Search;
             }
             KeyCode::Esc => self.back(),
@@ -1647,28 +1746,9 @@ impl App {
                 self.start_selection(true)
             }
             KeyCode::Char('Q') => {
-                let choices = ["best", "1080p", "720p", "480p", "360p", "worst"];
-                let index = choices
-                    .iter()
-                    .position(|q| *q == self.state.quality)
-                    .unwrap_or(0);
-                self.state.quality = choices[(index + 1) % choices.len()].into();
-                self.settings();
-                self.state.message(
-                    if self.state.activity.as_ref().is_some_and(Activity::active) {
-                        "Quality applies to the next queue."
-                    } else {
-                        ""
-                    },
-                    false,
-                );
+                self.cycle_quality(false);
             }
-            KeyCode::Enter
-                if matches!(
-                    self.state.screen,
-                    Screen::Home | Screen::Search | Screen::History
-                ) =>
-            {
+            KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
                 self.open()
             }
             KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
@@ -1704,14 +1784,12 @@ impl App {
             KeyCode::Char('R') => self.retry(),
             code => {
                 let len = match self.state.screen {
-                    Screen::Home => self.state.history.len().min(8),
+                    Screen::Home => return,
                     Screen::Search => self.state.visible().len(),
                     Screen::History => self.state.history.len(),
                     Screen::Episodes => self.state.episodes.len(),
                 };
-                let selected = if self.state.screen == Screen::Home {
-                    &mut self.state.home_selected
-                } else if self.state.screen == Screen::Search {
+                let selected = if self.state.screen == Screen::Search {
                     &mut self.state.selected
                 } else if self.state.screen == Screen::History {
                     &mut self.state.history_selected
@@ -1840,7 +1918,7 @@ impl App {
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
-                        dirty = self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active) || self.state.welcome();
+                        dirty = self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active);
                     }
                 }
                 Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
@@ -1905,6 +1983,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mado_home_submits_explicitly_and_settings_never_edit_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(String::new(), Mode::Sub, "best".into(), false, false, false),
+            dir.path(),
+        );
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.state.screen, Screen::Home);
+        for c in "sQh".chars() {
+            app.key(key(KeyCode::Char(c)));
+        }
+        app.paste(" 日本語");
+        assert_eq!(app.state.query.text, "sQh 日本語");
+        assert!(app.search_due.is_none() && app.search_task.is_none());
+        app.key(key(KeyCode::Tab));
+        assert_eq!(app.state.focus, Focus::Audio);
+        app.key(key(KeyCode::Right));
+        assert_eq!(app.state.mode, Mode::Dub);
+        app.paste("ignored");
+        app.key(key(KeyCode::Tab));
+        assert_eq!(app.state.focus, Focus::Quality);
+        app.key(key(KeyCode::Left));
+        assert_eq!(app.state.quality, "worst");
+        app.key(key(KeyCode::Right));
+        assert_eq!(app.state.quality, "best");
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.state.focus, Focus::List);
+        app.key(key(KeyCode::Tab));
+        app.key(key(KeyCode::Tab));
+        app.key(key(KeyCode::Tab));
+        app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(app.state.focus, Focus::Audio);
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.state.focus, Focus::Search);
+        assert_eq!(app.state.query.text, "sQh 日本語");
+        app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT));
+        assert_eq!(app.state.screen, Screen::History);
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.state.screen, Screen::Home);
+        assert_eq!(app.state.focus, Focus::Search);
+        app.key(key(KeyCode::Enter));
+        assert_eq!(app.state.screen, Screen::Search);
+        assert_eq!(app.state.focus, Focus::List);
+        assert!(app.search_task.is_some());
+        app.key(key(KeyCode::Esc));
+        assert_eq!(app.state.screen, Screen::Home);
+        assert_eq!(app.state.query.text, "sQh 日本語");
+        assert_eq!(app.state.focus, Focus::Search);
+        assert!(app.search_task.is_none());
+        app.key(key(KeyCode::Esc));
+        app.key(key(KeyCode::Char('/')));
+        assert_eq!(app.state.screen, Screen::Home);
+        assert_eq!(app.state.focus, Focus::Search);
+    }
+
+    #[tokio::test]
     async fn help_filter_isolates_input_and_preserves_the_underlying_screen() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(
@@ -1947,13 +2082,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn home_and_history_continuations_play_the_highlighted_episode_without_old_marks() {
-        for screen in [Screen::Home, Screen::History] {
+    async fn history_continuations_play_the_highlighted_episode_without_old_marks() {
+        for screen in [Screen::History] {
             for (last, expected) in [("1", "2"), ("3", "3"), ("9", "1")] {
                 let dir = tempfile::tempdir().unwrap();
                 let mut state =
                     State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
                 state.screen = screen;
+                state.focus = Focus::List;
                 state.anime = Some(anime("series", "A series"));
                 state.history.push(crate::persistence::Entry {
                     anime: state.anime.clone().unwrap(),
@@ -1995,6 +2131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.details = true;
+        state.focus = Focus::List;
         state.text_view = Some(TextView {
             area: Rect::new(10, 5, 12, 3),
             offset: 0,
@@ -2034,6 +2171,7 @@ mod tests {
         app.mouse(mouse(MouseEventKind::ScrollDown, 11, 5));
         assert_eq!(app.state.preview_scroll, 3);
         app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::List;
         app.state.episodes = (1..=3)
             .map(|n| Episode {
                 id: n.to_string(),
@@ -2116,6 +2254,7 @@ mod tests {
         assert_eq!(app.state.query.text, "fox 日本 語");
         assert!(app.state.search_generation > generation);
         app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::List;
         app.state.focus = Focus::Range;
         app.state.episodes = (1..=5)
             .map(|n| Episode {
@@ -2158,6 +2297,7 @@ mod tests {
             false,
         );
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.anime = Some(anime("series", "Series"));
         state.episodes = vec![Episode {
             id: "1".into(),
@@ -2214,7 +2354,6 @@ mod tests {
                     watched_at: n,
                 })
                 .collect();
-            state.home_selected = removed;
             state.history_selected = removed;
             let mut entries = state.history.clone();
             entries.remove(removed);
@@ -2223,7 +2362,6 @@ mod tests {
                 entries: entries.clone(),
                 ..Default::default()
             })));
-            assert_eq!(app.state.home_selected, removed.min(2));
             assert_eq!(app.state.history_selected, removed.min(2));
             let selected = app.state.history[app.state.history_selected]
                 .anime
@@ -2239,10 +2377,7 @@ mod tests {
                 selected
             );
             app.message(Message::Library(Ok(crate::persistence::Library::default())));
-            assert_eq!(
-                (app.state.home_selected, app.state.history_selected),
-                (0, 0)
-            );
+            assert_eq!(app.state.history_selected, 0);
         }
     }
 
@@ -2279,6 +2414,7 @@ mod tests {
         };
         let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
         app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::List;
         app.state.focus = Focus::List;
         app.state.episode_generation = 3;
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2322,6 +2458,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.focus = Focus::Range;
         state.episodes = ["1", "1.5", "2", "3"]
             .iter()
@@ -2454,6 +2591,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.anime = Some(anime("series", "Series"));
         state.episodes = vec![Episode {
             id: "1".into(),
@@ -2484,6 +2622,7 @@ mod tests {
             let mut state =
                 State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
             state.screen = Screen::Episodes;
+            state.focus = Focus::List;
             let mut app = test_app(state, dir.path());
             app.key(key);
             assert_eq!(app.state.mode, Mode::Dub, "{key:?}");
@@ -2559,6 +2698,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT));
         assert_eq!(app.state.screen, Screen::Home);
         app.state.screen = Screen::Episodes;
+        app.state.focus = Focus::List;
         app.state.episodes = (1..=30)
             .map(|n| Episode {
                 id: n.to_string(),

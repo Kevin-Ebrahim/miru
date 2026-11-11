@@ -86,7 +86,7 @@ def check(binary, mode):
             assert fragment in output, f"{mode}: missing {fragment!r}"
 
         try:
-            wait_for(b"Theme fixture")
+            wait_for(b"anime")
             if mode == "auto":
                 wait_for(b"38;2;216;160;240")
                 wait_for(b"48;2;16;17;20")
@@ -96,6 +96,8 @@ def check(binary, mode):
                 replacement.replace(palette)
                 wait_for(b"38;2;0;68;119")
                 wait_for(b"48;2;244;242;237")
+                os.write(master, b"\x1bh")
+                wait_for(b"Theme fixture")
                 os.write(master, b"i")
                 wait_for(b"Details")
             else:

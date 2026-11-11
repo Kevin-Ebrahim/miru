@@ -231,22 +231,27 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         state.text_view = None;
         state.text_selection = None;
         frame.render_widget(
-            Paragraph::new("ani-watch\nResize to at least 32 x 12\nCtrl+C quit")
+            Paragraph::new("Mado\nResize to at least 32 x 12\nCtrl+C quit")
                 .wrap(Wrap { trim: true }),
             area,
         );
         return;
     }
-    let [header, input, body, status, activity, footer] = sections(state, area);
+    if state.screen == Screen::Home && !state.details {
+        state.text_view = None;
+        state.text_selection = None;
+        render_home(frame, state, area);
+        if state.help {
+            render_help(frame, state);
+        }
+        return;
+    }
+    let [header, input, _, status, activity, footer] = sections(state, area);
     render_header(frame, state, header);
     if input.height > 0 {
         render_input(frame, state, input);
     }
-    if state.welcome() && !state.details {
-        state.text_view = None;
-        state.text_selection = None;
-        empty_art(frame, state, body.inner(Margin::new(2, 1)), "", "", true);
-    } else {
+    {
         let (list, preview) = panels(state, area);
         if list.width > 0 {
             render_list(frame, state, list);
@@ -308,6 +313,192 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     );
     if state.help {
         render_help(frame, state);
+    }
+}
+
+fn render_home(frame: &mut Frame, state: &State, area: Rect) {
+    let activity_height = state.activity.as_ref().map_or(0, |a| {
+        if a.message.is_empty() && a.quality_note.is_empty() {
+            1
+        } else {
+            2
+        }
+    });
+    let [space, status, activity, _, footer] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(if state.status.is_empty() {
+            0
+        } else if area.height < 18 {
+            1
+        } else {
+            2
+        }),
+        Constraint::Length(activity_height),
+        Constraint::Length(u16::from(activity_height > 0 && area.height >= 18)),
+        Constraint::Length(if state.activity.is_some() && area.width < 54 {
+            2
+        } else {
+            1
+        }),
+    ])
+    .areas(area);
+    let width = space.width.saturating_sub(4).min(64);
+    let big_logo = !state.ascii && space.width >= 60 && space.height >= 20;
+    let logo_height = if big_logo {
+        3
+    } else {
+        u16::from(space.height >= 10)
+    };
+    let history = !state.history.is_empty();
+    let hint_height = if history && width < 50 { 2 } else { 1 };
+    let gap = u16::from(space.height >= 16);
+    let box_height = if space.height >= 12 { 5 } else { 4 };
+    let hint_gap = u16::from(space.height >= 10);
+    let height = logo_height + gap + box_height + hint_gap + hint_height;
+    let x = space.x + (space.width - width) / 2;
+    let y = space.y + space.height.saturating_sub(height) * 2 / 5;
+    if big_logo {
+        let logo = [
+            "█▄ ▄█  █▀▀▀█  █▀▀▄   █▀▀▀█",
+            "█ █ █  █▄▄▄█  █  █   █   █",
+            "█   █  █   █  █▄▄▀   █▄▄▄█",
+        ];
+        let lines: Vec<_> = logo
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                Line::styled(
+                    line,
+                    if i == 2 {
+                        accent(state)
+                    } else {
+                        Style::default().fg(palette(state).text)
+                    },
+                )
+                .centered()
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), Rect::new(x, y, width, logo_height));
+    } else if logo_height > 0 {
+        frame.render_widget(
+            Paragraph::new("mado")
+                .centered()
+                .style(Style::default().bold()),
+            Rect::new(x, y, width, 1),
+        );
+    }
+    let field = Rect::new(x, y + logo_height + gap, width, box_height);
+    let block = panel(String::new(), state, state.focus != Focus::List)
+        .style(Style::default().bg(palette(state).surface));
+    let inner = block.inner(field);
+    frame.render_widget(block, field);
+    let prefix = if state.exact { "[EXACT] " } else { "" };
+    let input_width = inner.width.saturating_sub(prefix.len() as u16);
+    let (query, cursor) = input_window(
+        &state.query.text,
+        state.query.cursor,
+        usize::from(input_width.saturating_sub(1)),
+    );
+    let input = if state.query.text.is_empty() {
+        Line::from(vec![
+            Span::styled(prefix, accent(state)),
+            Span::styled("Search anime...", muted(state)),
+        ])
+    } else {
+        Line::from(vec![Span::styled(prefix, accent(state)), Span::raw(query)])
+    };
+    frame.render_widget(
+        Paragraph::new(input),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    if state.focus == Focus::Search && !state.help {
+        frame.set_cursor_position((inner.x + prefix.len() as u16 + cursor as u16, inner.y));
+    }
+    let setting_style = |focus| {
+        if state.focus == focus {
+            palette(state).selection.bold().underlined()
+        } else {
+            muted(state).bold()
+        }
+    };
+    let audio = format!(" {} ", state.mode.as_str().to_uppercase());
+    let quality = format!(
+        " {} ",
+        if state.quality == "best" {
+            "Best"
+        } else {
+            &state.quality
+        }
+    );
+    let quality = ellipsize(&quality, usize::from(inner.width.saturating_sub(7)), state);
+    let quality_width = quality.width() as u16;
+    frame.render_widget(
+        Paragraph::new(audio).style(setting_style(Focus::Audio)),
+        Rect::new(inner.x, inner.bottom() - 1, 5, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(quality.clone()).style(setting_style(Focus::Quality)),
+        Rect::new(
+            inner.right() - quality_width,
+            inner.bottom() - 1,
+            quality_width,
+            1,
+        ),
+    );
+    let controls = match state.focus {
+        Focus::Audio | Focus::Quality if width >= 31 => "Left/Right Change  Enter Search",
+        Focus::Audio | Focus::Quality => "Arrows Change  Enter Search",
+        Focus::List => "/ Search  s Audio  Q Quality",
+        _ => "Enter Search  Tab Settings",
+    };
+    let hint = if history {
+        format!(
+            "{controls}{}Alt+h History",
+            if width < 50 { "\n" } else { "  " }
+        )
+    } else {
+        controls.into()
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(muted(state)),
+        Rect::new(x, field.bottom() + hint_gap, width, hint_height),
+    );
+    if status.height > 0 {
+        frame.render_widget(
+            Paragraph::new(state.status.as_str())
+                .style(if state.error {
+                    Style::default().fg(palette(state).error)
+                } else {
+                    muted(state)
+                })
+                .wrap(Wrap { trim: true }),
+            status,
+        );
+    }
+    render_activity(frame, state, activity);
+    frame.render_widget(Paragraph::new("F1 Help").style(muted(state).bold()), footer);
+    frame.render_widget(
+        Paragraph::new("Ctrl+c Quit")
+            .right_aligned()
+            .style(muted(state).bold()),
+        footer,
+    );
+    if state.activity.is_some() {
+        let action = if state.activity.as_ref().is_some_and(|a| a.retryable()) {
+            "F6 Retry"
+        } else if state.focus == Focus::List {
+            "x Stop/Dismiss"
+        } else {
+            "Esc Controls"
+        };
+        frame.render_widget(
+            Paragraph::new(action).centered().style(muted(state)),
+            if footer.width >= 54 {
+                footer
+            } else {
+                Rect::new(footer.x, footer.y + 1, footer.width, 1)
+            },
+        );
     }
 }
 
@@ -725,11 +916,7 @@ fn series_item(title: &str, metadata: &str, width: usize, state: &State) -> List
 fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     let visible = state.visible();
     let (label, count, selected) = match state.screen {
-        Screen::Home => (
-            "Recently played",
-            state.history.len().min(8),
-            state.home_selected,
-        ),
+        Screen::Home => return,
         Screen::Search => ("Results", visible.len(), state.selected),
         Screen::History => ("History", state.history.len(), state.history_selected),
         Screen::Episodes => ("Episodes", state.episodes.len(), state.episode_selected),
@@ -810,7 +997,8 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     }
     let item_width = usize::from(inner.width.saturating_sub(2));
     let items: Vec<ListItem> = match state.screen {
-        Screen::Home | Screen::History => state
+        Screen::Home => vec![],
+        Screen::History => state
             .history
             .iter()
             .take(count)
@@ -937,7 +1125,6 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         push(&anime.info, muted(state));
     }
     let entry = match state.screen {
-        Screen::Home => state.history.get(state.home_selected),
         Screen::History => state.history.get(state.history_selected),
         _ => state
             .history
@@ -1303,6 +1490,14 @@ fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
 }
 
 const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Home",
+        &[
+            ("Tab / Shift+Tab", "Cycle search, audio and quality"),
+            ("Left/Right", "Change focused setting"),
+            ("Enter", "Return to input / submit search"),
+        ],
+    ),
     (
         "Navigation",
         &[
@@ -1677,6 +1872,93 @@ mod tests {
     }
 
     #[test]
+    fn mado_home_keeps_search_settings_and_cursor_visible_at_supported_sizes() {
+        for (width, height) in [(32, 12), (40, 18), (80, 24), (160, 50)] {
+            for ascii in [false, true] {
+                for focus in [Focus::Search, Focus::Audio, Focus::Quality, Focus::List] {
+                    let mut state = State::new(
+                        String::new(),
+                        Mode::Dub,
+                        "1080p".into(),
+                        false,
+                        ascii,
+                        false,
+                    );
+                    state.focus = focus;
+                    state.history.push(crate::persistence::Entry {
+                        anime: Anime {
+                            title: "History stays in History".into(),
+                            ..Default::default()
+                        },
+                        episode: "1".into(),
+                        mode: Mode::Sub,
+                        watched_at: 1,
+                    });
+                    let text = render_text(&mut state, width, height);
+                    for label in [
+                        "Search anime...",
+                        "DUB",
+                        "1080p",
+                        "Alt+h History",
+                        "F1 Help",
+                        "Ctrl+c Quit",
+                    ] {
+                        assert!(text.contains(label), "{width}x{height} {focus:?}: {text}");
+                    }
+                    assert!(!text.contains("History stays in History"));
+                    assert!(state.text_view.is_none());
+                    assert_eq!(
+                        cover_area(&state, Rect::new(0, 0, width, height)),
+                        Rect::default()
+                    );
+                    state.query.set("日本語 e\u{301} query ".repeat(20));
+                    state.exact = true;
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+                    terminal.draw(|f| render(f, &mut state, &art)).unwrap();
+                    if focus == Focus::Search {
+                        let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+                        assert!(cursor.x < width - 2 && cursor.y < height - 2);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mado_settings_focus_survives_no_color_and_long_quality_values() {
+        for colorless in [false, true] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.colorless = colorless;
+            let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+            let mut terminal = Terminal::new(TestBackend::new(32, 12)).unwrap();
+            for (focus, expected) in [(Focus::Audio, " SUB "), (Focus::Quality, " Best ")] {
+                state.focus = focus;
+                terminal.draw(|f| render(f, &mut state, &art)).unwrap();
+                let focused: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .filter(|cell| cell.modifier.contains(ratatui::style::Modifier::UNDERLINED))
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert_eq!(focused, expected);
+            }
+            state.quality = "日本語".repeat(100);
+            let text = render_text(&mut state, 32, 12);
+            assert!(
+                text.contains("SUB")
+                    && text.contains('日')
+                    && text.contains('語')
+                    && text.contains("Search anime..."),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn help_keeps_the_desktop_canvas_and_text_after_clearing() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.palette = Palette::themed(
@@ -1720,7 +2002,7 @@ mod tests {
             mode: Mode::Sub,
             watched_at: 1,
         });
-        for screen in [Screen::Home, Screen::Search, Screen::History] {
+        for screen in [Screen::Search, Screen::History] {
             state.screen = screen;
             for (w, h) in [(120, 40), (180, 45)] {
                 let text = render_text(&mut state, w, h);
@@ -1747,6 +2029,7 @@ mod tests {
     fn compact_episode_controls_and_details_remain_discoverable() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.anime = Some(Anime {
             title: "A series".into(),
             ..Default::default()
@@ -1834,6 +2117,26 @@ mod tests {
                     }
                 }
             }
+            state.history.push(crate::persistence::Entry {
+                anime: state.activity.as_ref().unwrap().anime.clone(),
+                episode: "1".into(),
+                mode: Mode::Sub,
+                watched_at: 1,
+            });
+            state.status = "Audio applies to the next queue.".into();
+            state.focus = Focus::Audio;
+            let text = render_text(&mut state, 32, 12);
+            for label in [
+                "Search anime...",
+                "Alt+h History",
+                "Arrows Change",
+                "Ep 2",
+                "F6 Retry",
+                "Ctrl+c Quit",
+            ] {
+                assert!(text.contains(label), "{text}");
+            }
+            state.status.clear();
             let activity = state.activity.as_mut().unwrap();
             activity.episodes = (1..=1400)
                 .map(|n| Episode {
@@ -1990,6 +2293,7 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
+        state.focus = Focus::List;
         state.anime = Some(Anime {
             id: "series".into(),
             title: "Series".into(),
@@ -2068,12 +2372,7 @@ mod tests {
 
     #[test]
     fn minimum_size_headers_keep_language_and_quality_visible() {
-        for screen in [
-            Screen::Home,
-            Screen::Search,
-            Screen::Episodes,
-            Screen::History,
-        ] {
+        for screen in [Screen::Search, Screen::Episodes, Screen::History] {
             for details in [false, true] {
                 for quality in ["best", "1080p", "720p", "480p", "360p", "worst"] {
                     let mut state = State::new(
@@ -2103,6 +2402,7 @@ mod tests {
     fn compact_details_show_synopsis_without_blank_separators() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.details = true;
         let anime = Anime {
             id: "series".into(),
@@ -2172,6 +2472,7 @@ mod tests {
     fn failed_episode_refresh_keeps_cached_selection_visible() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.anime = Some(Anime {
             title: "Series".into(),
             ..Default::default()
@@ -2200,6 +2501,7 @@ mod tests {
     fn refresh_errors_do_not_mask_validation_or_follow_the_user_into_details() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.anime = Some(Anime {
             id: "series".into(),
             title: "A series".into(),
@@ -2234,8 +2536,10 @@ mod tests {
     }
 
     #[test]
-    fn home_previews_selected_series_and_episode_selection_keeps_scroll_position() {
+    fn history_previews_selected_series_and_episode_selection_keeps_scroll_position() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
         state.history.push(crate::persistence::Entry {
             anime: Anime {
                 id: "1".into(),
@@ -2247,11 +2551,12 @@ mod tests {
             watched_at: 0,
         });
         let text = render_text(&mut state, 120, 40);
-        assert!(text.contains("Recently played"));
+        assert!(text.contains("History"));
         assert!(text.contains("Series"));
         assert!(text.contains("No cover") || text.contains("Covers disabled"));
         assert!(!text.contains("Your next story starts here"));
         state.screen = Screen::Episodes;
+        state.focus = Focus::List;
         state.episodes = (1..=100)
             .map(|n| Episode {
                 id: n.to_string(),
@@ -2404,12 +2709,7 @@ mod tests {
             mode: Mode::Sub,
             watched_at: 1,
         }];
-        for screen in [
-            Screen::Home,
-            Screen::Search,
-            Screen::Episodes,
-            Screen::History,
-        ] {
+        for screen in [Screen::Search, Screen::Episodes, Screen::History] {
             state.screen = screen;
             render_text(&mut state, 120, 40);
             let view = state.text_view.as_ref().unwrap();

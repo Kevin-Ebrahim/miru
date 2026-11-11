@@ -1,4 +1,4 @@
-# ani / watch
+# Mado
 
 A Rust + Ratatui anime browser for the terminal. Live search, native cover images,
 episode queues, external playback, watch history, and downloads.
@@ -18,14 +18,18 @@ cargo build --release --locked
 ./target/release/ani-watch --continue
 ```
 
-The app opens on **Home**, showing your eight most recently played series and
-the highlighted anime's cover. Enter opens its episodes with the next episode
-selected; Enter again plays it. History records launches, not completed viewing.
+The app opens on **Home**, with a focused search field. Type an anime title and
+press Enter to open results; Enter again opens the selected series. Tab and
+Shift+Tab move between search, SUB/DUB and quality. On either setting, arrows
+change its value and Enter returns to search. Search starts only when submitted
+from Home; the results screen retains live search while editing.
 
-Press `/` to search. Type a title, press Enter to focus the results, then Enter
-to browse episodes. `H` returns Home, Alt+h opens full history, and Esc retraces
-your navigation, preserving queries, selections and scroll positions. `i` opens
-full cover/details, including in compact terminals. Highlighting a series loads
+Alt+h opens your saved history. Enter opens a series with the next episode
+selected; Enter again plays it. History records launches, not completed viewing.
+`H` outside input returns Home. Esc retraces your navigation, preserving queries,
+selections and scroll positions. On Home, Esc leaves typing so normal shortcuts
+work; `/` refocuses search. `i` opens full cover/details, including in compact
+terminals. Highlighting a series loads
 its full synopsis automatically in the preview and caches it for Details.
 F5 retries the full synopsis along with the current view.
 Drag over the text in Details or a series preview to select it; releasing the mouse
@@ -41,8 +45,9 @@ outside the terminal input loop.
 
 | Key | Action |
 | --- | --- |
-| `H` | Open Home / recently played |
-| `/` | Open or edit catalogue search |
+| `H` | Open Home (outside text input) |
+| `/` | Open or edit catalogue search (outside text input) |
+| Tab / Shift+Tab on Home | Focus search, SUB/DUB or quality; arrows change a setting |
 | `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
 | Enter | Focus results / browse series / play episode(s) |
 | → / `l` | Open a series; in Episodes, open details without playing |
@@ -88,8 +93,9 @@ work while typing; Alt+e toggles exact matching in Search. History moved from
 `h` to Alt+h so `h` can go back; exact matching moved from Ctrl+e to Alt+e
 so Ctrl+e can move to the end of the input.
 The footer shows the actions available for the current focus; F1 lists all
-shortcuts. At 120 columns and above, navigation and language/quality controls
-move to the top toolbar, alongside the search input on Search. Secondary actions
+shortcuts. On results, history and episode screens at 120 columns and above,
+navigation and language/quality controls move to the top toolbar, alongside the
+search input on Search. Secondary actions
 sit at the bottom left, with Help, Quit and the primary action on the right.
 The footer controls use one row when everything fits and wrap when needed.
 The controls sit directly on the terminal canvas, separated from the panels by
@@ -194,22 +200,14 @@ Help and full series details are scrollable. Provider failures have their own
 retry state, separate from a successful search with no matches. Failed or missing
 covers leave the selected title and details visible with a quiet placeholder.
 
-An empty Home welcomes you with
-[Kyoto Dusk from ascii.rest](https://ascii.rest/kyoto-dusk/): a cherry tree, a
-five-storey pagoda, a crescent moon, and a glowing stone lantern reflected in a
-pond. The scene belongs only to this welcome state; it never substitutes for an
-anime cover, search error or loading result. Coloured Unicode dots preserve its
-dusk palette and shading as it scales. `--ascii` uses ASCII shading; `NO_COLOR`
-uses monochrome ASCII shading. `--no-animation` holds a still frame. Very small
-panels show only the search prompt.
+Home uses a compact Mado wordmark and a centred search box capped at 64 columns.
+The active terminal theme supplies its surface, text and focus colours. Narrow
+terminals and `--ascii` use a plain wordmark; settings, history and keyboard hints
+remain available. The page stays still while idle. The executable and saved-data
+paths remain `ani-watch` for compatibility.
 
-The animation is bundled and plays natively in Rust, without network access or
-a JavaScript runtime. Its MIT-licensed source and licence are in
-[`assets/kyoto-dusk/`](assets/kyoto-dusk/). To regenerate the compressed cell
-frames with Node 22.18 or newer, run `node scripts/generate-dusk.mjs`.
-
-Search is debounced by 300 ms and immediately filters currently loaded results
-while new results are pending. Provider alias matches remain visible when the
+On the results screen, search is debounced by 300 ms and immediately filters
+currently loaded results while new results are pending. Provider alias matches remain visible when the
 response arrives. Search generations, episode generations, playback job IDs,
 and artwork generations reject stale responses. Image selection has a separate
 100 ms delay to avoid fetching everything crossed during fast navigation.

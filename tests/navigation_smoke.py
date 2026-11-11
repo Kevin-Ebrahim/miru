@@ -192,6 +192,8 @@ while not (root / str(os.getpid())).exists():
 
         try:
             pump(0.5)
+            assert not requests, "Home must not fetch history or search before navigation"
+            send(b"\x1bh")
             wait_for(lambda: requests.count("/original-1") == 1)
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
             copied = copied_text(b"jy")
@@ -208,7 +210,7 @@ while not (root / str(os.getpid())).exists():
             send(b"\x1b[15~")  # F5 explicitly refreshes the synopsis.
             wait_for(lambda: requests.count("/original-1") == 2)
             send(b"\x1b")
-            send(b"\r")  # Home -> episodes; last played 0 selects episode 1.
+            send(b"\r")  # History -> episodes; last played 0 selects episode 1.
             wait_for(lambda: "/api/theme/episode/list/1" in requests)
             pump()
             send(b" \x1b[B \r")  # Mark episodes 1 and 2, then play the queue.
@@ -249,7 +251,7 @@ while not (root / str(os.getpid())).exists():
             assert all("Other Series" in file.name for file in (root / "downloads").glob("*.mkv"))
             assert json.loads((root / "library.json").read_text())["entries"] == history
             send(b"\x1b")
-            send(b"H\r")
+            send(b"H\x1bh\r")
             pump()
             fail_refresh.set()
             output.clear()

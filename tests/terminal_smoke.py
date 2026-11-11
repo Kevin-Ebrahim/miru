@@ -51,17 +51,14 @@ def check(binary, exit_method, animate=False):
             pump(0.25)
             assert process.poll() is None, bytes(output)
             for _ in range(20):
-                if b"Home" in output:
+                if b"anime" in output:
                     break
                 pump(0.1)
-            assert b"Home" in output, "Home did not draw"
+            assert b"anime" in output, "Mado search did not draw"
             pump(0.2)
             drawn = len(output)
             pump(0.4)
-            if animate:
-                assert len(output) > drawn, "Animation stopped redrawing"
-            else:
-                assert len(output) == drawn, "Reduced motion kept redrawing"
+            assert len(output) == drawn, "Idle Home kept redrawing"
             for rows, cols in ((18, 40), (8, 20), (40, 120)):
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 20))
                 process.send_signal(signal.SIGWINCH)
@@ -93,4 +90,4 @@ if __name__ == "__main__":
     for method in ("q", "ctrl+c", signal.SIGTERM, signal.SIGHUP):
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
-    print("PASS: animation/reduced motion, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, raw/alternate-screen/paste restoration")
+    print("PASS: idle Home with animation enabled/disabled, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, raw/alternate-screen/paste restoration")
