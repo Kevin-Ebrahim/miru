@@ -10,7 +10,6 @@ use std::sync::OnceLock;
 
 const WIDTH: usize = 360;
 const HEIGHT: usize = 200;
-const DOTS: [u32; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
 
 pub struct Motion {
     step: u32,
@@ -64,6 +63,12 @@ impl Widget for Sakura<'_> {
             return;
         }
         let tree = tree();
+        let blossom_color = match (self.palette.focus, self.palette.text) {
+            (Color::Rgb(r, g, b), Color::Rgb(tr, tg, tb)) => {
+                Color::Rgb(r / 2 + tr / 2, g / 2 + tg / 2, b / 2 + tb / 2)
+            }
+            _ => self.palette.focus,
+        };
         let time = self.motion.step as f32 * 0.12;
         let strength = if self.animate {
             self.motion.strength
@@ -77,14 +82,14 @@ impl Widget for Sakura<'_> {
                 if clearance == 0.0 {
                     continue;
                 }
-                let mut mask = 0;
                 let mut shade = 0.0_f32;
                 let mut blossoms = 0;
                 let mut count = 0;
                 for dy in 0..4 {
                     for dx in 0..2 {
-                        let sy = ((y - area.y) as f32 + dy as f32 / 4.0) / area.height as f32
-                            * HEIGHT as f32;
+                        let sy = (((y - area.y) as f32 + dy as f32 / 4.0) / area.height as f32
+                            * HEIGHT as f32)
+                            .min(HEIGHT as f32 - 1.0);
                         let sway = breeze * 1.5 * (1.0 - sy / 100.0).max(0.0);
                         let sx = ((x - area.x) as f32 + dx as f32 / 2.0) / area.width as f32
                             * WIDTH as f32
@@ -96,7 +101,6 @@ impl Widget for Sakura<'_> {
                         if sample.shade == 0 {
                             continue;
                         }
-                        mask |= DOTS[dy * 2 + dx];
                         shade += sample.shade as f32;
                         blossoms += usize::from(sample.blossom);
                         count += 1;
@@ -109,19 +113,30 @@ impl Widget for Sakura<'_> {
                 if shade < 8.0 {
                     continue;
                 }
-                let glyph = if self.ascii {
-                    b".,:+*"[(count - 1) * 5 / 8] as char
-                } else {
-                    char::from_u32(0x2800 + mask).unwrap()
-                };
                 let color = if blossoms > count / 2 {
-                    self.palette.focus
+                    blossom_color
                 } else {
                     self.palette.secondary
                 };
-                buf[(x, y)]
-                    .set_char(glyph)
-                    .set_style(tint(self.palette, color, shade / 255.0));
+                let cell = &mut buf[(x, y)];
+                if self.ascii {
+                    cell.set_char(b".,:+*"[(count - 1) * 5 / 8] as char);
+                } else if count >= 5 {
+                    cell.set_symbol(if noise(x as usize, y as usize, 91) < 0.2 {
+                        "•\u{030a}\u{0325}"
+                    } else {
+                        "∘\u{030a}\u{0325}"
+                    });
+                } else if count >= 3 {
+                    cell.set_symbol("∘\u{030a}");
+                } else {
+                    cell.set_char('·');
+                }
+                cell.set_style(tint(
+                    self.palette,
+                    color,
+                    (shade / 255.0 * if blossoms > count / 2 { 1.35 } else { 1.5 }).min(0.95),
+                ));
             }
         }
         if strength == 0.0 {
@@ -151,16 +166,13 @@ impl Widget for Sakura<'_> {
                 continue;
             }
             let turn = ((time * 0.7 + seed) as usize) % 4;
-            let glyph = if self.ascii {
-                [',', '\'', '`', '.'][turn]
+            let cell = &mut buf[(x, y)];
+            if self.ascii {
+                cell.set_char([',', '\'', '`', '.'][turn]);
             } else {
-                ['⠢', '⡔', '⢄', '⠔'][turn]
-            };
-            buf[(x, y)].set_char(glyph).set_style(tint(
-                self.palette,
-                self.palette.focus,
-                0.76 * fade,
-            ));
+                cell.set_symbol(["♧", "❧", "♧", "❧"][turn]);
+            }
+            cell.set_style(tint(self.palette, self.palette.focus, 0.76 * fade));
         }
     }
 }
@@ -204,128 +216,46 @@ fn noise(x: usize, y: usize, seed: usize) -> f32 {
 fn tree() -> &'static [Sample] {
     static TREE: OnceLock<Vec<Sample>> = OnceLock::new();
     TREE.get_or_init(|| {
+        let image = image::load_from_memory(include_bytes!("../assets/sakura/reference.png"))
+            .expect("bundled approved sakura reference")
+            .to_rgb8();
         let mut map = vec![Sample::default(); WIDTH * HEIGHT];
-        // Art-directed boughs: one rooted trunk, an open fan, and long lateral limbs.
-        let branches = [
-            ([(13., 204.), (20., 163.), (13., 125.), (34., 82.)], 8., 4.),
-            ([(34., 82.), (42., 59.), (31., 36.), (17., 14.)], 4., 0.6),
-            ([(34., 82.), (52., 55.), (71., 26.), (102., 14.)], 4., 0.5),
-            ([(29., 99.), (53., 84.), (74., 69.), (123., 64.)], 3., 0.5),
-            ([(45., 65.), (87., 43.), (120., 39.), (177., 31.)], 2.8, 0.4),
-            ([(70., 43.), (101., 14.), (141., 14.), (173., 11.)], 2., 0.3),
-            (
-                [(104., 41.), (143., 33.), (195., 35.), (237., 30.)],
-                1.5,
-                0.3,
-            ),
-            (
-                [(27., 115.), (44., 108.), (61., 101.), (81., 91.)],
-                2.6,
-                0.3,
-            ),
-            ([(34., 82.), (22., 69.), (13., 65.), (-4., 63.)], 2.5, 0.3),
-            ([(34., 53.), (21., 39.), (6., 38.), (-8., 31.)], 2., 0.3),
-            ([(64., 48.), (49., 34.), (53., 23.), (64., 17.)], 1.8, 0.3),
-            (
-                [(98., 42.), (116., 49.), (145., 49.), (157., 45.)],
-                1.1,
-                0.2,
-            ),
-        ];
-        for (points, start, end) in branches {
-            for step in 0..=200 {
-                let t = step as f32 / 200.0;
-                let s = 1.0 - t;
-                let weights = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
-                let (mut x, mut y) = (0.0, 0.0);
-                for (point, weight) in points.iter().zip(weights) {
-                    x += point.0 * weight;
-                    y += point.1 * weight;
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let u = x as f32 / WIDTH as f32;
+                let v = y as f32 / HEIGHT as f32;
+                // The source is the approved composition. Read only its tree;
+                // controls, background and static petals are never used as artwork.
+                let tree_region = u < 0.17
+                    || (u < 0.26 && v < 0.35)
+                    || (u < 0.29 && v < 0.21)
+                    || (u < 0.72 && v < 0.19);
+                if !tree_region {
+                    continue;
                 }
-                dab(
-                    &mut map,
-                    x,
-                    y,
-                    start * s + end * t,
-                    (start * s + end * t) * 0.85,
-                    false,
-                    0,
-                );
-            }
-        }
-        let clusters = [
-            (6., 13., 23., 8.),
-            (35., 24., 24., 9.),
-            (69., 16., 24., 8.),
-            (101., 8., 27., 8.),
-            (139., 9., 27., 7.),
-            (171., 13., 24., 7.),
-            (205., 24., 27., 7.),
-            (234., 31., 23., 6.),
-            (1., 39., 23., 10.),
-            (32., 49., 25., 9.),
-            (72., 40., 28., 8.),
-            (111., 31., 25., 7.),
-            (145., 43., 24., 6.),
-            (7., 65., 22., 10.),
-            (52., 69., 21., 7.),
-            (85., 61., 23., 7.),
-            (115., 65., 23., 6.),
-            (73., 87., 23., 7.),
-        ];
-        for (seed, (cx, cy, rx, ry)) in clusters.into_iter().enumerate() {
-            for lobe in 0..13 {
-                let angle = noise(lobe, seed, 1) * std::f32::consts::TAU;
-                let radius = noise(lobe, seed, 2).sqrt();
-                let x = cx + angle.cos() * rx * radius;
-                let y = cy + angle.sin() * ry * radius;
-                dab(
-                    &mut map,
-                    x,
-                    y,
-                    rx * (0.25 + noise(lobe, seed, 3) * 0.2),
-                    ry * 0.55,
-                    true,
-                    seed + lobe,
-                );
+                let sx = x as u32 * image.width() / WIDTH as u32;
+                let sy = y as u32 * image.height() / HEIGHT as u32;
+                let ex = ((x + 1) as u32 * image.width() / WIDTH as u32).max(sx + 1);
+                let ey = ((y + 1) as u32 * image.height() / HEIGHT as u32).max(sy + 1);
+                let mut peak = 0;
+                for py in sy..ey {
+                    for px in sx..ex {
+                        peak = peak.max(image.get_pixel(px, py)[1]);
+                    }
+                }
+                // Extract ink coverage, not the source's green hue. Every emitted
+                // cell is recoloured using the live terminal palette.
+                if peak >= 64 {
+                    let shade = ((peak as f32 - 45.0) / 150.0 * 255.0).clamp(0.0, 255.0) as u8;
+                    map[y * WIDTH + x] = Sample {
+                        shade,
+                        blossom: v < 0.34 && peak > 95,
+                    };
+                }
             }
         }
         map
     })
-}
-
-fn dab(map: &mut [Sample], cx: f32, cy: f32, rx: f32, ry: f32, blossom: bool, seed: usize) {
-    let left = (cx - rx).max(0.0) as usize;
-    let right = ((cx + rx).ceil() as usize).min(WIDTH - 1);
-    let top = (cy - ry).max(0.0) as usize;
-    let bottom = ((cy + ry).ceil() as usize).min(HEIGHT - 1);
-    for y in top..=bottom {
-        for x in left..=right {
-            let distance = ((x as f32 - cx) / rx).powi(2) + ((y as f32 - cy) / ry).powi(2);
-            if distance > 1.0 {
-                continue;
-            }
-            let grain = noise(x, y, seed);
-            let (density, ink) = if blossom {
-                (
-                    0.75 - distance * 0.3,
-                    65.0 + 105.0 * grain + 30.0 * (1.0 - distance),
-                )
-            } else {
-                (0.83, 30.0 + 60.0 * noise(x, y, 43))
-            };
-            if grain > density {
-                continue;
-            }
-            let cell = &mut map[y * WIDTH + x];
-            if ink as u8 > cell.shade {
-                *cell = Sample {
-                    shade: ink as u8,
-                    blossom,
-                };
-            }
-        }
-    }
 }
 
 #[cfg(test)]
