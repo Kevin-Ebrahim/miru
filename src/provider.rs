@@ -405,6 +405,29 @@ fn hls_attributes(mut list: &str) -> Result<HashMap<&str, &str>> {
     Ok(attributes)
 }
 
+fn audio_only_codecs(codecs: &str) -> bool {
+    // Registered audio sample entries: https://mp4ra.org/registered-types/codecs
+    // Unknown codec families remain eligible instead of guessing that video is absent.
+    codecs.split(',').all(|codec| {
+        matches!(
+            codec.trim().split('.').next(),
+            Some(
+                "mp4a"
+                    | "ac-3"
+                    | "ec-3"
+                    | "ac-4"
+                    | "alac"
+                    | "Opus"
+                    | "fLaC"
+                    | "dtsc"
+                    | "dtse"
+                    | "dtsh"
+                    | "dtsl"
+            )
+        )
+    })
+}
+
 pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
     ensure!(
         text.trim_start().starts_with("#EXTM3U"),
@@ -465,6 +488,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
     }
     let mut variants = Vec::new();
     let mut pending = None;
+    let mut excluded_audio = false;
     for line in text.lines().map(str::trim) {
         if let Some(list) = line.strip_prefix("#EXT-X-STREAM-INF:") {
             let attributes = hls_attributes(list)?;
@@ -476,6 +500,15 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
                     height.parse().ok()
                 })
                 .unwrap_or(0);
+            if height == 0
+                && attributes
+                    .get("CODECS")
+                    .is_some_and(|codecs| audio_only_codecs(codecs))
+            {
+                excluded_audio = true;
+                pending = None;
+                continue;
+            }
             let audio = attributes
                 .get("AUDIO")
                 .map(|&group| -> Result<Audio> {
@@ -501,6 +534,9 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
             reserve(url.len())?;
             variants.push(Variant { height, url, audio });
         }
+    }
+    if variants.is_empty() && excluded_audio {
+        bail!("Audio-only HLS sources are unsupported; a video stream is required");
     }
     if variants.is_empty() && text.contains("#EXTINF:") {
         reserve(master.as_str().len())?;
@@ -728,6 +764,95 @@ mod tests {
             Some("https://cdn.example/chosen.m3u8?token=x,y")
         );
         assert_eq!(variants[0].audio.as_ref().unwrap().group, "late,group");
+    }
+
+    #[test]
+    fn mixed_hls_selects_video_for_best_and_worst() {
+        let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        let stream = Stream {
+            variants: parse_playlist(include_str!("../tests/fixtures/mixed-media.m3u8"), &master)
+                .unwrap(),
+            subtitle: None,
+            referer: String::new(),
+        };
+        for (quality, video) in [("best", "video-high.m3u8"), ("worst", "video-low.m3u8")] {
+            let expected = format!("https://cdn.example/{video}");
+            assert_eq!(stream.select(quality).0.url, expected);
+            for player in ["mpv", "vlc"] {
+                assert!(
+                    crate::player::player_args(player, &stream, quality, "Probe")
+                        .contains(&expected)
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(stream).unwrap()["variants"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn unknown_video_resolution_and_direct_media_remain_eligible() {
+        let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        for codecs in [
+            None,
+            Some("avc1.4d401f,mp4a.40.2"),
+            Some("future.1,mp4a.40.2"),
+            Some(""),
+        ] {
+            let codecs = codecs
+                .map(|value| format!(",CODECS=\"{value}\""))
+                .unwrap_or_default();
+            let text = format!(
+                "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Main\",DEFAULT=YES,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=200000,AUDIO=\"a\"{codecs}\nvideo.m3u8\n"
+            );
+            let stream = Stream {
+                variants: parse_playlist(&text, &master).unwrap(),
+                subtitle: None,
+                referer: String::new(),
+            };
+            for quality in ["best", "worst"] {
+                let (variant, _) = stream.select(quality);
+                assert_eq!(variant.url, "https://cdn.example/video.m3u8");
+                assert_eq!(variant.height, 0);
+                assert_eq!(variant.audio_url(), Some("https://cdn.example/audio.m3u8"));
+            }
+        }
+        let direct =
+            parse_playlist("#EXTM3U\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n", &master).unwrap();
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].url, master.as_str());
+        assert_eq!(direct[0].height, 0);
+    }
+
+    #[test]
+    fn audio_only_masters_report_an_unsupported_source() {
+        let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        for codecs in [
+            "mp4a.40.2",
+            "ac-3",
+            "ec-3",
+            "ac-4.02.01.01",
+            "Opus",
+            "fLaC",
+            "alac",
+            "dtsc",
+            "mp4a.40.2,ec-3",
+        ] {
+            let text = format!(
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=65000,CODECS=\"{codecs}\"\naudio.m3u8\n"
+            );
+            let error = parse_playlist(&text, &master).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Audio-only HLS sources are unsupported"),
+                "{codecs}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -63,6 +63,13 @@ either null for no declared group, or an object with `group` and `url`. A null
 a particular quality should use that variant's audio rather than the top-level
 compatibility field.
 
+`variants` contains video candidates: recognized audio-only entries in a mixed
+master are excluded from quality selection and stream export. A master with
+only such audio entries reports an unsupported source. Missing resolution or
+unrecognized codec metadata alone does not exclude a variant; `height: 0`
+continues to mean unknown video resolution. Direct media playlists remain
+supported.
+
 Downloads are saved as Matroska files with the selected video, separate audio
 when available, and the default or English subtitle track when available.
 Playback and downloads use audio from the selected video's

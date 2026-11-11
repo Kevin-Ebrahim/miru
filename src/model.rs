@@ -120,6 +120,7 @@ pub struct Audio {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Variant {
+    /// Zero means an unknown video resolution; known audio-only entries are excluded at parsing.
     pub height: u32,
     pub url: String,
     #[serde(default)]

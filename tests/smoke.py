@@ -94,6 +94,17 @@ def check_optional_audio_default(common, root):
         master.write_text(original)
 
 
+def download_video(common, root, destination, quality, size):
+    downloaded = subprocess.run(common + ["--download", "Smoke", "--quality", quality, "--download-dir", str(destination)],
+                                capture_output=True, text=True, timeout=40)
+    assert downloaded.returncode == 0, f"{quality}: {downloaded.stderr}\n{(root / 'state/download.log').read_text()}"
+    media = next(destination.glob("*.mkv"))
+    info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
+    video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+    assert (video["width"], video["height"]) == size, info
+    return media
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", nargs="?", default="target/debug/miru", type=pathlib.Path)
@@ -226,20 +237,18 @@ def main():
                 '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="First",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"\n'
                 '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a2",NAME="Second",DEFAULT=YES,AUTOSELECT=YES,URI="audio-low.m3u8"\n'
                 '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=128x96,AUDIO="a1"\nvideo.m3u8\n'
-                '#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=64x48,AUDIO="a2"\nvideo-low.m3u8\n')
+                '#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=64x48,AUDIO="a2"\nvideo-low.m3u8\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=65000,CODECS="mp4a.40.2",AUDIO="a1"\naudio.m3u8\n')
             resolved = json.loads(run(common + ["--resolve", "Smoke"]).stdout)
             base = f"http://127.0.0.1:{server.server_port}/"
             assert resolved["audio"] == base + "audio.m3u8", resolved
             assert resolved["variants"][0]["audio"] == {"group": "a1", "url": base + "audio.m3u8"}
             assert resolved["variants"][1]["audio"] == {"group": "a2", "url": base + "audio-low.m3u8"}
+            assert len(resolved["variants"]) == 2, "Stream export included an audio-only video candidate"
             for quality, tone, size in (("best", 440, (128, 96)), ("worst", 880, (64, 48)),
                                         ("96p", 440, (128, 96)), ("48p", 880, (64, 48))):
                 destination = root / f"grouped-{quality}"
-                run(common + ["--download", "Smoke", "--quality", quality, "--download-dir", str(destination)])
-                media = next(destination.glob("*.mkv"))
-                info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
-                video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
-                assert (video["width"], video["height"]) == size, info
+                media = download_video(common, root, destination, quality, size)
                 decoded = root / f"download-{quality}.wav"
                 run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(media),
                      "-vn", "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", str(decoded)])
@@ -249,6 +258,28 @@ def main():
                               "--player-arg=--vo=null", "--player-arg=--ao=pcm", "--player-arg=--audio-format=s16",
                               "--player-arg=--audio-channels=mono", f"--player-arg=--ao-pcm-file={played}"])
                 assert_tone(played, tone)
+            unknown_sources = []
+            for label, codecs in (("video-codecs", ',CODECS="avc1.4d401f,mp4a.40.2"'), ("no-codecs", "")):
+                page = (
+                    '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Main",DEFAULT=YES,URI="audio.m3u8"\n'
+                    f'#EXT-X-STREAM-INF:BANDWIDTH=200000,AUDIO="a"{codecs}\nvideo.m3u8\n')
+                unknown_sources.append((label, page))
+            unknown_sources.append(("direct-media", (root / "video.m3u8").read_text()))
+            for label, page in unknown_sources:
+                master.write_text(page)
+                exported = json.loads(run(common + ["--resolve", "Smoke"]).stdout)
+                assert len(exported["variants"]) == 1 and exported["variants"][0]["height"] == 0, exported
+                download_video(common, root, root / f"unknown-{label}", "worst", (128, 96))
+            before_rejected = run(common + ["--history"]).stdout
+            master.write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=65000,CODECS="mp4a.40.2"\naudio.m3u8\n')
+            unsupported_dir = root / "audio-only"
+            for operation in ("--resolve", "--play", "--download"):
+                failed = subprocess.run(common + [operation, "Smoke", "--quality", "worst", "--download-dir", str(unsupported_dir),
+                                                "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"],
+                                        capture_output=True, text=True, timeout=10)
+                assert failed.returncode != 0 and "audio-only" in failed.stderr.lower(), failed.stderr
+            assert run(common + ["--history"]).stdout == before_rejected, "Unsupported playback changed history"
+            assert not unsupported_dir.exists(), "Unsupported source left a download directory or partial media"
             master.write_text(original_master)
             # Check nested protocol restrictions without breaking encrypted HLS.
             key = root / "encrypt.key"
@@ -310,7 +341,7 @@ def main():
                                 os.kill(int(pid), signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
-            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB, long UTF-8 filenames, distinct episodes/languages and shared prefixes, per-quality audio identity in downloads and mpv playback")
+            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB, long UTF-8 filenames, distinct episodes/languages and shared prefixes, per-quality audio identity, video selection in mixed masters, unknown resolutions and direct media, clear audio-only rejection")
         finally:
             server.shutdown()
             server.server_close()
