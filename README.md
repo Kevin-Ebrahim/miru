@@ -1,20 +1,24 @@
-# Miru
+<p align="center">
+  <img src="assets/branding/logo.svg" alt="Miru" width="480">
+</p>
 
-Miru is a Rust terminal app for searching, watching and downloading anime.
-It has cover art, playback queues, SUB/DUB selection and watch history.
+<p align="center">Search, watch and download anime from your terminal.</p>
 
-## Requirements
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-1.90%2B-dea584?style=flat-square" alt="Requires Rust 1.90 or newer">
+  <img src="https://img.shields.io/badge/Platform-Unix-90b4a4?style=flat-square" alt="Unix terminal app">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--only-90b4a4?style=flat-square" alt="GPL-3.0-only license"></a>
+</p>
 
-- Linux or another Unix-like system, and an interactive terminal for the UI.
-- Rust 1.90 or newer and Cargo to build from source.
-- [mpv](https://mpv.io/) for playback; VLC is also supported but less tested.
-- [ffmpeg](https://ffmpeg.org/) for downloads. The media smoke tests also need
-  `ffprobe` and Python 3.
+Miru has SUB/DUB selection, cover art, watch history and episode queues.
+Navigate with arrow keys or Vim bindings. Colours follow your terminal or
+Omarchy theme.
 
-Search and playback need an internet connection. Browsing does not require a
-player or ffmpeg.
+## Install
 
-## Install from source
+You need a Unix-like system, Git, [Rust 1.90+ and Cargo](https://rustup.rs/),
+and [mpv](https://mpv.io/installation/) for playback.
+Install [ffmpeg](https://ffmpeg.org/download.html) if you want downloads.
 
 ```sh
 git clone https://github.com/Kevin-Ebrahim/miru.git
@@ -23,181 +27,55 @@ cargo install --locked --path .
 miru
 ```
 
-Cargo normally installs the executable to `~/.cargo/bin`; make sure that
-directory is on your `PATH`. You can also run a build from the checkout without
-installing it:
+If your shell cannot find `miru`, add Cargo's bin directory to your `PATH`:
 
 ```sh
-cargo build --release --locked
-./target/release/miru
+export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-Run `miru --help` for all options and `miru --version` for the installed version.
+## Watch something
 
-## Getting started
+1. Type a title on Home and press Enter.
+2. Select an anime and press Enter to open its episodes.
+3. Select an episode and press Enter to play it.
 
-Launch `miru`, type a title on Home, and press Enter. Select a result and
-press Enter to see its episodes, then select an episode and press Enter
-to play it. Use Tab on Home to select the SUB/DUB or quality setting; the arrow
-keys change the selected setting.
-
-Press Alt+h to open history. Selecting a series opens its episode list with
-the next episode highlighted. History records the last episode launched, not
-playback position or completion. Press Ctrl+C to quit and stop jobs started
-by Miru.
-
-### Common controls
+Use Tab on Home to select audio or quality, then the arrow keys to change it.
 
 | Key | Action |
 | --- | --- |
-| `H` | Return Home, outside text input |
-| `/` | Focus search; in History, filter saved entries |
-| ↑ / ↓, `j` / `k` | Navigate the current list |
-| Enter / → / `l` | Open a selection; Enter plays an episode |
-| ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
-| `i` | Open full cover and series details |
-| `s` or Shift+D | Toggle SUB/DUB |
-| `Q` | Cycle playback quality |
-| Alt+e | Toggle exact title matching |
-| Alt+h | Open watch history |
-| Tab / Space in Episodes | Mark or unmark an episode |
-| `:` in Episodes | Enter an episode range to mark |
-| `d` in Episodes | Download marked episodes, or the highlighted episode |
-| `n` / `p` / `r` | Play next / previous / replay |
-| `x` | Stop the current player or download queue, or dismiss its result |
-| F5 / F6 | Retry the current view / retry a failed queue |
-| Delete in History | Remove the highlighted history entry |
-| `?` / F1 | Open help; `/` filters help by key or action |
-| `q` | Close Help or Details |
-| Ctrl+C | Quit from anywhere and stop owned jobs |
+| ↑ / ↓ or `j` / `k` | Move through a list |
+| Esc | Go back or leave text input |
+| `s` / Shift+Q | Change audio / quality |
+| Alt+h | Open history |
+| Space, then `d` | Mark episodes, then download them |
+| F1 | Show all controls |
+| Ctrl+C | Quit |
 
-Printable keys enter text while an input has focus. Inputs support readline
-shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
+History remembers the last episode launched, not playback position or completion.
 
-Ranges use the provider's episode order and can include decimal specials. Use
-`1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru
-validates the whole range before starting a queue. A queue keeps its original
-series, episodes, language, and quality as you browse. If it fails, F6 retries
-from the failed episode without repeating completed ones.
-
-## Command-line use
+## From the command line
 
 ```sh
 miru frieren
 miru --continue
-miru --list frieren
-miru --list --exact "Frieren: Beyond Journey's End"
-miru --resolve frieren -S 1 -e 1
 miru --play frieren -e 1-3 -q 720p
 miru --download frieren -e 1-3 --download-dir ./downloads
-miru --history
 ```
 
-`--list` and `--history` output JSON arrays; `--resolve` outputs one JSON object
-per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
-`--quality` override saved preferences. Select VLC with `--player vlc`, or
-supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
-to pass additional player options.
+Run `miru --help` for all options. See the [guide](docs/guide.md) for controls,
+JSON output, configuration, history migration and development checks.
 
-Downloads are saved as Matroska files with the selected video, separate audio
-when available, and the default or English subtitle track when available.
-Existing files are never overwritten; failed or cancelled downloads do not
-leave a completed file or mark episodes as watched.
+## Troubleshooting
 
-## Images and appearance
-
-Miru detects Kitty, Sixel, and iTerm2 image protocols and falls back to colored
-halfblocks when necessary. Use `--images kitty`, `--images sixel`,
-`--images iterm2`, `--images halfblocks`, or `--images off` to choose explicitly.
-Kitty has had more local testing than Sixel, iTerm2 or VLC.
-
-By default `--theme auto` follows Omarchy's active palette when available and
-uses the terminal palette otherwise. `--theme terminal` always uses terminal
-colors. `NO_COLOR` disables color and images, `--ascii` uses ASCII interface
-characters, and `--no-animation` keeps the Home artwork still. For example:
-
-```sh
-miru --theme terminal --images halfblocks
-miru --images off --ascii --no-animation
-```
-
-Use `i` for full details when the terminal is too small for a preview.
-
-## Data and configuration
-
-| Data | Default location |
-| --- | --- |
-| History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
-| Last player and download errors | `$XDG_STATE_HOME/miru/player.log` and `download.log` |
-| Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
-
-When XDG variables are unset, state defaults to `~/.local/state` and cache to
-`~/.cache`. History is saved with a lock and atomic replacement. An invalid
-history file is reported and left intact.
-
-| Environment variable | Command-line equivalent | Purpose |
-| --- | --- | --- |
-| `MIRU_STATE_DIR` | `--state-dir` | Override the state directory |
-| `MIRU_CACHE_DIR` | `--cache-dir` | Override the cover cache directory |
-| `MIRU_THEME` | `--theme` | Set `auto` or `terminal` |
-| `MIRU_PROVIDER` | `--provider` | Override the provider's base URL |
-
-Command-line options take precedence over `MIRU_*` variables. The previous
-`ANI_WATCH_STATE_DIR`, `ANI_WATCH_CACHE_DIR`, `ANI_WATCH_THEME`, and
-`ANI_WATCH_PROVIDER` variables remain supported as lower-priority fallbacks.
-
-### Moving from ani-watch
-
-On first use, if the default Miru library does not exist, Miru copies and
-validates the old `$XDG_STATE_HOME/ani-watch/library.json` into its new state
-directory. It leaves the original intact and never overwrites an existing Miru library.
-The copies do not stay synchronized. An explicitly configured
-state directory is used directly instead of triggering this migration. Covers
-are cached again as needed; old cache and log files are left in place.
-
-To import a compatible history file from the separate shell-based ani-cli app:
-
-```sh
-miru --import-history ~/.local/state/ani-cli/ani-hsts
-```
-
-Import does not modify the source, skips obsolete provider IDs, and can be
-repeated without duplicates. Because that format has no language field, imported
-entries are treated as SUB.
-
-## Provider and troubleshooting
-
-Miru is an unofficial client for `https://hianime.at/` and its ZokoAnime server.
-`--provider` and `MIRU_PROVIDER` change the base URL for a compatible provider;
-they do not add support for other sites' APIs. Site challenges, missing language
-sources, and changed markup may prevent playback. Errors appear in the affected
-view, and F5 retries it. Check the logs in the state directory for player or
-download errors.
-
-## Development
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-cargo build --release --locked
-python3 tests/rename_smoke.py target/release/miru
-python3 tests/smoke.py target/release/miru
-python3 tests/terminal_smoke.py target/release/miru
-python3 tests/navigation_smoke.py target/release/miru
-python3 tests/theme_smoke.py target/release/miru
-```
-
-The smoke tests use isolated temporary state and local provider fixtures. The
-media and navigation checks need ffmpeg; the media check also needs mpv and
-ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
-testing in every terminal.
+- If covers render incorrectly, try `miru --images halfblocks` or `--images off`.
+- For plain output, use `miru --images off --ascii --no-animation`.
+- If a request fails, press F5 to retry. Miru is an unofficial HiAnime client;
+  provider outages and site changes can interrupt search or playback.
 
 ## License and credits
 
-Miru is licensed under [GPL-3.0-only](LICENSE). The bundled Kyoto Dusk artwork
-and animation source are by [bas3line](https://github.com/bas3line) and carry
-their own [MIT license](assets/kyoto-dusk/LICENSE). The Home artwork reference
-and its use are described in [assets/sakura/README.md](assets/sakura/README.md).
-The shell workflow and provider integration were studied from
+[GPL-3.0-only](LICENSE). Kyoto Dusk by [bas3line](https://github.com/bas3line)
+is bundled under its [MIT license](assets/kyoto-dusk/LICENSE).
+See the [sakura artwork notes](assets/sakura/README.md) for its reference.
+The shell workflow and provider integration draw on
 [ani-cli](https://github.com/pystardust/ani-cli).
