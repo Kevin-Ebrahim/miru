@@ -149,11 +149,27 @@ checks redirects, and rejects local or reserved destinations, including DNS answ
 An explicitly configured local provider permits requests to that provider's host,
 so local fixtures and self-hosted compatible providers continue to work.
 
-ffmpeg and mpv receive a network protocol allowlist and a 20-second network I/O
-timeout. Encrypted HLS and separate audio/subtitles remain supported. These tools
-fetch nested playlist resources themselves; Miru's destination checks apply to
-URLs it resolves, not every request made inside an external player. VLC retains
-its own transport settings. This policy is not an operating-system sandbox.
+Playback and downloads require Linux and bubblewrap (`bwrap`). Each job runs in
+its own network and PID namespaces, with a temporary HTTP/HTTPS proxy as its
+only route to remote media. The proxy applies destination checks to every new
+connection, including nested playlists, segments, encryption keys, subtitles and
+redirect targets. It connects to the checked DNS answers without resolving the
+host again. HTTPS uses CONNECT; certificate validation remains the player's or
+ffmpeg's responsibility. The provider HTTP client separately rejects HTTPS
+downgrades in its redirects.
+
+ffmpeg and mpv also retain their protocol allowlist and 20-second network I/O
+timeout. Encrypted HLS and separate audio/subtitles remain supported. VLC and
+mpv-compatible custom players use the same proxy; a player that ignores it has
+no direct access to the host network. Ambient proxy and `NO_PROXY` settings are
+replaced for media jobs, so upstream corporate proxies and host TCP-based player
+control are not supported by this boundary. Filesystem access and Unix sockets
+for local display/audio remain available. The temporary proxy is removed when
+the job ends, and there is no unprotected fallback if isolation fails.
+
+Search, history, imports and JSON exports do not need bubblewrap. URLs exported
+by `--resolve` are ordinary source URLs; consumers launching their own tools
+must apply their own policy.
 
 ## Development
 
@@ -164,12 +180,14 @@ cargo test --locked
 cargo build --release --locked
 python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
+python3 tests/network_smoke.py target/release/miru
 python3 tests/terminal_smoke.py target/release/miru
 python3 tests/navigation_smoke.py target/release/miru
 python3 tests/theme_smoke.py target/release/miru
 ```
 
 The smoke tests use isolated temporary state and local provider fixtures. The
-media and navigation checks need ffmpeg; the media check also needs mpv and
-ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
-testing in every terminal.
+media and navigation checks need ffmpeg and bubblewrap; the media/network checks
+also need mpv, with ffprobe for the media check and OpenSSL for the network
+check's temporary TLS fixture. The terminal checks use a pseudo-terminal and do
+not replace visual testing in every terminal.

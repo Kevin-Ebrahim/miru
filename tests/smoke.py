@@ -92,6 +92,9 @@ def main():
             run(common + ["--play", "Smoke", "-e", "1-2", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"])
             history = json.loads(run(common + ["--history"]).stdout)
             assert len(history) == 1 and history[0]["episode"] == "2"
+            missing_player = subprocess.run(common + ["--play", "Smoke", "--player", str(root / "missing-player")], capture_output=True, text=True, timeout=10)
+            assert missing_player.returncode != 0, "Missing player unexpectedly started"
+            assert json.loads(run(common + ["--history"]).stdout) == history, "Failed media startup changed history"
             download_args = common + ["--download", "Smoke", "-e", "1", "--download-dir", str(root / "downloads")]
             run(download_args)
             media = next((root / "downloads").glob("*.mkv"))

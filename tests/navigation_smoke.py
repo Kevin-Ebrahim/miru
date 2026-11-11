@@ -116,11 +116,14 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         player = root / "player"
         player.write_text('''#!/usr/bin/env python3
-import json, os, pathlib, sys, time
+import fcntl, json, pathlib, sys, time, uuid
 root = pathlib.Path(__file__).parent
+token = uuid.uuid4().hex
+live = (root / (token + ".lock")).open("w")
+fcntl.flock(live, fcntl.LOCK_EX)
 with (root / "launches").open("a") as log:
-    log.write(json.dumps({"pid": os.getpid(), "args": sys.argv[1:]}) + "\\n")
-while not (root / str(os.getpid())).exists():
+    log.write(json.dumps({"token": token, "args": sys.argv[1:]}) + "\\n")
+while not (root / token).exists():
     time.sleep(0.03)
 ''')
         player.chmod(0o755)
@@ -183,12 +186,14 @@ while not (root / str(os.getpid())).exists():
             path = root / "launches"
             return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-        def alive(pid):
-            try:
-                os.kill(pid, 0)
-                return True
-            except ProcessLookupError:
-                return False
+        def alive(token):
+            # File locks identify the live wrapper across the media PID namespace.
+            with (root / (token + ".lock")).open("a") as live:
+                try:
+                    fcntl.flock(live, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return False
+                except BlockingIOError:
+                    return True
 
         try:
             pump(0.5)
@@ -227,16 +232,16 @@ while not (root / str(os.getpid())).exists():
             first = launches()[0]
             assert "--force-media-title=Original Series / Episode 1" in first["args"], first
             send(b"H\x1bh/\x1b\x1b")  # Home, history, search, and back must leave the player alive.
-            assert alive(first["pid"]), "Browsing stopped the player"
+            assert alive(first["token"]), "Browsing stopped the player"
             send(b"DQ")  # New defaults cannot mutate the active queue.
-            (root / str(first["pid"])).touch()
+            (root / first["token"]).touch()
             wait_for(lambda: len(launches()) == 2)
             second = launches()[1]
             assert "--force-media-title=Original Series / Episode 2" in second["args"], second
             assert any("episodeId=12" in url for url in requests), requests
             assert not any("episodeId=2" in url for url in requests), requests
             send(b"x")
-            wait_for(lambda: not alive(second["pid"]))
+            wait_for(lambda: not alive(second["token"]))
             history = json.loads((root / "library.json").read_text())["entries"]
             assert history[0]["anime"]["id"] == "original-1" and history[0]["episode"] == "2", history
             assert history[0]["mode"] == "sub", history

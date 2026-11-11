@@ -145,6 +145,7 @@ fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
     let signals = jobs::shutdown_signals()?;
     let provider = provider::Provider::new(&cli.provider)?;

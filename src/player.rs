@@ -1,7 +1,10 @@
-use crate::model::Stream;
+use crate::{
+    model::Stream,
+    network::{Session, Tool},
+};
 use anyhow::{Context, Result};
 use std::{path::Path, process::Stdio};
-use tokio::process::{Child, Command};
+use tokio::{process::Child, sync::oneshot};
 
 pub fn player_args(player: &str, stream: &Stream, quality: &str, title: &str) -> Vec<String> {
     let (variant, _) = stream.select(quality);
@@ -45,24 +48,33 @@ pub fn player_args(player: &str, stream: &Stream, quality: &str, title: &str) ->
     args
 }
 
-pub fn launch(
+pub async fn launch(
     player: &str,
     extra: &[String],
-    stream: &Stream,
+    media: &Session,
     quality: &str,
     title: &str,
     log: &Path,
-) -> Result<Child> {
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Option<Child>> {
     let output = std::fs::File::create(log).context("Could not create player log")?;
-    Command::new(player)
+    let mut child = media.command(player, Tool::Player)?
         .args(extra)
-        .args(player_args(player, stream, quality, title))
+        .args(player_args(player, media.stream(), quality, title))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(output)
         .kill_on_drop(true)
         .spawn()
         .with_context(|| {
-            format!("Could not start {player}. Install it or set --player /path/to/player")
-        })
+            format!("Could not start protected {player}. Install bubblewrap and the player, or set --player /path/to/player")
+        })?;
+    if !media
+        .wait_started(&mut child, cancel)
+        .await
+        .with_context(|| format!("Could not start {player}; see {}", log.display()))?
+    {
+        return Ok(None);
+    }
+    Ok(Some(child))
 }

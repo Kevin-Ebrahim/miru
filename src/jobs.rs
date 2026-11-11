@@ -164,6 +164,7 @@ async fn run(
         id: request.id,
         update: Update::Resolved(quality_note),
     });
+    let media = crate::network::Session::new(stream, provider.http())?;
     let log = options
         .state_dir
         .join(if request.kind == JobKind::Download {
@@ -178,7 +179,7 @@ async fn run(
         });
         let (progress, mut updates) = mpsc::unbounded_channel();
         let download = download::download(
-            &stream,
+            &media,
             &request.quality,
             &request.title,
             &options.download_dir,
@@ -195,14 +196,19 @@ async fn run(
         };
         return Ok(result.map(Output::Download));
     }
-    let mut child = player::launch(
+    let Some(mut child) = player::launch(
         &options.player,
         &options.player_args,
-        &stream,
+        &media,
         &request.quality,
         &request.title,
         &log,
-    )?;
+        cancel,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
     if let Err(error) = options.history.submit(crate::persistence::Change::Record {
         anime: request.anime,
         episode: request.episode.number,
@@ -218,6 +224,7 @@ async fn run(
     let Some(status) = wait_child(&mut child, cancel).await? else {
         return Ok(None);
     };
+    media.check()?;
     anyhow::ensure!(
         status.success(),
         "Player exited with {status}. See {}",

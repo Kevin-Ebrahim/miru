@@ -1,4 +1,4 @@
-use crate::model::Stream;
+use crate::network::{Session, Tool};
 use anyhow::{Context, Result, ensure};
 use std::{
     path::{Path, PathBuf},
@@ -6,7 +6,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    process::Command,
     sync::{mpsc, oneshot},
 };
 
@@ -31,7 +30,7 @@ pub fn filename(title: &str) -> String {
 /// Download to a unique temporary file. Cancellation removes only this task's partial output.
 /// Never clobber an existing episode, and mux separate audio/subtitles when available.
 pub async fn download(
-    stream: &Stream,
+    media: &Session,
     quality: &str,
     title: &str,
     dir: &Path,
@@ -39,6 +38,7 @@ pub async fn download(
     progress: mpsc::UnboundedSender<String>,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<PathBuf>> {
+    let stream = media.stream();
     tokio::fs::create_dir_all(dir)
         .await
         .context("Could not create download directory")?;
@@ -52,7 +52,7 @@ pub async fn download(
         .prefix(".miru-")
         .suffix(".part")
         .tempfile_in(dir)?;
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = media.command("ffmpeg", Tool::Download)?;
     cmd.args([
         "-nostdin",
         "-y",
@@ -109,7 +109,16 @@ pub async fn download(
         .stderr(error_log)
         .kill_on_drop(true)
         .spawn()
-        .context("Could not launch ffmpeg. Install ffmpeg to download episodes")?;
+        .context(
+            "Could not launch protected ffmpeg. Install bubblewrap and ffmpeg to download episodes",
+        )?;
+    if !media
+        .wait_started(&mut child, cancel)
+        .await
+        .with_context(|| format!("Could not start ffmpeg; see {}", log.display()))?
+    {
+        return Ok(None);
+    }
     let stdout = child
         .stdout
         .take()
@@ -134,6 +143,7 @@ pub async fn download(
             Err(error) => { let _ = child.kill().await; return Err(error.into()); }
         },
     };
+    media.check()?;
     ensure!(
         status.success(),
         "Download failed ({status}). See {}",

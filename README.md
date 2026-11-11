@@ -14,9 +14,12 @@ Omarchy theme.
 
 ## Install
 
-You need a Unix-like system, Git, [Rust 1.90+ and Cargo](https://rustup.rs/),
+You need Git, [Rust 1.90+ and Cargo](https://rustup.rs/),
 and [mpv](https://mpv.io/installation/) for playback.
 Install [ffmpeg](https://ffmpeg.org/download.html) if you want downloads.
+Playback and downloads require Linux and [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`) for media network isolation. Browsing, history and JSON exports do not
+require bubblewrap.
 
 ```sh
 git clone https://github.com/Kevin-Ebrahim/miru.git
