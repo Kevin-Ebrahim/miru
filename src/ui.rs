@@ -521,10 +521,12 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let controls = match state.focus {
         Focus::Audio | Focus::Quality if width >= 31 => "Left/Right Change  Enter Search",
         Focus::Audio | Focus::Quality => "Arrows Change  Enter Search",
-        Focus::List => "/ Search  s Audio  Q Quality",
+        Focus::List => "",
         _ => "Enter Search  Tab Settings",
     };
-    let hint = if history {
+    let hint = if history && controls.is_empty() {
+        "Alt+h History".into()
+    } else if history {
         format!(
             "{controls}{}Alt+h History",
             if width < 50 { "\n" } else { "  " }
@@ -549,9 +551,8 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         );
     }
     render_activity(frame, state, activity);
-    frame.render_widget(Paragraph::new("F1 Help").style(muted(state).bold()), footer);
     frame.render_widget(
-        Paragraph::new("Ctrl+c Quit")
+        Paragraph::new("F1 Help")
             .right_aligned()
             .style(muted(state).bold()),
         footer,
@@ -1974,11 +1975,12 @@ mod tests {
                         "1080p",
                         "Alt+h History",
                         "F1 Help",
-                        "Ctrl+c Quit",
                     ] {
                         assert!(text.contains(label), "{width}x{height} {focus:?}: {text}");
                     }
                     assert!(!text.contains("History stays in History"));
+                    assert!(!text.contains("Ctrl+c Quit"));
+                    assert!(!text.contains("/ Search  s Audio  Q Quality"));
                     assert!(state.text_view.is_none());
                     assert_eq!(
                         cover_area(&state, Rect::new(0, 0, width, height)),
@@ -2205,7 +2207,7 @@ mod tests {
                 "Arrows Change",
                 "Ep 2",
                 "F6 Retry",
-                "Ctrl+c Quit",
+                "F1 Help",
             ] {
                 assert!(text.contains(label), "{text}");
             }
