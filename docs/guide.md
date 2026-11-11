@@ -60,6 +60,12 @@ when available, and the default or English subtitle track when available.
 Existing files are never overwritten; failed or cancelled downloads do not
 leave a completed file or mark episodes as watched.
 
+Ordinary filenames keep their existing format. When a long title needs
+shortening, the name keeps the episode number and SUB/DUB label, plus a stable
+tag to distinguish series with the same prefix. Only the series title is
+shortened, at a UTF-8 boundary, to keep the filename stem within 180 bytes.
+Any remaining collision reports an error and leaves the existing file intact.
+
 ## Images and appearance
 
 Miru detects Kitty, Sixel, and iTerm2 image protocols and falls back to colored

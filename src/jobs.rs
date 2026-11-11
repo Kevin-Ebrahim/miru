@@ -181,7 +181,12 @@ async fn run(
         let download = download::download(
             &media,
             &request.quality,
-            &request.title,
+            download::Name {
+                display_title: &request.title,
+                anime: &request.anime,
+                episode: &request.episode,
+                mode: request.mode,
+            },
             &options.download_dir,
             &log,
             progress,

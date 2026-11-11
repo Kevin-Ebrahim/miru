@@ -7,6 +7,7 @@ Everything, including history and downloaded media, lives in a temporary directo
 import base64
 import functools
 import hashlib
+import html
 import http.server
 import json
 import os
@@ -22,6 +23,11 @@ import urllib.parse
 
 def run(argv, **kwargs):
     return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=40, **kwargs)
+
+
+def snapshot(path):
+    metadata = path.stat()
+    return hashlib.sha256(path.read_bytes()).digest(), metadata.st_ino, metadata.st_mtime_ns
 
 
 def main():
@@ -45,6 +51,8 @@ def main():
         slow = threading.Event()
         segment_requested = threading.Event()
         release_segment = threading.Event()
+        series = {"id": "smoke-1", "title": "Smoke & Test"}
+        dub_available = threading.Event()
 
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_):
@@ -57,13 +65,14 @@ def main():
                     release_segment.wait(timeout=10)
                 base = f"http://127.0.0.1:{self.server.server_port}"
                 if path == "/search":
-                    body = '<div class="film_list-wrap"><div class="flw-item"><h3 class="film-name"><a title="Smoke &amp; Test" href="/smoke-1">Smoke</a></h3></div></div>'
-                elif path == "/api/theme/episode/list/1":
+                    body = f'<div class="film_list-wrap"><div class="flw-item"><h3 class="film-name"><a title="{html.escape(series["title"])}" href="/{series["id"]}">Smoke</a></h3></div></div>'
+                elif path == f'/api/theme/episode/list/{series["id"].rsplit("-", 1)[1]}':
                     body = json.dumps({"html": ''.join(
-                        f'<a class="ep-item" data-number="{i}" data-id="{i}" title="Part {i}" href="/watch/smoke-1?ep={i}"></a>' for i in (1, 2))})
+                        f'<a class="ep-item" data-number="{i}" data-id="{i}" title="Part {i}" href="/watch/{series["id"]}?ep={i}"></a>' for i in (1, 2))})
                 elif path == "/api/theme/episode/servers":
                     encoded = base64.b64encode(f"{base}/embed".encode()).decode()
-                    body = json.dumps({"html": f'<div class="server-item" data-type="sub" data-server-name="ZokoAnime" data-hash="{encoded}"></div>'})
+                    modes = ("sub", "dub") if dub_available.is_set() else ("sub",)
+                    body = json.dumps({"html": ''.join(f'<div class="server-item" data-type="{mode}" data-server-name="ZokoAnime" data-hash="{encoded}"></div>' for mode in modes)})
                 elif path == "/embed":
                     config = json.dumps({"src": f"{base}/master.m3u8", "subtitles": [{"default": True, "src": f"{base}/subtitle.vtt"}]}).encode()
                     key = b"otaku-embed-v1"
@@ -100,14 +109,39 @@ def main():
             media = next((root / "downloads").glob("*.mkv"))
             info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
             assert {s["codec_type"] for s in info["streams"]} == {"audio", "video", "subtitle"}
-            before = hashlib.sha256(media.read_bytes()).digest()
+            before = snapshot(media)
             repeated = subprocess.run(download_args, capture_output=True, text=True, timeout=40)
             assert repeated.returncode != 0 and "already exists" in repeated.stderr
-            assert hashlib.sha256(media.read_bytes()).digest() == before
+            assert snapshot(media) == before
             assert not list((root / "downloads").glob("*.part"))
             missing = subprocess.run(common + ["--resolve", "--dub", "Smoke"], capture_output=True, text=True, timeout=40)
             assert missing.returncode != 0 and "No DUB source" in missing.stderr
             assert json.loads(run(common + ["--history"]).stdout) == history
+            long_dir = root / "long-downloads"
+            dub_available.set()
+            saved = {}
+            for source, title in (("smoke-1", "Long Title " * 20),
+                                  ("other-2", "Long Title " * 20 + "Different Series"),
+                                  ("unicode-3", "日本語🎬" * 40)):
+                series.update(id=source, title=title)
+                for mode in ("sub", "dub"):
+                    previous = set(long_dir.glob("*.mkv"))
+                    long_args = common + ["--download", "Smoke", "-e", "1-2", f"--{mode}", "--download-dir", str(long_dir)]
+                    downloaded = subprocess.run(long_args, capture_output=True, text=True, timeout=40)
+                    assert downloaded.returncode == 0, downloaded.stderr
+                    added = set(long_dir.glob("*.mkv")) - previous
+                    assert len(added) == 2, added
+                    for episode in (1, 2):
+                        assert any(file.name.endswith(f" Episode {episode} {mode.upper()}.mkv") for file in added), added
+                    for file in added:
+                        assert len(file.stem.encode("utf-8")) <= 180, file.name
+                        saved[file] = snapshot(file)
+            repeated = subprocess.run(long_args, capture_output=True, text=True, timeout=40)
+            assert repeated.returncode != 0 and "already exists" in repeated.stderr, repeated.stderr
+            assert set(long_dir.iterdir()) == set(saved), "A repeat renamed files or left partial media"
+            assert all(snapshot(file) == original for file, original in saved.items()), "Existing downloads changed"
+            series.update(id="smoke-1", title="Smoke & Test")
+            dub_available.clear()
             # Check nested protocol restrictions without breaking encrypted HLS.
             key = root / "encrypt.key"
             key.write_bytes(os.urandom(16))
@@ -135,6 +169,12 @@ def main():
                     cancel_dir = root / f"cancelled-{operation[2:]}-{stop_signal}"
                     args = [operation, "Smoke"]
                     if operation == "--download":
+                        cancel_dir.mkdir()
+                        untouched = {}
+                        for name in ("existing.mkv", ".miru-other-job.part"):
+                            file = cancel_dir / name
+                            file.write_bytes(b"unrelated download")
+                            untouched[file] = snapshot(file)
                         args += ["--download-dir", str(cancel_dir)]
                     else:
                         args += ["--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"]
@@ -149,7 +189,8 @@ def main():
                         assert cancelling.returncode == 0, stderr
                         if operation == "--download":
                             assert "cancelled" in stderr
-                            assert not list(cancel_dir.iterdir()), "Cancellation left partial media behind"
+                            assert set(cancel_dir.iterdir()) == set(untouched), "Cancellation left partial media or removed unrelated files"
+                            assert all(snapshot(file) == original for file, original in untouched.items()), "Cancellation changed unrelated files"
                         assert not any(pathlib.Path("/proc", pid).exists() for pid in children), "Cancellation did not reap its child"
                     finally:
                         release_segment.set()
@@ -161,7 +202,7 @@ def main():
                                 os.kill(int(pid), signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
-            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB")
+            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB, long UTF-8 filenames, distinct episodes/languages and shared prefixes")
         finally:
             server.shutdown()
             server.server_close()
