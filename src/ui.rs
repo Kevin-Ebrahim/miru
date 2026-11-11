@@ -521,8 +521,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let controls = match state.focus {
         Focus::Audio | Focus::Quality if width >= 31 => "Left/Right Change  Enter Search",
         Focus::Audio | Focus::Quality => "Arrows Change  Enter Search",
-        Focus::List => "",
-        _ => "Enter Search  Tab Settings",
+        _ => "",
     };
     let hint = if history && controls.is_empty() {
         "Alt+h History".into()
