@@ -109,8 +109,8 @@ impl Widget for Sakura<'_> {
                 if count == 0 {
                     continue;
                 }
-                let shade = shade / count as f32 * clearance;
-                if shade < 8.0 {
+                let shade = shade / count as f32;
+                if shade * clearance < 8.0 {
                     continue;
                 }
                 let color = if blossoms > count / 2 {
@@ -132,11 +132,11 @@ impl Widget for Sakura<'_> {
                 } else {
                     cell.set_char('·');
                 }
-                cell.set_style(tint(
-                    self.palette,
-                    color,
-                    (shade / 255.0 * if blossoms > count / 2 { 1.35 } else { 1.5 }).min(0.95),
-                ));
+                // Lift faint branches and blossom midtones without flattening highlights.
+                let ink = (shade / 255.0 * if blossoms > count / 2 { 1.35 } else { 1.5 })
+                    .sqrt()
+                    .min(0.95);
+                cell.set_style(tint(self.palette, color, ink * clearance));
             }
         }
         if strength == 0.0 {
