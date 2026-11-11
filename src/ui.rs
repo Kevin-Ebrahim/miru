@@ -82,6 +82,42 @@ fn visible_activity(state: &State) -> Option<&Activity> {
     })
 }
 
+fn activity_height(state: &State) -> u16 {
+    visible_activity(state).map_or(0, |a| {
+        if (a.kind == JobKind::Playback && a.phase != JobPhase::Failed)
+            || (a.message.is_empty() && a.quality_note.is_empty())
+        {
+            1
+        } else {
+            2
+        }
+    })
+}
+
+fn scan(state: &State) -> String {
+    let step = if state.animate { state.frame % 12 } else { 3 } as i32;
+    let head = if step <= 6 { step } else { 12 - step };
+    let dir = if step < 6 { -1 } else { 1 };
+    (0..7)
+        .map(|x| {
+            let level = if x == head {
+                0
+            } else if x == head + dir {
+                1
+            } else if x == head + 2 * dir {
+                2
+            } else {
+                3
+            };
+            if state.ascii {
+                ['#', '=', '-', '.'][level]
+            } else {
+                ['█', '▓', '░', '·'][level]
+            }
+        })
+        .collect()
+}
+
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     let gap = u16::from(area.height >= 20);
     let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
@@ -107,13 +143,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
                 2
             },
         ),
-        Constraint::Length(visible_activity(state).map_or(0, |a| {
-            if a.message.is_empty() && a.quality_note.is_empty() {
-                1
-            } else {
-                2
-            }
-        })),
+        Constraint::Length(activity_height(state)),
         Constraint::Length(gap),
         // Preview rendering updates text_view later; reserve its hint now so a resize
         // cannot clip the primary-action row on the first frame.
@@ -375,13 +405,7 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
 }
 
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
-    let activity_height = visible_activity(state).map_or(0, |a| {
-        if a.message.is_empty() && a.quality_note.is_empty() {
-            1
-        } else {
-            2
-        }
-    });
+    let activity_height = activity_height(state);
     Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(if state.status.is_empty() {
@@ -807,12 +831,10 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
             String::new()
         };
         vec![
-            format!("Enter Play{suffix}"),
-            "Esc Back".into(),
-            format!("d Download{suffix}"),
             "Space Mark".into(),
-            "i Details".into(),
             ": Range".into(),
+            format!("d Download{suffix}"),
+            "i Details".into(),
         ]
     } else {
         let mut hints = vec![
@@ -881,7 +903,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 "H Home" | "Alt+h History" | "s SUB/DUB" | "Q Quality"
             )
         });
-        let action = if matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit") {
+        let action = if matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit" | "Space Mark") {
             None
         } else {
             Some(primary.remove(0))
@@ -940,13 +962,9 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         if state.screen == Screen::Episodes && !state.episodes.is_empty() {
             global.retain(|hint| hint != "F1 Help");
             return vec![
+                fit_hints(&["Space Mark".into(), ": Range".into()], width, state),
                 fit_hints(
-                    &["Enter Play".into(), "Tab Mark".into(), "i Details".into()],
-                    width,
-                    state,
-                ),
-                fit_hints(
-                    &["d Download".into(), "Esc Back".into(), "F1 Help".into()],
+                    &["d Download".into(), "i Details".into(), "F1 Help".into()],
                     width,
                     state,
                 ),
@@ -1013,11 +1031,15 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         format!(" {label} / {count} / {} marked ", state.marked.len())
     };
     if state.loading && count > 0 {
-        title.push_str(if state.screen == Screen::Search {
-            "/ Searching... "
-        } else {
-            "/ Loading... "
-        });
+        title.push_str(&format!(
+            "/ {} {} ",
+            scan(state),
+            if state.screen == Screen::Search {
+                "Searching"
+            } else {
+                "Loading"
+            }
+        ));
     }
     if state.request_error.is_some() && !state.request_blocks_list() {
         title.push_str("/ Cached ");
@@ -1078,7 +1100,12 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 },
             )
         };
-        empty_art(frame, state, inner, title, hint, false);
+        let title = if state.loading {
+            format!("{} {}", scan(state), title.trim_end_matches('.'))
+        } else {
+            title.to_owned()
+        };
+        empty_art(frame, state, inner, &title, hint, false);
         return;
     }
     let item_width = usize::from(inner.width.saturating_sub(2));
@@ -1117,18 +1144,14 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                     state.activity.as_ref().is_some_and(|a| {
                         a.kind == JobKind::Playback && a.phase == JobPhase::Running
                     }) && state.current_episode_index() == Some(i);
-                let mark = if state.marked.contains(&i) {
-                    if state.ascii { "*" } else { "✓" }
-                } else {
-                    " "
-                };
                 let indicator = if playing {
-                    if state.ascii { ">" } else { "▶" }
+                    symbol(state, "▶", ">")
+                } else if state.marked.contains(&i) {
+                    symbol(state, "✓", "*")
                 } else {
                     " "
                 };
                 ListItem::new(Line::from(vec![
-                    Span::styled(mark, Style::default().fg(palette(state).success)),
                     Span::styled(indicator, Style::default().fg(palette(state).success)),
                     Span::raw(format!(" {:>4}  {}", ep.number, ep.title)),
                 ]))
@@ -1136,7 +1159,13 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .collect(),
     };
     let list = List::new(items)
-        .highlight_symbol(if state.ascii { "> " } else { "▸ " })
+        .highlight_symbol(if state.screen == Screen::Episodes {
+            ""
+        } else if state.ascii {
+            "> "
+        } else {
+            "▸ "
+        })
         .highlight_style(palette(state).selection);
     let mut selection = ListState::default().with_selected(Some(selected));
     *selection.offset_mut() = state.list_offsets[state.screen as usize];
@@ -1466,8 +1495,9 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
         JobPhase::Finished => "Finished",
         JobPhase::Failed => "Failed",
     };
+    let spinner = scan(state);
     let (indicator, color) = match activity.phase {
-        JobPhase::Resolving => (symbol(state, "…", "..."), palette(state).pending),
+        JobPhase::Resolving => (spinner.as_str(), palette(state).pending),
         JobPhase::Running if activity.kind == JobKind::Download => {
             (symbol(state, "↓", "v"), palette(state).pending)
         }
@@ -1477,6 +1507,12 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     };
     let episode = &activity.episodes[activity.index];
     let compact = area.width < 60;
+    let single_line = activity.kind == JobKind::Playback && activity.phase != JobPhase::Failed;
+    let quality = if single_line && !activity.quality_note.is_empty() {
+        format!(" / {}", activity.quality_note)
+    } else {
+        String::new()
+    };
     let queue = if activity.remaining.is_empty() {
         String::new()
     } else if compact {
@@ -1494,7 +1530,7 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
             (JobPhase::Failed, _) => "Failed",
         };
         let metadata = format!(
-            " Ep {} {}{queue}",
+            " Ep {} {}{quality}{queue}",
             episode.number,
             activity.mode.as_str().to_uppercase()
         );
@@ -1516,7 +1552,7 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         let prefix = format!("{indicator} {phase}: ");
         let suffix = format!(
-            " / Ep {} / {}{queue}",
+            " / Ep {} / {}{quality}{queue}",
             episode.number,
             activity.mode.as_str().to_uppercase()
         );
@@ -1534,11 +1570,12 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         format!("{} / {}", activity.quality_note, activity.message)
     };
+    let mut lines = vec![Line::raw(format!(" {heading}"))];
+    if !single_line && !message.is_empty() {
+        lines.push(Line::raw(format!(" {}", ellipsize(&message, width, state))));
+    }
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(format!(" {heading}"), Style::default().fg(color)),
-            Line::raw(format!(" {}", ellipsize(&message, width, state))),
-        ]),
+        Paragraph::new(lines).style(Style::default().fg(color)),
         area,
     );
 }
@@ -1915,6 +1952,82 @@ mod tests {
     }
 
     #[test]
+    fn scan_sweeps_and_respects_terminal_modes() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.animate = true;
+        for step in 0..24 {
+            state.frame = step;
+            let frame = scan(&state);
+            assert_eq!(frame.width(), 7);
+            let head = frame.chars().position(|c| c == '█').unwrap();
+            assert_eq!(
+                head,
+                if step % 12 <= 6 {
+                    step % 12
+                } else {
+                    12 - step % 12
+                }
+            );
+        }
+        state.animate = false;
+        let still = scan(&state);
+        state.frame += 5;
+        assert_eq!(scan(&state), still);
+        state.ascii = true;
+        assert!(scan(&state).is_ascii());
+    }
+
+    #[test]
+    fn episode_row_and_playback_status_are_compact() {
+        let mut state = State::new(
+            String::new(),
+            Mode::Sub,
+            "1080p".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::Episodes;
+        state.focus = Focus::List;
+        state.anime = Some(Anime {
+            id: "series".into(),
+            title: "Cowboy Bebop".into(),
+            ..Default::default()
+        });
+        state.episodes = vec![Episode {
+            id: "1".into(),
+            number: "1".into(),
+            title: "Asteroid Blues".into(),
+        }];
+        state.marked.insert(0);
+        state.activity = Some(Activity {
+            anime: state.anime.clone().unwrap(),
+            episodes: state.episodes.clone(),
+            index: 0,
+            remaining: Default::default(),
+            mode: Mode::Sub,
+            quality: "1080p".into(),
+            quality_note: "1080p".into(),
+            kind: JobKind::Playback,
+            phase: JobPhase::Running,
+            message: String::new(),
+        });
+        let text = render_text(&mut state, 140, 40);
+        let row = text.lines().find(|l| l.contains("Asteroid Blues")).unwrap();
+        assert!(row.contains('▶') && !row.contains('✓') && !row.contains('▸'));
+        let status = text.lines().find(|l| l.contains("Playing:")).unwrap();
+        assert!(status.contains("1080p") && status.contains("SUB"));
+        assert_eq!(activity_height(&state), 1);
+        let footer = text.lines().last().unwrap();
+        let positions: Vec<_> = ["Mark", "Range", "Download", "Details"]
+            .iter()
+            .map(|s| footer.find(s).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|p| p[0] < p[1]));
+        assert!(!footer.contains("Enter Play") && !footer.contains("Esc Back"));
+    }
+
+    #[test]
     fn responsive_screens_keep_primary_actions_and_cover_inside_terminal() {
         for (w, h) in [
             (140, 45),
@@ -2140,11 +2253,10 @@ mod tests {
                 }
                 let text = render_text(&mut state, w, h);
                 for label in [
-                    "Enter Play",
-                    if w < 72 { "Tab Mark" } else { "Space Mark" },
+                    "Space Mark",
+                    ": Range",
                     "i Details",
                     "d Download",
-                    "Esc Back",
                     "F1 Help",
                 ] {
                     assert!(text.contains(label), "{w}x{h}, missing {label}: {text}");
@@ -2418,16 +2530,10 @@ mod tests {
         for width in [120, 133, 160] {
             state.text_view = None;
             let text = render_text(&mut state, width, 40);
-            for hint in [
-                "Enter Play",
-                "F1 Help",
-                "d Download",
-                "Space Mark",
-                ": Range",
-            ] {
+            for hint in ["F1 Help", "d Download", "Space Mark", ": Range"] {
                 assert!(text.contains(hint), "{width} missing {hint}: {text}");
             }
-            assert!(text.lines().last().unwrap().contains("Enter Play"));
+            assert!(!text.contains("Enter Play") && !text.contains("Esc Back"));
             assert!(!text.contains("Finished"), "{text}");
             assert!(!text.contains("x Dismiss"), "{text}");
             assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[4].height, 0);
@@ -2586,7 +2692,7 @@ mod tests {
             let text = render_text(&mut state, w, h);
             assert!(text.contains("The beginning"), "{w}x{h}: {text}");
             assert!(text.contains("F5 Retry"));
-            assert!(text.contains("Play"));
+            assert!(text.contains("Space Mark"));
             assert!(!text.contains("Episodes unavailable"));
         }
         state.episodes.clear();
