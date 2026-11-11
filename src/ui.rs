@@ -406,14 +406,14 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             ("▀ ▀ ▀ ▀ ", "▀    ▀▀▀▀"),
         ];
         let large = [
-            ("                ", "                  "),
-            ("            ██  ", "                  "),
-            ("██████████      ", "████████  ██    ██"),
-            ("██  ██  ██  ██  ", "██    ██  ██    ██"),
-            ("██  ██  ██  ██  ", "██        ██    ██"),
-            ("██  ██  ██  ██  ", "██        ██    ██"),
-            ("██  ██  ██  ██  ", "██        ████████"),
-            ("                ", "                  "),
+            ("                       ", "                           "),
+            ("                     ██", "                           "),
+            ("                         ", "                           "),
+            ("███████████    ███  ", "███████   ███   ███    "),
+            ("██████████████   █████ ", " ███████  █████   █████ "),
+            ("█████ ████ █████   █████ ", " █████        █████   █████"),
+            ("█████ ████ █████  █████ ", " █████        ████ ████"),
+            ("█████ ████ ██████ █████ ", " █████         █████████ "),
         ];
         let logo: &[(&str, &str)] = if large_logo { &large } else { &compact };
         let lines: Vec<_> = logo
@@ -423,8 +423,9 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             .map(|(i, (left, right))| {
                 let strength = if large_logo {
                     match i {
-                        3 | 5 => 78,
-                        4 => 90,
+                        4 => 82,
+                        5 => 62,
+                        6 => 78,
                         _ => 100,
                     }
                 } else if i == 2 {
@@ -444,11 +445,6 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
                             palette(state).text
                         };
                         let style = wordmark_style(state, color, strength);
-                        let glyph = if large_logo && glyph == '█' {
-                            '▇'
-                        } else {
-                            glyph
-                        };
                         Span::styled(glyph.to_string(), style)
                     })
                     .collect();
