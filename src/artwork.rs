@@ -1,4 +1,4 @@
-use crate::provider::Provider;
+use crate::network::Http;
 use anyhow::{Context, Result};
 use image::{DynamicImage, ImageReader, imageops::FilterType};
 use lru::LruCache;
@@ -62,7 +62,7 @@ impl Artwork {
         &mut self,
         url: Option<&str>,
         size: Size,
-        provider: Provider,
+        http: Http,
         tx: mpsc::UnboundedSender<ArtResult>,
     ) {
         let key = url
@@ -122,12 +122,12 @@ impl Artwork {
                             Ok(decoded) => decoded,
                             Err(_) => {
                                 let _ = tokio::fs::remove_file(&path).await;
-                                let bytes = provider.bytes(&url, None, 12 * 1024 * 1024).await?;
+                                let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
                                 decode_image(bytes, permits.clone()).await?
                             }
                         }
                     } else {
-                        let bytes = provider.bytes(&url, None, 12 * 1024 * 1024).await?;
+                        let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
                         decode_image(bytes, permits.clone()).await?
                     };
                     if tokio::fs::create_dir_all(&cache).await.is_ok() {

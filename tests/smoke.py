@@ -105,6 +105,25 @@ def main():
             missing = subprocess.run(common + ["--resolve", "--dub", "Smoke"], capture_output=True, text=True, timeout=40)
             assert missing.returncode != 0 and "No DUB source" in missing.stderr
             assert json.loads(run(common + ["--history"]).stdout) == history
+            # Check nested protocol restrictions without breaking encrypted HLS.
+            key = root / "encrypt.key"
+            key.write_bytes(os.urandom(16))
+            key_info = root / "key-info"
+            key_info.write_text(f"encrypt.key\n{key}\n")
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                 "color=size=128x96:rate=12", "-t", "1", "-c:v", "libx264", "-f", "hls",
+                 "-hls_key_info_file", str(key_info), str(root / "encrypted.m3u8")])
+            playlist = root / "video.m3u8"
+            original_playlist = playlist.read_bytes()
+            playlist.write_bytes((root / "encrypted.m3u8").read_bytes())
+            run(common + ["--download", "Smoke", "--download-dir", str(root / "encrypted")])
+            run(common + ["--play", "Smoke", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"])
+            playlist.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n" + (root / "video0.ts").as_uri() + "\n#EXT-X-ENDLIST\n")
+            denied = subprocess.run(common + ["--download", "Smoke", "--download-dir", str(root / "denied")], capture_output=True, text=True, timeout=10)
+            assert denied.returncode != 0, "Remote HLS was allowed to read a local file"
+            assert "not on whitelist" in (root / "state/download.log").read_text()
+            assert not list((root / "denied").iterdir()), "Rejected HLS left partial media"
+            playlist.write_bytes(original_playlist)
             slow.set()
             for operation in ("--download", "--play"):
                 for stop_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -139,7 +158,7 @@ def main():
                                 os.kill(int(pid), signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
-            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, no-clobber, missing DUB")
+            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB")
         finally:
             server.shutdown()
             server.server_close()

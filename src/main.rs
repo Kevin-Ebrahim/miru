@@ -5,6 +5,7 @@ mod filter;
 mod input;
 mod jobs;
 mod model;
+mod network;
 mod palette;
 mod persistence;
 mod player;

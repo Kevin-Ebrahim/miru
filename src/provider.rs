@@ -1,4 +1,5 @@
 use crate::model::{Anime, Episode, Mode, Stream, Variant, clean, normalized};
+use crate::network::{Http, http_url};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use lru::LruCache;
@@ -14,68 +15,31 @@ use std::{
 use tokio::sync::Mutex;
 use url::Url;
 
-pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 type SearchCache = Arc<Mutex<LruCache<String, (Instant, Vec<Anime>)>>>;
 
 #[derive(Clone)]
 pub struct Provider {
-    pub client: reqwest::Client,
+    http: Http,
     base: Url,
     searches: SearchCache,
 }
 
 impl Provider {
     pub fn new(base: &str) -> Result<Self> {
+        let base = http_url(base)?;
         Ok(Self {
-            client: reqwest::Client::builder()
-                .user_agent(USER_AGENT)
-                .connect_timeout(Duration::from_secs(8))
-                .timeout(Duration::from_secs(20))
-                .build()?,
-            base: http_url(base)?,
+            http: Http::new(&base)?,
+            base,
             searches: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap()))),
         })
     }
 
-    pub async fn bytes(&self, url: &str, referer: Option<&str>, limit: usize) -> Result<Vec<u8>> {
-        let url = http_url(url)?;
-        let mut request = self.client.get(url.clone());
-        if let Some(referer) = referer {
-            request = request.header(reqwest::header::REFERER, referer);
-        }
-        let mut response = request
-            .send()
-            .await
-            .context("Connection failed; check your network and retry")?;
-        let status = response.status();
-        if status.as_u16() == 403 {
-            bail!(
-                "{} refused access (HTTP 403). Try again later or check the provider in your browser",
-                url.host_str().unwrap_or("Provider")
-            );
-        }
-        ensure!(
-            status.is_success(),
-            "Request failed: HTTP {status} from {}",
-            url.host_str().unwrap_or("provider")
-        );
-        ensure!(
-            response.content_length().unwrap_or(0) <= limit as u64,
-            "Response exceeds size limit"
-        );
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            ensure!(
-                bytes.len() + chunk.len() <= limit,
-                "Response exceeds size limit"
-            );
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(bytes)
+    pub fn http(&self) -> Http {
+        self.http.clone()
     }
 
     async fn text(&self, url: &str, referer: Option<&str>) -> Result<String> {
-        let bytes = self.bytes(url, referer, 4 * 1024 * 1024).await?;
+        let bytes = self.http.bytes(url, referer, 4 * 1024 * 1024).await?;
         let text = String::from_utf8(bytes).context("Provider returned invalid text")?;
         ensure!(
             !text.contains("<title>Just a moment"),
@@ -146,6 +110,15 @@ impl Provider {
                     .map(String::from)
             })
             .transpose()?;
+        for variant in &variants {
+            self.http.validate(&variant.url)?;
+        }
+        for url in [audio.as_deref(), subtitle.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            self.http.validate(url)?;
+        }
         Ok(Stream {
             variants,
             referer,
@@ -158,15 +131,6 @@ impl Provider {
 fn selector(s: &str) -> Selector {
     Selector::parse(s).expect("static CSS selector")
 }
-pub fn http_url(value: &str) -> Result<Url> {
-    let url = Url::parse(value).context("Invalid provider URL")?;
-    ensure!(
-        matches!(url.scheme(), "http" | "https"),
-        "Only HTTP(S) URLs are supported"
-    );
-    Ok(url)
-}
-
 pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
     // The sidebar repeats cards. Exclude it just as the reference implementation does.
     let page = page.split("id=\"main-sidebar\"").next().unwrap_or(page);

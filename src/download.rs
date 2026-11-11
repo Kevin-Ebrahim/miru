@@ -62,6 +62,7 @@ pub async fn download(
         "pipe:1",
         "-nostats",
     ]);
+    cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
     cmd.args([
         "-extension_picky",
         "0",
@@ -72,6 +73,7 @@ pub async fn download(
     ]);
     let mut input = 1;
     let audio_index = stream.audio.as_ref().map(|url| {
+        cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
         cmd.args([
             "-extension_picky",
             "0",
@@ -85,6 +87,7 @@ pub async fn download(
         i
     });
     let subtitle_index = stream.subtitle.as_ref().map(|url| {
+        cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
         cmd.args(["-referer", &stream.referer, "-i", url]);
         input
     });

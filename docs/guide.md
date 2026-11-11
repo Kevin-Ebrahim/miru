@@ -130,6 +130,19 @@ sources, and changed markup may prevent playback. Errors appear in the affected
 view, and F5 retries it. Check the logs in the state directory for player or
 download errors.
 
+### Network policy
+
+Miru's HTTP client accepts HTTP(S), rejects URL credentials and HTTPS downgrades,
+checks redirects, and rejects local or reserved destinations, including DNS answers.
+An explicitly configured local provider permits requests to that provider's host,
+so local fixtures and self-hosted compatible providers continue to work.
+
+ffmpeg and mpv receive a network protocol allowlist and a 20-second network I/O
+timeout. Encrypted HLS and separate audio/subtitles remain supported. These tools
+fetch nested playlist resources themselves; Miru's destination checks apply to
+URLs it resolves, not every request made inside an external player. VLC retains
+its own transport settings. This policy is not an operating-system sandbox.
+
 ## Development
 
 ```sh

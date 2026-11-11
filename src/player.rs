@@ -27,6 +27,12 @@ pub fn player_args(player: &str, stream: &Stream, quality: &str, title: &str) ->
             format!("--referrer={}", stream.referer),
             format!("--force-media-title={title}"),
             "--no-terminal".into(),
+            "--network-timeout=20".into(),
+            format!(
+                "--demuxer-lavf-o-append=protocol_whitelist={}",
+                crate::network::MEDIA_PROTOCOLS
+            ),
+            "--demuxer-lavf-o-append=rw_timeout=20000000".into(),
         ]);
         if let Some(url) = &stream.audio {
             args.push(format!("--audio-file={url}"));

@@ -1287,10 +1287,10 @@ impl App {
                     self.state.selected_anime().and_then(|a| a.cover.as_deref())
                 };
                 if art_revision != self.state.art_revision {
-                    art.request(None, cover.as_size(), self.provider.clone(), art_tx.clone());
+                    art.request(None, cover.as_size(), self.provider.http(), art_tx.clone());
                     art_revision = self.state.art_revision;
                 }
-                art.request(url, cover.as_size(), self.provider.clone(), art_tx.clone());
+                art.request(url, cover.as_size(), self.provider.http(), art_tx.clone());
                 std::io::stdout().sync_update(|_| -> Result<()> {
                     if art.clear {
                         art.clear_graphics()?;
