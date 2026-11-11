@@ -93,6 +93,9 @@ after two seconds instead of blocking exit indefinitely. Pending preference
 changes are coalesced; queued history changes are flushed on shutdown. An invalid
 history file is reported and left intact.
 
+History entries are retained until explicitly removed. Importing history and
+recording new playback do not prune older entries.
+
 | Environment variable | Command-line equivalent | Purpose |
 | --- | --- | --- |
 | `MIRU_STATE_DIR` | `--state-dir` | Override the state directory |

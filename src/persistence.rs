@@ -170,7 +170,6 @@ impl Store {
                             watched_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
                         },
                     );
-                    library.entries.truncate(500);
                 }
                 Change::Settings { mode, quality } => {
                     library.mode = mode;
@@ -355,6 +354,70 @@ mod tests {
         let library = store.update(Change::Import(entries)).unwrap();
         assert_eq!(library.entries.len(), 1);
         assert!(next_episode(&library.entries[0], &[]).is_none());
+    }
+    #[test]
+    fn playback_preserves_large_imported_history_until_explicit_removal() {
+        let text: String = (0..600)
+            .map(|i| format!("1\told-{i}\tImported series {i}\n"))
+            .collect();
+        let entries = import_legacy(&text);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.update(Change::Import(entries.clone())).unwrap();
+        assert_eq!(store.load().unwrap().entries.len(), 600);
+
+        let anime = Anime {
+            id: "new-1".into(),
+            title: "New series".into(),
+            ..Default::default()
+        };
+        for episode in ["1", "2"] {
+            store
+                .update(Change::Record {
+                    anime: anime.clone(),
+                    episode: episode.into(),
+                    mode: Mode::Sub,
+                })
+                .unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.entries.len(), 601);
+            assert_eq!(loaded.entries[0].anime, anime);
+            assert_eq!(loaded.entries[0].episode, episode);
+            for (saved, imported) in loaded.entries[1..].iter().zip(&entries) {
+                assert_eq!(saved.anime, imported.anime);
+                assert_eq!(saved.episode, imported.episode);
+                assert_eq!(saved.mode, imported.mode);
+                assert_eq!(saved.watched_at, imported.watched_at);
+            }
+        }
+
+        store
+            .update(Change::Settings {
+                mode: Mode::Dub,
+                quality: "720p".into(),
+            })
+            .unwrap();
+        store.update(Change::Import(entries.clone())).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.entries.len(), 601);
+        assert_eq!(loaded.entries[0].episode, "2");
+        assert_eq!(loaded.mode, Mode::Dub);
+        assert_eq!(loaded.quality, "720p");
+
+        store
+            .update(Change::Remove {
+                source: entries[0].anime.source_id(),
+                mode: entries[0].mode,
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.entries.len(), 600);
+        assert!(
+            loaded
+                .entries
+                .iter()
+                .all(|entry| !entry.anime.same_source(&entries[0].anime))
+        );
     }
     #[test]
     fn v1_history_is_read_without_rewriting_and_the_next_save_uses_v2() {
