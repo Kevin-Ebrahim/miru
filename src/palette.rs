@@ -6,6 +6,7 @@ pub struct Palette {
     pub surface: Color,
     pub text: Color,
     pub focus: Color,
+    pub blossom: Color,
     pub secondary: Color,
     pub border: Color,
     pub success: Color,
@@ -21,6 +22,11 @@ impl Palette {
             surface: Color::Reset,
             text: Color::Reset,
             focus: if colorless { Color::Reset } else { Color::Blue },
+            blossom: if colorless {
+                Color::Reset
+            } else {
+                Color::Magenta
+            },
             secondary: Color::Reset,
             border: Color::Reset,
             success: if colorless {
@@ -64,6 +70,7 @@ impl Palette {
             surface: rgb(surface),
             text: readable(theme.foreground, &backgrounds, 4.5),
             focus: readable(theme.accent, &backgrounds, 4.5),
+            blossom: readable(theme.blossom, &backgrounds, 4.5),
             secondary: readable(muted, &backgrounds, 4.5),
             border: readable(
                 theme
@@ -165,6 +172,7 @@ mod tests {
                     background,
                     foreground: (230, 230, 230),
                     accent: (180, 120, 200),
+                    blossom: (210, 130, 155),
                     surface: None,
                     muted: None,
                     success: (60, 180, 90),
@@ -174,7 +182,15 @@ mod tests {
                 false,
             );
             for bg in [background, channels(p.surface)] {
-                for c in [p.text, p.focus, p.secondary, p.success, p.pending, p.error] {
+                for c in [
+                    p.text,
+                    p.focus,
+                    p.blossom,
+                    p.secondary,
+                    p.success,
+                    p.pending,
+                    p.error,
+                ] {
                     assert!(contrast(channels(c), bg) >= 4.5);
                 }
                 assert!(contrast(channels(p.border), bg) >= 3.0);

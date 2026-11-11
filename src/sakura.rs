@@ -52,12 +52,7 @@ impl Widget for Sakura<'_> {
             return;
         }
         let tree = tree();
-        let blossom_color = match (self.palette.focus, self.palette.text) {
-            (Color::Rgb(r, g, b), Color::Rgb(tr, tg, tb)) => {
-                Color::Rgb(r / 2 + tr / 2, g / 2 + tg / 2, b / 2 + tb / 2)
-            }
-            _ => self.palette.focus,
-        };
+        let blossom_color = self.palette.blossom;
         let time = self.motion.step as f32 * 0.12;
         let strength = if self.animate { 1.0 } else { 0.0 };
         let breeze = (time * 0.62).sin() * (0.35 + 0.65 * (time * 0.17).sin().powi(2)) * strength;
