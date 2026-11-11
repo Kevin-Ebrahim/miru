@@ -142,37 +142,59 @@ impl Widget for Sakura<'_> {
         if strength == 0.0 {
             return;
         }
-        // Staggered lifetimes keep a few petals in flight between stronger gusts.
-        for i in 0..28 {
-            let seed = i as f32;
-            let life = (time / (23.0 + seed % 5.0 * 2.0) + seed * 0.618_034).fract();
-            let upper = i < 9;
-            let px = 0.08 + seed % 4.0 * 0.07 + life * 1.02;
-            let py = if upper {
-                0.025 + (seed % 5.0) * 0.025 + 0.025 * (life * 7.0 + seed).sin()
-            } else {
-                0.12 + (seed % 3.0) * 0.035 + life * 0.9 + 0.035 * (life * 9.0 + seed).sin()
-            };
-            if px >= 1.0 || !(0.0..1.0).contains(&py) {
+        // Drift, sway, tumble and halftone dots adapted from Kyoto Dusk.
+        // See assets/kyoto-dusk/LICENSE. Motion uses its 200 x 100 scene coordinates.
+        const BAYER: [f32; 16] = [
+            0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.,
+        ];
+        const COVER: [f32; 4] = [0., 0.3, 0.6, 1.];
+        for i in 0..50 {
+            let phase = noise(i, 107, 0) * std::f32::consts::TAU;
+            let frequency = 0.6 + noise(i, 106, 0) * 1.2;
+            let drift = 3.0 + noise(i, 103, 0) * 4.0;
+            let fall = 1.6 + noise(i, 104, 0) * 2.2;
+            let sway = 1.0 + noise(i, 105, 0) * 2.0;
+            let tumble = 2.0 + noise(i, 108, 0) * 4.0;
+            let px = (noise(i, 101, 0).powf(2.2) * 140.0
+                + drift * time
+                + sway * (time * frequency + phase).sin())
+            .rem_euclid(240.0)
+                - 20.0;
+            let py = (noise(i, 102, 0) * 120.0
+                + fall * time
+                + 0.6 * (time * frequency * 1.7 + phase).sin())
+            .rem_euclid(120.0)
+                - 10.0;
+            if !(0.0..200.0).contains(&px) || !(0.0..100.0).contains(&py) {
                 continue;
             }
-            let x = area.x + (px * area.width as f32) as u16;
-            let y = area.y + (py * area.height as f32) as u16;
-            let fade = (life * 8.0).min(1.0)
-                * ((1.0 - life) * 8.0).min(1.0)
-                * clearance(self.protected, x as f32, y as f32)
-                * strength;
+            let x = area.x + (px / 200.0 * area.width as f32) as u16;
+            let y = area.y + (py / 100.0 * area.height as f32) as u16;
+            let edge = (px / 5.0)
+                .min((200.0 - px) / 5.0)
+                .min(py / 3.0)
+                .min((100.0 - py) / 3.0)
+                .clamp(0.0, 1.0);
+            let fade = strength * edge * clearance(self.protected, x as f32, y as f32);
             if fade < 0.12 {
                 continue;
             }
-            let turn = ((time * 0.7 + seed) as usize) % 4;
-            let cell = &mut buf[(x, y)];
-            if self.ascii {
-                cell.set_char([',', '\'', '`', '.'][turn]);
+            let face = 0.55 + 0.45 * (time * tumble + phase).sin().abs();
+            let level = (0.3 + 0.7 * face.powf(1.1) * 1.02).min(1.0);
+            let local_x = usize::from(x - area.x);
+            let local_y = usize::from(y - area.y);
+            let dither = (BAYER[(local_y & 3) * 4 + (local_x & 3)] / 16.0 - 0.47) * 0.4
+                + (noise(local_y * usize::from(area.width) + local_x, 77, 0) - 0.5) * 0.5;
+            let step = (level * 3.0 + dither).round().clamp(1.0, 3.0) as usize;
+            let glyph = if self.ascii {
+                [' ', '.', 'o', 'O'][step]
             } else {
-                cell.set_symbol(["♧", "❧", "♧", "❧"][turn]);
-            }
-            cell.set_style(tint(self.palette, self.palette.focus, 0.76 * fade));
+                [' ', '·', '•', '●'][step]
+            };
+            let ink = 0.3 + 0.7 * ((level + 0.06) / COVER[step]).min(1.0);
+            buf[(x, y)]
+                .set_char(glyph)
+                .set_style(tint(self.palette, blossom_color, ink * fade));
         }
     }
 }
