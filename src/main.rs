@@ -7,7 +7,6 @@ mod persistence;
 mod player;
 mod provider;
 mod sakura;
-mod scene;
 mod theme;
 mod ui;
 

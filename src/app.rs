@@ -1945,7 +1945,7 @@ impl App {
                     }
                 }
                 _ = tick.tick() => {
-                    if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
+                    if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
                         dirty |= self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active);

@@ -2,7 +2,6 @@ use crate::{
     app::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis, TextView},
     artwork::Artwork,
     palette::Palette,
-    scene::Dusk,
 };
 use ratatui::{
     Frame,
@@ -1119,7 +1118,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         } else {
             title.to_owned()
         };
-        empty_art(frame, state, inner, &title, hint, false);
+        empty_message(frame, state, inner, &title, hint);
         return;
     }
     let item_width = usize::from(inner.width.saturating_sub(2));
@@ -1205,13 +1204,12 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     let Some(anime) = state.selected_anime() else {
         state.text_view = None;
         state.text_selection = None;
-        empty_art(
+        empty_message(
             frame,
             state,
             area.inner(Margin::new(2, 1)),
             "Choose a series",
             "",
-            false,
         );
         return;
     };
@@ -1238,7 +1236,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         } else {
             "No cover"
         };
-        empty_art(frame, state, cover, label, "", false);
+        empty_message(frame, state, cover, label, "");
     }
     let compact_details = state.details && metadata.height < 10;
     let mut details = Vec::new();
@@ -1871,14 +1869,7 @@ fn render_help(frame: &mut Frame, state: &mut State) {
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), footer);
 }
-fn empty_art(
-    frame: &mut Frame,
-    state: &State,
-    area: Rect,
-    title: &str,
-    hint: &str,
-    show_scene: bool,
-) {
+fn empty_message(frame: &mut Frame, state: &State, area: Rect, title: &str, hint: &str) {
     let lines: Vec<_> = [(title, accent(state)), (hint, muted(state))]
         .into_iter()
         .filter(|(text, _)| !text.is_empty())
@@ -1889,27 +1880,7 @@ fn empty_art(
         + u16::from(hint.width() > usize::from(area.width)))
     .min(area.height);
     let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
-    let art_height = area.height.saturating_sub(caption_height + 1).min(24);
-    let (min_width, min_height) = if state.ascii || state.colorless {
-        (40, 10)
-    } else {
-        (24, 6)
-    };
-    let has_scene = show_scene && area.width >= min_width && art_height >= min_height;
-    let content_height = caption_height + if has_scene { art_height + 1 } else { 0 };
-    let y = area.y + area.height.saturating_sub(content_height) / 2;
-    if has_scene {
-        frame.render_widget(
-            Dusk {
-                tick: state.frame,
-                animate: state.animate,
-                ascii: state.ascii,
-                monochrome: state.colorless,
-            },
-            Rect::new(area.x, y, area.width, art_height),
-        );
-    }
-    let caption_y = y + if has_scene { art_height + 1 } else { 0 };
+    let caption_y = area.y + area.height.saturating_sub(caption_height) / 2;
     frame.render_widget(
         caption,
         Rect::new(
