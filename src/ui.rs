@@ -667,11 +667,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     if state.details {
         nav.push(Span::styled("Details", accent(state)));
     } else {
-        for (screen, key, label) in [
-            (Screen::Home, "H", "Home"),
-            (Screen::History, "Alt+h", "History"),
-            (Screen::Search, "/", "Search"),
-        ] {
+        for (screen, key, label) in [(Screen::Search, "/", "Search")] {
             if screen == Screen::History && state.history.is_empty() && state.screen != screen {
                 continue;
             }
@@ -824,7 +820,6 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         ]
     } else {
         let mut hints = vec![
-            "Enter Episodes".into(),
             if state.screen == Screen::Search {
                 "/ Edit"
             } else {
@@ -848,7 +843,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         }
         hints
     };
-    let mut global: Vec<String> = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
+    let mut global: Vec<String> = vec!["F1 Help".into()];
     if let Some(activity) = visible_activity(state) {
         global.insert(
             0,
@@ -862,17 +857,11 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
     }
     // Printable shortcuts are text while editing.
     if matches!(state.focus, Focus::Search | Focus::Range) {
-        global = vec!["F1 Help".into(), "Ctrl+C Quit".into()];
+        global = vec!["F1 Help".into()];
         if state.request_error.is_some() && !state.details {
             global.insert(0, "F5 Retry".into());
         }
     } else if !state.details {
-        if state.screen != Screen::Home {
-            global.push("H Home".into());
-        }
-        if state.screen != Screen::History && !state.history.is_empty() {
-            global.push("Alt+h History".into());
-        }
         global.extend(["s SUB/DUB".into(), "Q Quality".into()]);
     }
     if state.activity.as_ref().is_some_and(|a| a.retryable()) {
@@ -886,7 +875,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
             .into(),
         );
     }
-    if let Some(hint) = selection_hint {
+    if let Some(hint) = selection_hint.filter(|hint| *hint != "Drag Select") {
         global.push(hint.into());
     }
     if width >= 120 {
@@ -904,8 +893,6 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 .filter(|hint| !matches!(hint.as_str(), "F1 Help" | "Ctrl+C Quit")),
         );
         let mut right = shortcut(state, "F1", "Help");
-        right.spans.push(Span::raw("   "));
-        right.spans.extend(shortcut(state, "Ctrl+C", "Quit").spans);
         right.spans.push(Span::raw("    "));
         let (key, label) = action.split_once(' ').unwrap_or((&action, ""));
         right.spans.extend(shortcut(state, key, label).spans);
@@ -946,11 +933,6 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
             usize::from(state.activity.as_ref().is_some_and(|a| a.retryable())),
             "F1 Help".into(),
         );
-        for hint in &mut global {
-            if hint == "Ctrl+C Quit" {
-                *hint = if state.details { "q Close" } else { "q Quit" }.into();
-            }
-        }
     }
     if compact && !state.details && state.focus == Focus::List && !state.request_blocks_list() {
         if state.screen == Screen::Episodes && !state.episodes.is_empty() {
@@ -2125,7 +2107,7 @@ mod tests {
                 assert!(cover.right() < reading.x);
                 assert!((50..=72).contains(&reading.width));
                 assert!(text.contains("Synopsis"));
-                assert!(text.contains("Enter Episodes"));
+                assert!(!text.contains("Enter Episodes"));
             }
         }
         state.screen = Screen::Search;
@@ -2162,7 +2144,6 @@ mod tests {
                     "d Download",
                     "Esc Back",
                     "F1 Help",
-                    if w < 72 { "q Quit" } else { "Ctrl+C Quit" },
                 ] {
                     assert!(text.contains(label), "{w}x{h}, missing {label}: {text}");
                 }
@@ -2172,7 +2153,7 @@ mod tests {
         state.query.set("series".into());
         state.accept_search(0, Ok(vec![state.anime.clone().unwrap()]));
         let text = render_text(&mut state, 32, 12);
-        for label in ["Enter Episodes", "i Details", "/ Edit", "F1 Help"] {
+        for label in ["i Details", "/ Edit", "F1 Help"] {
             assert!(text.contains(label), "{text}");
         }
     }
@@ -2438,8 +2419,6 @@ mod tests {
             for hint in [
                 "Enter Play",
                 "F1 Help",
-                "Ctrl+C Quit",
-                "Drag Select",
                 "d Download",
                 "Space Mark",
                 ": Range",
@@ -2484,7 +2463,7 @@ mod tests {
         state.focus = Focus::List;
         let text = render_text(&mut state, 120, 30);
         let top = text.lines().next().unwrap();
-        assert!(top.contains("H Home") && top.contains("s SUB") && top.contains("Q best"));
+        assert!(!top.contains("H Home") && top.contains("s SUB") && top.contains("Q best"));
     }
 
     #[test]
