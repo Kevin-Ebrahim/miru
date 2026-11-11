@@ -788,11 +788,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
     let mut primary: Vec<String> = if state.details {
         vec!["Esc Back".into(), "Up/Down Scroll".into()]
     } else if state.focus == Focus::Search {
-        vec![
-            "Enter Results".into(),
-            "Esc Done".into(),
-            "Alt+e Exact".into(),
-        ]
+        vec!["Alt+e Exact".into()]
     } else if state.focus == Focus::Range {
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
     } else if state.request_blocks_list() {
@@ -2459,7 +2455,7 @@ mod tests {
             "{text}"
         );
         assert!(!top.contains("H Home") && !top.contains("Q best"));
-        assert!(text.lines().last().unwrap().contains("Enter Results"));
+        assert!(!text.contains("Enter Results") && !text.contains("Esc Done"));
         state.focus = Focus::List;
         let text = render_text(&mut state, 120, 30);
         let top = text.lines().next().unwrap();
@@ -2558,7 +2554,7 @@ mod tests {
         let text = render_text(&mut state, 80, 24);
         assert!(text.contains("Search unavailable"));
         assert!(text.contains("F5 Retry"));
-        assert!(text.contains("Enter Results"));
+        assert!(!text.contains("Enter Results") && !text.contains("Esc Done"));
         assert!(!text.contains("? Help"));
         assert!(!text.contains("No matches"));
         assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
