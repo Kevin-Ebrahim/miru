@@ -341,7 +341,7 @@ fn wordmark_inner_color(state: &State) -> Option<ratatui::style::Color> {
     wordmark_style(state, colors.text, if light { 32 } else { 16 }).fg
 }
 
-fn render_home(frame: &mut Frame, state: &State, area: Rect) {
+fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
     let activity_height = state.activity.as_ref().map_or(0, |a| {
         if a.message.is_empty() && a.quality_note.is_empty() {
             1
@@ -349,7 +349,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             2
         }
     });
-    let [space, status, activity, _, footer] = Layout::vertical([
+    Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(if state.status.is_empty() {
             0
@@ -366,7 +366,18 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             1
         }),
     ])
-    .areas(area);
+    .areas(area)
+}
+
+pub fn home_scene_visible(state: &State, area: Rect) -> bool {
+    state.screen == Screen::Home
+        && !state.help
+        && !state.details
+        && crate::sakura::fits(home_sections(state, area)[0])
+}
+
+fn render_home(frame: &mut Frame, state: &State, area: Rect) {
+    let [space, status, activity, _, footer] = home_sections(state, area);
     let width = space.width.saturating_sub(4).min(64);
     let big_logo = !state.ascii && space.width >= 60 && space.height >= 20;
     let large_logo = big_logo && space.width >= 72 && space.height >= 24;
@@ -385,6 +396,18 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let height = logo_height + gap + box_height + hint_gap + hint_height;
     let x = space.x + (space.width - width) / 2;
     let y = space.y + space.height.saturating_sub(height) * 2 / 5;
+    if !state.help {
+        frame.render_widget(
+            crate::sakura::Sakura {
+                palette: palette(state),
+                protected: Rect::new(x.saturating_sub(2), y, width + 4, height),
+                motion: &state.sakura,
+                animate: state.animate,
+                ascii: state.ascii,
+            },
+            space,
+        );
+    }
     if big_logo {
         let compact = [
             ("           ", "   ▄     "),

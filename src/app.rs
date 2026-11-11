@@ -370,6 +370,7 @@ pub struct State {
     pub help_query: Input,
     pub help_filtering: bool,
     pub frame: usize,
+    pub sakura: crate::sakura::Motion,
     pub ascii: bool,
     pub colorless: bool,
     pub palette: crate::palette::Palette,
@@ -434,6 +435,7 @@ impl State {
             help_query: Input::default(),
             help_filtering: false,
             frame: 0,
+            sakura: crate::sakura::Motion::default(),
             ascii,
             colorless: false,
             palette: crate::palette::Palette::terminal(false),
@@ -717,6 +719,7 @@ impl App {
     }
 
     fn show(&mut self, screen: Screen) {
+        self.state.sakura.interact();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
@@ -1323,6 +1326,7 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        self.state.sakura.interact();
         if self.state.help && !self.state.help_filtering {
             return;
         }
@@ -1468,6 +1472,7 @@ impl App {
     }
 
     fn key(&mut self, mut key: KeyEvent) {
+        self.state.sakura.interact();
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -1918,7 +1923,12 @@ impl App {
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(crate::scene::FRAME_INTERVAL_MS) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
-                        dirty = self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active);
+                        dirty |= self.state.loading || self.state.activity.as_ref().is_some_and(Activity::active);
+                        let size = terminal.size()?;
+                        if ui::home_scene_visible(&self.state, ratatui::layout::Rect::new(0, 0, size.width, size.height))
+                        {
+                            dirty |= self.state.sakura.advance();
+                        }
                     }
                 }
                 Some(message) = self.rx.recv() => { self.message(message); dirty = true; },

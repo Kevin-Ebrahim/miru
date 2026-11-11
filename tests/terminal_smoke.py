@@ -58,11 +58,35 @@ def check(binary, exit_method, animate=False):
             pump(0.2)
             drawn = len(output)
             pump(0.4)
-            assert len(output) == drawn, "Idle Home kept redrawing"
+            assert len(output) == drawn, "Home should start still before the first breeze"
+            if animate:
+                pump(3.8)
+                assert len(output) > drawn, "Idle sakura never started animating"
+                os.write(master, b"frieren")
+                pump(2)
+                settled = len(output)
+                pump(0.5)
+                assert len(output) == settled, "Typing did not settle the sakura"
+                pump(4)
+                assert len(output) > settled, "Sakura did not resume after input stopped"
+                os.write(master, b"\x1bOP")  # F1
+                pump(0.4)
+                help_drawn = len(output)
+                pump(0.5)
+                assert len(output) == help_drawn, "Hidden sakura kept redrawing Help"
+                os.write(master, b"\x1b")
+                pump(0.2)
+            elif exit_method == "q":
+                pump(3.8)
+                assert len(output) == drawn, "--no-animation started the breeze"
             for rows, cols in ((18, 40), (8, 20), (40, 120)):
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 8, rows * 20))
                 process.send_signal(signal.SIGWINCH)
                 pump(0.2)
+                if animate and cols < 100:
+                    compact_drawn = len(output)
+                    pump(0.4)
+                    assert len(output) == compact_drawn, "Compact layout kept animating"
             if exit_method == "q":
                 os.write(master, b"\x1b")
                 pump(0.1)
@@ -90,4 +114,4 @@ if __name__ == "__main__":
     for method in ("q", "ctrl+c", signal.SIGTERM, signal.SIGHUP):
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
-    print("PASS: idle Home with animation enabled/disabled, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, raw/alternate-screen/paste restoration")
+    print("PASS: sakura idle/typing/resume, hidden/compact/reduced-motion stillness, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")

@@ -203,7 +203,11 @@ covers leave the selected title and details visible with a quiet placeholder.
 Home uses a compact Mado wordmark and a centred search box capped at 64 columns.
 The active terminal theme supplies its surface, text and focus colours. Narrow
 terminals and `--ascii` use a plain wordmark; settings, history and keyboard hints
-remain available. The page stays still while idle. The executable and saved-data
+remain available. Larger terminals show a theme-coloured, dotted sakura with drifting
+petals around the search area. Motion settles while typing and resumes after a short
+idle pause. `--no-animation` keeps the tree still; compact terminals omit the scene.
+The scene uses terminal characters, including plain ASCII and `NO_COLOR` fallbacks,
+and stops animating outside Home. The executable and saved-data
 paths remain `ani-watch` for compatibility.
 
 On the results screen, search is debounced by 300 ms and immediately filters
