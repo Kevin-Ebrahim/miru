@@ -221,7 +221,14 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
     let image_height = if state.details {
         (inner.height / 3).min(8)
     } else {
-        (inner.height * 2 / 5).min(if state.screen == Screen::Episodes {
+        // Search reserves three rows for its query at this width. Match its cover
+        // scale in History without adding an inactive search box.
+        let height = if state.screen == Screen::History {
+            inner.height.saturating_sub(3)
+        } else {
+            inner.height
+        };
+        (height * 2 / 5).min(if state.screen == Screen::Episodes {
             12
         } else {
             16
@@ -717,6 +724,8 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         }
         if state.screen == Screen::Episodes {
             nav.push(Span::styled("Episodes", accent(state).underlined()));
+        } else if state.screen == Screen::History {
+            nav.push(Span::styled("History", accent(state).underlined()));
         }
     }
     let navigation = Line::from(nav);
@@ -903,7 +912,9 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 "H Home" | "Alt+h History" | "s SUB/DUB" | "Q Quality"
             )
         });
-        let action = if matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit" | "Space Mark") {
+        let action = if state.screen == Screen::History
+            || matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit" | "Space Mark")
+        {
             None
         } else {
             Some(primary.remove(0))
@@ -1247,7 +1258,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             .find(|e| e.anime.id == anime.id && e.mode == state.mode),
     };
     if let Some(entry) = entry
-        && (state.details || !matches!(state.screen, Screen::Home | Screen::History))
+        && (state.details || state.screen != Screen::Home)
     {
         push(
             &format!(
