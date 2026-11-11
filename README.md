@@ -6,8 +6,6 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-1.90%2B-dea584?style=flat-square" alt="Requires Rust 1.90 or newer">
-  <img src="https://img.shields.io/badge/Platform-Unix-90b4a4?style=flat-square" alt="Unix terminal app">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--only-90b4a4?style=flat-square" alt="GPL-3.0-only license"></a>
 </p>
 
 Miru has SUB/DUB selection, cover art, watch history and episode queues.
