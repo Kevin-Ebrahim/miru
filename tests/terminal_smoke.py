@@ -16,8 +16,12 @@ import termios
 import time
 
 
-def check(binary, exit_method, animate=False):
+def check(binary, exit_method, animate=False, locked=False):
     with tempfile.TemporaryDirectory(prefix="miru-pty-") as directory:
+        held_lock = None
+        if locked:
+            held_lock = open(pathlib.Path(directory) / "library.lock", "w")
+            fcntl.flock(held_lock, fcntl.LOCK_EX)
         master, slave = os.openpty()
         before = termios.tcgetattr(slave)
         os.set_blocking(master, False)
@@ -87,6 +91,9 @@ def check(binary, exit_method, animate=False):
                     compact_drawn = len(output)
                     pump(0.4)
                     assert len(output) == compact_drawn, "Compact layout kept animating"
+            if locked:
+                os.write(master, b"\t\x1b[C")  # Change audio and queue a save.
+                pump(0.1)
             if exit_method == "q":
                 os.write(master, b"\x1b")
                 pump(0.1)
@@ -99,7 +106,10 @@ def check(binary, exit_method, animate=False):
             else:
                 process.send_signal(exit_method)
             pump(0.3)
-            assert process.wait(timeout=3) == 0, bytes(output)
+            assert process.wait(timeout=3) == (1 if locked else 0), bytes(output)
+            pump(0.1)
+            if locked:
+                assert b"History is busy" in output, "Unsaved changes were not reported"
             assert termios.tcgetattr(slave) == before, "Raw terminal attributes were not restored"
             assert b"\x1b[?1049l" in output, "Alternate screen not restored"
             assert b"\x1b[?2004l" in output, "Bracketed paste not disabled"
@@ -110,6 +120,8 @@ def check(binary, exit_method, animate=False):
                 process.wait()
             os.close(master)
             os.close(slave)
+            if held_lock:
+                held_lock.close()
 
 
 if __name__ == "__main__":
@@ -117,4 +129,5 @@ if __name__ == "__main__":
     for method in ("q", "ctrl+c", signal.SIGTERM, signal.SIGHUP):
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
+    check(executable, "ctrl+c", locked=True)
     print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q does not quit, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")

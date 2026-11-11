@@ -625,8 +625,8 @@ pub struct App {
     copy_requested: bool,
     back_stack: Vec<Visit>,
     continuation: Option<crate::persistence::Entry>,
-    save_tx: Option<mpsc::UnboundedSender<crate::persistence::Change>>,
-    save_task: Option<JoinHandle<()>>,
+    writer: crate::persistence::Writer,
+    library_rx: mpsc::UnboundedReceiver<Result<crate::persistence::Library>>,
 }
 
 fn abort(task: &mut Option<JoinHandle<()>>) {
@@ -647,18 +647,8 @@ pub fn shutdown_signals() -> Result<[tokio::signal::unix::Signal; 3]> {
 impl App {
     pub fn new(state: State, provider: Provider, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let (save_tx, mut save_rx) = mpsc::unbounded_channel();
-        let store = crate::persistence::Store::new(&options.state_dir);
-        let notify = tx.clone();
-        let save_task = tokio::spawn(async move {
-            while let Some(change) = save_rx.recv().await {
-                let store = store.clone();
-                let result = tokio::task::spawn_blocking(move || store.update(change))
-                    .await
-                    .unwrap_or_else(|e| Err(e.into()));
-                let _ = notify.send(Message::Library(result));
-            }
-        });
+        let (writer, library_rx) =
+            crate::persistence::Writer::new(crate::persistence::Store::new(&options.state_dir));
         let search_due = if state.query.text.is_empty() || state.screen != Screen::Search {
             None
         } else {
@@ -683,8 +673,8 @@ impl App {
             copy_requested: false,
             back_stack: vec![],
             continuation: None,
-            save_tx: Some(save_tx),
-            save_task: Some(save_task),
+            writer,
+            library_rx,
         }
     }
 
@@ -708,8 +698,8 @@ impl App {
     }
 
     fn persist(&self, change: crate::persistence::Change) {
-        if let Some(tx) = &self.save_tx {
-            let _ = tx.send(change);
+        if let Err(error) = self.writer.submit(change) {
+            let _ = self.tx.send(Message::Library(Err(error)));
         }
     }
 
@@ -1956,6 +1946,7 @@ impl App {
                         }
                     }
                 }
+                Some(result) = self.library_rx.recv() => { self.message(Message::Library(result)); dirty = true; },
                 Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
                 Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
                 _ = terminate.recv() => self.quit = true,
@@ -1970,14 +1961,9 @@ impl App {
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         abort(&mut self.synopsis_task);
-        self.save_tx.take();
-        if let Some(task) = self.save_task.take() {
-            task.await?;
-        }
-        while let Ok(message) = self.rx.try_recv() {
-            if let Message::Library(Err(err)) = message {
-                return Err(err);
-            }
+        self.writer.shutdown().await?;
+        while let Ok(result) = self.library_rx.try_recv() {
+            result?;
         }
         Ok(())
     }

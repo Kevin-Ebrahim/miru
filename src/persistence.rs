@@ -1,11 +1,14 @@
+mod writer;
+pub use writer::Writer;
+
 use crate::model::{Anime, Episode, Mode};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::Write,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +40,7 @@ impl Default for Library {
 #[derive(Clone)]
 pub struct Store {
     pub path: PathBuf,
+    lock_timeout: Duration,
 }
 pub enum Change {
     Record {
@@ -58,6 +62,7 @@ impl Store {
     pub fn new(dir: &Path) -> Self {
         Self {
             path: dir.join("library.json"),
+            lock_timeout: Duration::from_secs(2),
         }
     }
     pub fn load(&self) -> Result<Library> {
@@ -94,8 +99,20 @@ impl Store {
             .read(true)
             .write(true)
             .open(dir.join("library.lock"))?;
-        lock.lock()?;
-        Ok(lock)
+        let deadline = Instant::now() + self.lock_timeout;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(lock),
+                Err(TryLockError::WouldBlock) => {
+                    ensure!(
+                        Instant::now() < deadline,
+                        "History is busy in another process; changes were not saved. Retry after it finishes"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
     }
     pub fn migrate_from(&self, old: &Store) -> Result<()> {
         if self.path.try_exists()? {
@@ -126,47 +143,52 @@ impl Store {
         Ok(())
     }
     pub fn update(&self, change: Change) -> Result<Library> {
+        self.update_many(vec![change])
+    }
+    fn update_many(&self, changes: Vec<Change>) -> Result<Library> {
         let _lock = self.lock()?;
         let dir = self.path.parent().context("Missing state directory")?;
         let mut library = self.load()?;
-        match change {
-            Change::Record {
-                anime,
-                episode,
-                mode,
-            } => {
-                library
-                    .entries
-                    .retain(|e| e.anime.id != anime.id || e.mode != mode);
-                library.entries.insert(
-                    0,
-                    Entry {
-                        anime,
-                        episode,
-                        mode,
-                        watched_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-                    },
-                );
-                library.entries.truncate(500);
-            }
-            Change::Settings { mode, quality } => {
-                library.mode = mode;
-                library.quality = quality;
-            }
-            Change::Import(entries) => {
-                for entry in entries {
-                    if !library
+        for change in changes {
+            match change {
+                Change::Record {
+                    anime,
+                    episode,
+                    mode,
+                } => {
+                    library
                         .entries
-                        .iter()
-                        .any(|e| e.anime.id == entry.anime.id && e.mode == entry.mode)
-                    {
-                        library.entries.push(entry);
+                        .retain(|e| e.anime.id != anime.id || e.mode != mode);
+                    library.entries.insert(
+                        0,
+                        Entry {
+                            anime,
+                            episode,
+                            mode,
+                            watched_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+                        },
+                    );
+                    library.entries.truncate(500);
+                }
+                Change::Settings { mode, quality } => {
+                    library.mode = mode;
+                    library.quality = quality;
+                }
+                Change::Import(entries) => {
+                    for entry in entries {
+                        if !library
+                            .entries
+                            .iter()
+                            .any(|e| e.anime.id == entry.anime.id && e.mode == entry.mode)
+                        {
+                            library.entries.push(entry);
+                        }
                     }
                 }
+                Change::Remove { id, mode } => library
+                    .entries
+                    .retain(|e| e.anime.id != id || e.mode != mode),
             }
-            Change::Remove { id, mode } => library
-                .entries
-                .retain(|e| e.anime.id != id || e.mode != mode),
         }
         let mut temp = tempfile::NamedTempFile::new_in(dir)?;
         serde_json::to_writer_pretty(&mut temp, &library)?;
