@@ -1402,6 +1402,7 @@ dependencies = [
  "clap",
  "crossterm",
  "image",
+ "libc",
  "lru 0.16.4",
  "ratatui",
  "ratatui-image",

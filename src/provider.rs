@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use lru::LruCache;
 use regex::Regex;
-use scraper::{Html, Selector};
+use scraper::Selector;
 use serde::Deserialize;
 use std::{
     collections::HashSet,
@@ -14,6 +14,9 @@ use std::{
 };
 use tokio::sync::Mutex;
 use url::Url;
+
+mod parser;
+pub use parser::run_helper as run_parser_helper;
 
 type SearchCache = Arc<Mutex<LruCache<String, (Instant, Vec<Anime>)>>>;
 
@@ -41,7 +44,7 @@ impl Provider {
     }
 
     async fn text(&self, url: &str, referer: Option<&str>) -> Result<String> {
-        let bytes = self.http.bytes(url, referer, 4 * 1024 * 1024).await?;
+        let bytes = self.http.bytes(url, referer, parser::BODY_LIMIT).await?;
         let text = String::from_utf8(bytes).context("Provider returned invalid text")?;
         ensure!(
             !text.contains("<title>Just a moment"),
@@ -60,7 +63,11 @@ impl Provider {
         let mut url = self.base.join("search")?;
         url.query_pairs_mut().append_pair("keyword", query.trim());
         let page = self.text(url.as_str(), None).await?;
-        let results = parse_search(&page, &self.base)?;
+        let results: Vec<Anime> = parser::parse(parser::Request::Search {
+            page,
+            base: self.base.clone(),
+        })
+        .await?;
         self.searches
             .lock()
             .await
@@ -80,7 +87,10 @@ impl Provider {
             .map_err(|_| anyhow::anyhow!("Invalid provider base URL"))?
             .pop_if_empty()
             .push(&anime.id);
-        parse_synopsis(&self.text(url.as_str(), None).await?)
+        parser::parse(parser::Request::Synopsis {
+            page: self.text(url.as_str(), None).await?,
+        })
+        .await
     }
 
     pub async fn episodes(&self, anime: &Anime) -> Result<Vec<Episode>> {
@@ -97,7 +107,11 @@ impl Provider {
         );
         let url = self.base.join(&format!("api/theme/episode/list/{id}"))?;
         let response = self.text(url.as_str(), None).await?;
-        parse_episodes(&html_response(&response)?, &anime.id)
+        parser::parse(parser::Request::Episodes {
+            page: html_response(&response)?,
+            slug: anime.id.clone(),
+        })
+        .await
     }
 
     pub async fn resolve(&self, episode: &Episode, mode: Mode) -> Result<Stream> {
@@ -110,7 +124,11 @@ impl Provider {
         let mut url = self.base.join("api/theme/episode/servers")?;
         url.query_pairs_mut().append_pair("episodeId", &episode.id);
         let response = self.text(url.as_str(), None).await?;
-        let embed = parse_server(&html_response(&response)?, mode)?;
+        let embed: Url = parser::parse(parser::Request::Server {
+            page: html_response(&response)?,
+            mode,
+        })
+        .await?;
         let referer = format!("{}/", embed.origin().ascii_serialization());
         let page = self.text(embed.as_str(), None).await?;
         let config = parse_embed(&page)?;
@@ -154,7 +172,7 @@ fn selector(s: &str) -> Selector {
 pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
     // The sidebar repeats cards. Exclude it just as the reference implementation does.
     let page = page.split("id=\"main-sidebar\"").next().unwrap_or(page);
-    let document = Html::parse_document(page);
+    let document = parser::document(page)?;
     let mut seen = HashSet::new();
     let mut results = Vec::new();
     for item in document.select(&selector(".flw-item")) {
@@ -221,36 +239,33 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
 }
 
 pub fn parse_synopsis(page: &str) -> Result<String> {
-    fn prose(element: scraper::ElementRef<'_>, text: &mut String) {
-        for node in element.children() {
-            if let Some(value) = node.value().as_text() {
-                text.extend(
-                    value
-                        .chars()
-                        .map(|c| if c.is_whitespace() { ' ' } else { c }),
-                );
-            } else if let Some(child) = scraper::ElementRef::wrap(node) {
-                let block = matches!(child.value().name(), "p" | "div" | "br");
-                if block {
-                    text.push('\n');
-                }
-                prose(child, text);
-                if block {
-                    text.push('\n');
-                }
-            }
-        }
-    }
-    let document = Html::parse_document(page);
+    let document = parser::document(page)?;
     let description = document
         .select(&selector(".film-description .text"))
         .next()
-        .map(|node| {
+        .map(|element| {
             let mut text = String::new();
-            prose(node, &mut text);
+            let mut pending: Vec<_> = element.children().rev().map(|node| (node, false)).collect();
+            while let Some((node, closing)) = pending.pop() {
+                if closing {
+                    text.push('\n');
+                } else if let Some(value) = node.value().as_text() {
+                    text.extend(
+                        value
+                            .chars()
+                            .map(|c| if c.is_whitespace() { ' ' } else { c }),
+                    );
+                } else if let Some(child) = scraper::ElementRef::wrap(node) {
+                    if matches!(child.value().name(), "p" | "div" | "br") {
+                        text.push('\n');
+                        pending.push((node, true));
+                    }
+                    pending.extend(node.children().rev().map(|node| (node, false)));
+                }
+            }
             text.lines()
                 .map(clean)
-                .filter(|s| !s.is_empty())
+                .filter(|line| !line.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n")
         })
@@ -270,7 +285,7 @@ fn html_response(response: &str) -> Result<String> {
 }
 
 pub fn parse_episodes(html: &str, slug: &str) -> Result<Vec<Episode>> {
-    let doc = Html::parse_fragment(html);
+    let doc = parser::fragment(html)?;
     let mut episodes = Vec::new();
     let mut seen = HashSet::new();
     for e in doc.select(&selector(".ep-item")) {
@@ -304,7 +319,7 @@ pub fn parse_episodes(html: &str, slug: &str) -> Result<Vec<Episode>> {
 }
 
 pub fn parse_server(html: &str, mode: Mode) -> Result<Url> {
-    let doc = Html::parse_fragment(html);
+    let doc = parser::fragment(html)?;
     for e in doc.select(&selector(".server-item")) {
         if e.attr("data-type") == Some(mode.as_str())
             && e.attr("data-server-name") == Some("ZokoAnime")

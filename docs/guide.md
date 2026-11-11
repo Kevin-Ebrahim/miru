@@ -149,6 +149,13 @@ checks redirects, and rejects local or reserved destinations, including DNS answ
 An explicitly configured local provider permits requests to that provider's host,
 so local fixtures and self-hosted compatible providers continue to work.
 
+Provider HTML is parsed in short-lived workers, with at most two active at once.
+Each page is limited to 4 MiB and 20,000 markup delimiters; each worker has a
+two-second deadline, a CPU limit and a 256 MiB address-space limit. Oversized,
+overly complex or slow pages produce an error. Cancelling a request kills its
+worker, so quitting does not wait for a busy HTML parser. These workers do not
+require bubblewrap.
+
 Playback and downloads require Linux and bubblewrap (`bwrap`). Each job runs in
 its own network and PID namespaces, with a temporary HTTP/HTTPS proxy as its
 only route to remote media. The proxy applies destination checks to every new
@@ -181,6 +188,7 @@ cargo build --release --locked
 python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
 python3 tests/network_smoke.py target/release/miru
+python3 tests/parser_smoke.py target/release/miru
 python3 tests/terminal_smoke.py target/release/miru
 python3 tests/navigation_smoke.py target/release/miru
 python3 tests/theme_smoke.py target/release/miru

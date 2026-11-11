@@ -143,8 +143,17 @@ fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
         .join(name)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    if provider::run_parser_helper()? {
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
     let signals = jobs::shutdown_signals()?;
