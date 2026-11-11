@@ -183,6 +183,39 @@ def main():
             streams = [json.loads(line) for line in run(common + ["--resolve", "Smoke", "-e", "0--1"]).stdout.splitlines()]
             assert len(streams) == 2 and streams[0]["audio"] and streams[0]["subtitle"]
             run(common + ["--play", "Smoke", "-e", "1-2", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"])
+            for path, backend in (("vlc-backup with spaces/mpv", None), ("wrapper names/my-vlc-wrapper", None),
+                                  ("literal $(touch marker) vlc/mpv", None), ("overrides/vlc", "mpv")):
+                alias = root / path
+                alias.parent.mkdir(parents=True, exist_ok=True)
+                alias.symlink_to(pathlib.Path(shutil.which("mpv")).resolve())
+                arguments = common + ["--play", "Smoke", "-e", "2", "--player", str(alias),
+                                      "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"]
+                if backend:
+                    arguments += ["--player-backend", backend]
+                played = subprocess.run(arguments, capture_output=True, text=True, timeout=40, cwd=root)
+                assert played.returncode == 0, f"{played.stderr}\n{(root / 'state/player.log').read_text()}"
+                assert not (root / "marker").exists(), "Player path was evaluated by a shell"
+            wrapper_dir = root / "custom vlc wrappers with spaces"
+            wrapper_dir.mkdir()
+            wrapper = wrapper_dir / "custom-wrapper"
+            wrapper.write_text(f'#!{sys.executable}\nimport json, pathlib, sys\npathlib.Path(__file__).with_name("arguments.json").write_text(json.dumps(sys.argv[1:]))\n')
+            wrapper.chmod(0o700)
+            literal = "--custom=space ; $(touch marker)"
+            for name, override, backend in (("vlc", None, "vlc"), ("cvlc", None, "vlc"),
+                                            ("custom-wrapper", None, "mpv"), ("custom-wrapper", "vlc", "vlc")):
+                program = wrapper_dir / name
+                if program != wrapper:
+                    program.symlink_to(wrapper)
+                arguments = common + ["--play", "Smoke", "-e", "2", "--player", str(program), f"--player-arg={literal}"]
+                if override:
+                    arguments += ["--player-backend", override]
+                run(arguments, cwd=root)
+                recorded = json.loads((wrapper_dir / "arguments.json").read_text())
+                expected = "--play-and-exit" if backend == "vlc" else "--no-terminal"
+                excluded = "--no-terminal" if backend == "vlc" else "--play-and-exit"
+                assert expected in recorded and excluded not in recorded, recorded
+                assert literal in recorded and any(argument.startswith("--http-proxy=") for argument in recorded), recorded
+                assert not (root / "marker").exists(), "Player argument was evaluated by a shell"
             history = json.loads(run(common + ["--history"]).stdout)
             assert len(history) == 1 and history[0]["episode"] == "2"
             missing_player = subprocess.run(common + ["--play", "Smoke", "--player", str(root / "missing-player")], capture_output=True, text=True, timeout=10)

@@ -730,7 +730,8 @@ mod tests {
             ("720p", "video-high.m3u8", "first.m3u8"),
         ] {
             for player in ["mpv", "vlc"] {
-                let arguments = crate::player::player_args(player, &stream, quality, "Probe");
+                let arguments = crate::player::Player::new(player, vec![], None)
+                    .args(&stream, quality, "Probe");
                 let audio = format!("https://cdn.example/path/{audio}");
                 let expected = if player == "vlc" {
                     format!(":input-slave={audio}#https://cdn.example/subtitle.vtt")
@@ -780,7 +781,8 @@ mod tests {
             assert_eq!(stream.select(quality).0.url, expected);
             for player in ["mpv", "vlc"] {
                 assert!(
-                    crate::player::player_args(player, &stream, quality, "Probe")
+                    crate::player::Player::new(player, vec![], None)
+                        .args(&stream, quality, "Probe")
                         .contains(&expected)
                 );
             }
@@ -871,7 +873,8 @@ mod tests {
             assert_eq!(stream.select("best").0.audio_url(), Some(expected));
             assert_eq!(serde_json::to_value(&stream).unwrap()["audio"], expected);
             for player in ["mpv", "vlc"] {
-                let arguments = crate::player::player_args(player, &stream, "best", "Probe");
+                let arguments =
+                    crate::player::Player::new(player, vec![], None).args(&stream, "best", "Probe");
                 let audio = if player == "vlc" {
                     format!(":input-slave={expected}")
                 } else {
@@ -948,7 +951,8 @@ mod tests {
         };
         for quality in ["720p", "worst"] {
             for player in ["mpv", "vlc"] {
-                let arguments = crate::player::player_args(player, &stream, quality, "Probe");
+                let arguments = crate::player::Player::new(player, vec![], None)
+                    .args(&stream, quality, "Probe");
                 assert!(arguments.iter().all(|argument| {
                     !argument.starts_with("--audio-file=") && !argument.starts_with(":input-slave=")
                 }));

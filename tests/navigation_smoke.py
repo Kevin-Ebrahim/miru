@@ -114,7 +114,8 @@ def main():
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        player = root / "player"
+        # An mpv-compatible wrapper named vlc requires the override to reach queued TUI jobs.
+        player = root / "vlc"
         player.write_text('''#!/usr/bin/env python3
 import fcntl, json, pathlib, sys, time, uuid
 root = pathlib.Path(__file__).parent
@@ -141,7 +142,7 @@ while not (root / token).exists():
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
         process = subprocess.Popen([
             str(binary), "--images", "off", "--no-animation", "--state-dir", str(root),
-            "--cache-dir", str(root / "cache"), "--player", str(player),
+            "--cache-dir", str(root / "cache"), "--player", str(player), "--player-backend", "mpv",
             "--download-dir", str(root / "downloads"),
             "--provider", f"http://127.0.0.1:{server.server_port}/",
         ], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)

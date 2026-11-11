@@ -31,8 +31,7 @@ pub struct Request {
 
 #[derive(Clone)]
 pub struct Options {
-    pub player: String,
-    pub player_args: Vec<String>,
+    pub player: player::Player,
     pub state_dir: PathBuf,
     pub download_dir: PathBuf,
     pub history: crate::persistence::Sender,
@@ -203,7 +202,6 @@ async fn run(
     }
     let Some(mut child) = player::launch(
         &options.player,
-        &options.player_args,
         &media,
         &request.quality,
         &request.title,

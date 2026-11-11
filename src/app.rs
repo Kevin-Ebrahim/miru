@@ -7,6 +7,7 @@ use crate::{
     artwork::Artwork,
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
+    player::Player,
     provider::Provider,
     state::{
         Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
@@ -39,8 +40,7 @@ enum Message {
 }
 
 pub struct Options {
-    pub player: String,
-    pub player_args: Vec<String>,
+    pub player: Player,
     pub cache: PathBuf,
     pub state_dir: PathBuf,
     pub images: bool,
@@ -96,7 +96,6 @@ impl App {
             provider.clone(),
             jobs::Options {
                 player: options.player.clone(),
-                player_args: options.player_args.clone(),
                 state_dir: options.state_dir.clone(),
                 download_dir: options.download_dir.clone(),
                 history: writer.sender(),
@@ -1394,8 +1393,7 @@ mod tests {
             state,
             Provider::new("http://127.0.0.1:9").unwrap(),
             Options {
-                player: "does-not-exist".into(),
-                player_args: vec![],
+                player: Player::new("does-not-exist", vec![], None),
                 cache: dir.join("cache"),
                 state_dir: dir.into(),
                 images: false,
@@ -1976,8 +1974,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,
@@ -2038,8 +2035,7 @@ mod tests {
             .collect();
         state.episodes.range.set("1-2".into());
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,
@@ -2073,8 +2069,7 @@ mod tests {
         state.accept_search(0, Ok(vec![anime("first-1", "First series")]));
         state.focus = Focus::List;
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,

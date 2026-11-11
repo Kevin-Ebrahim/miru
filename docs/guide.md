@@ -55,6 +55,13 @@ per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
 supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
 to pass additional player options.
 
+Player argument style is inferred from the executable's exact basename:
+`vlc` and `cvlc` use VLC options; every other name uses mpv options. Parent
+directories and symlink targets do not affect this choice. For wrappers or
+aliases, override it explicitly, for example
+`--player '/path/to/my wrapper' --player-backend vlc` or `--player-backend mpv`.
+Executable paths and extra arguments are passed literally, without a shell.
+
 `--resolve` keeps the existing top-level `variants`, `referer`, `subtitle`, and
 `audio` fields. The top-level `audio` remains a URL or null and describes the
 best video variant for compatibility. Each variant now also includes `audio`:

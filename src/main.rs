@@ -70,6 +70,9 @@ struct Cli {
     /// Executable accepting mpv options (or VLC)
     #[arg(long, default_value = "mpv")]
     player: String,
+    /// Override argument style; inferred from the executable basename when omitted
+    #[arg(long, value_enum)]
+    player_backend: Option<player::Backend>,
     /// Additional player argument; repeat as needed (use = for leading --)
     #[arg(long)]
     player_arg: Vec<String>,
@@ -209,8 +212,11 @@ async fn run() -> Result<()> {
         let mut runner = jobs::Jobs::new(
             provider.clone(),
             jobs::Options {
-                player: cli.player.clone(),
-                player_args: cli.player_arg.clone(),
+                player: player::Player::new(
+                    cli.player.clone(),
+                    cli.player_arg.clone(),
+                    cli.player_backend,
+                ),
                 state_dir: state_dir.clone(),
                 download_dir: cli.download_dir.clone(),
                 history: writer.sender(),
@@ -274,8 +280,7 @@ async fn run() -> Result<()> {
         state.status = "Enter opens episodes with the next episode selected.".into();
     }
     let options = app::Options {
-        player: cli.player,
-        player_args: cli.player_arg,
+        player: player::Player::new(cli.player, cli.player_arg, cli.player_backend),
         cache: cli
             .cache_dir
             .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "miru/covers")),
