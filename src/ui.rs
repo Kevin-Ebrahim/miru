@@ -344,8 +344,11 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     .areas(area);
     let width = space.width.saturating_sub(4).min(64);
     let big_logo = !state.ascii && space.width >= 60 && space.height >= 20;
-    let logo_height = if big_logo {
-        3
+    let large_logo = big_logo && space.width >= 72 && space.height >= 24;
+    let logo_height = if large_logo {
+        8
+    } else if big_logo {
+        4
     } else {
         u16::from(space.height >= 10)
     };
@@ -358,23 +361,34 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let x = space.x + (space.width - width) / 2;
     let y = space.y + space.height.saturating_sub(height) * 2 / 5;
     if big_logo {
-        let logo = [
-            "█▄ ▄█  █▀▀▀█  █▀▀▄   █▀▀▀█",
-            "█ █ █  █▄▄▄█  █  █   █   █",
-            "█   █  █   █  █▄▄▀   █▄▄▄█",
+        let compact = [
+            ("           ", "   ▄     "),
+            ("█▀█▀█ ▀▀▀█ ", "█▀▀█ █▀▀█"),
+            ("█ █ █ █▀▀█ ", "█  █ █  █"),
+            ("▀ ▀ ▀ ▀▀▀▀ ", "▀▀▀▀ ▀▀▀▀"),
         ];
+        let large = [
+            ("                      ", "                  "),
+            ("                      ", "      ██          "),
+            ("██████████  ████████  ", "████████  ████████"),
+            ("██  ██  ██        ██  ", "██    ██  ██    ██"),
+            ("██  ██  ██  ████████  ", "██    ██  ██    ██"),
+            ("██  ██  ██  ██    ██  ", "██    ██  ██    ██"),
+            ("██  ██  ██  ████████  ", "████████  ████████"),
+            ("                      ", "                  "),
+        ];
+        let logo: &[(&str, &str)] = if large_logo { &large } else { &compact };
         let lines: Vec<_> = logo
-            .into_iter()
+            .iter()
+            .copied()
             .enumerate()
-            .map(|(i, line)| {
-                Line::styled(
-                    line,
-                    if i == 2 {
-                        accent(state)
-                    } else {
-                        Style::default().fg(palette(state).text)
-                    },
-                )
+            .map(|(i, (left, right))| {
+                let shaded = if large_logo { i == 4 || i == 5 } else { i == 2 };
+                let band = |style: Style| if shaded { style.dim() } else { style };
+                Line::from(vec![
+                    Span::styled(left, band(muted(state))),
+                    Span::styled(right, band(Style::default().fg(palette(state).text))),
+                ])
                 .centered()
             })
             .collect();
