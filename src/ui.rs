@@ -78,15 +78,21 @@ fn inline_search(state: &State, width: u16) -> bool {
 
 fn visible_activity(state: &State) -> Option<&Activity> {
     state.activity.as_ref().filter(|activity| {
-        activity.kind != JobKind::Playback || activity.phase != JobPhase::Finished
+        activity.phase != JobPhase::Finished
+            || (activity.kind == JobKind::Download
+                && state.screen == Screen::Episodes
+                && !state.details
+                && state
+                    .episodes
+                    .anime
+                    .as_ref()
+                    .is_some_and(|anime| anime.same_source(&activity.anime)))
     })
 }
 
 fn activity_height(state: &State) -> u16 {
     visible_activity(state).map_or(0, |a| {
-        if (a.kind == JobKind::Playback && a.phase != JobPhase::Failed)
-            || (a.message.is_empty() && a.quality_note.is_empty())
-        {
+        if a.phase != JobPhase::Failed || (a.message.is_empty() && a.quality_note.is_empty()) {
             1
         } else {
             2
@@ -1514,9 +1520,12 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     let Some(activity) = visible_activity(state) else {
         return;
     };
+    if activity.kind == JobKind::Download && activity.phase != JobPhase::Failed {
+        render_download_activity(frame, state, activity, area);
+        return;
+    }
     let phase = match activity.phase {
         JobPhase::Resolving => "Resolving",
-        JobPhase::Running if activity.kind == JobKind::Download => "Downloading",
         JobPhase::Running => "Playing",
         JobPhase::Finished => "Finished",
         JobPhase::Failed => "Failed",
@@ -1524,9 +1533,6 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     let spinner = scan(state);
     let (indicator, color) = match activity.phase {
         JobPhase::Resolving => (spinner.as_str(), palette(state).pending),
-        JobPhase::Running if activity.kind == JobKind::Download => {
-            (symbol(state, "↓", "v"), palette(state).pending)
-        }
         JobPhase::Running => (symbol(state, "▶", ">"), palette(state).success),
         JobPhase::Finished => (symbol(state, "✓", "+"), palette(state).success),
         JobPhase::Failed => ("!", palette(state).error),
@@ -1548,12 +1554,11 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
     };
     let width = usize::from(area.width.saturating_sub(1));
     let heading = if compact {
-        let phase = match (activity.phase, activity.kind) {
-            (JobPhase::Resolving, _) => "Resolve",
-            (JobPhase::Running, JobKind::Download) => "Download",
-            (JobPhase::Running, JobKind::Playback) => "Play",
-            (JobPhase::Finished, _) => "Done",
-            (JobPhase::Failed, _) => "Failed",
+        let phase = match activity.phase {
+            JobPhase::Resolving => "Resolve",
+            JobPhase::Running => "Play",
+            JobPhase::Finished => "Done",
+            JobPhase::Failed => "Failed",
         };
         let metadata = format!(
             " Ep {} {}{quality}{queue}",
@@ -1604,6 +1609,68 @@ fn render_activity(frame: &mut Frame, state: &State, area: Rect) {
         Paragraph::new(lines).style(Style::default().fg(color)),
         area,
     );
+}
+
+fn render_download_activity(frame: &mut Frame, state: &State, activity: &Activity, area: Rect) {
+    let finished = activity.phase == JobPhase::Finished;
+    let indicator = if finished {
+        symbol(state, "✓", "+").to_owned()
+    } else {
+        scan(state)
+    };
+    let width = usize::from(area.width.saturating_sub(1));
+    let compact = area.width < 60;
+    let separator = symbol(state, " · ", " / ");
+    let queue = if activity.remaining.is_empty() {
+        String::new()
+    } else if compact {
+        format!(" / {} left", activity.remaining.len())
+    } else {
+        format!("{separator}{} queued", activity.remaining.len())
+    };
+    let mut metadata = format!(
+        "Ep {} {}",
+        activity.episodes[activity.index].number,
+        activity.mode.as_str().to_uppercase()
+    );
+    if !compact {
+        if !activity.quality_note.is_empty() {
+            metadata.push_str(&format!("{separator}{}", activity.quality_note));
+        }
+        if activity.phase == JobPhase::Running
+            && let Some(time) = activity.message.strip_prefix("Downloaded through ")
+        {
+            let time = time.split('.').next().unwrap_or(time);
+            let time = time.strip_prefix("00:").unwrap_or(time);
+            metadata.push_str(&format!("{separator}{time}"));
+        }
+    }
+    metadata.push_str(&queue);
+    let label = if finished { "Saved " } else { "" };
+    let title_width = width.saturating_sub(
+        indicator.width() + 1 + label.width() + separator.width() + metadata.width(),
+    );
+    let title = if title_width > 0 {
+        format!(
+            "{}{separator}",
+            ellipsize(&activity.anime.title, title_width, state)
+        )
+    } else {
+        String::new()
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            format!(" {indicator} "),
+            Style::default().fg(if finished {
+                palette(state).success
+            } else {
+                palette(state).pending
+            }),
+        ),
+        Span::raw(format!("{label}{title}")),
+        Span::styled(metadata, muted(state)),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn ellipsize(text: &str, width: usize, state: &State) -> String {
@@ -2319,7 +2386,7 @@ mod tests {
                 state.activity.as_mut().unwrap().phase = phase;
                 for (w, h) in [(32, 12), (40, 18), (80, 24), (120, 40)] {
                     let text = render_text(&mut state, w, h);
-                    for label in ["Ep 2", "DUB", "File already exists", "F1 Help"] {
+                    for label in ["Ep 2", "DUB", "F1 Help"] {
                         assert!(
                             text.contains(label),
                             "{phase:?} {w}x{h}, missing {label}: {text}"
@@ -2332,7 +2399,11 @@ mod tests {
                     assert!(!text.contains("Stop/Dismiss"), "{text}");
                     assert!(!text.contains("Esc Controls"), "{text}");
                     if phase == JobPhase::Failed {
+                        assert!(text.contains("File already exists"), "{text}");
                         assert!(text.contains("F6 Retry"), "{text}");
+                    } else {
+                        assert_eq!(activity_height(&state), 1);
+                        assert!(!text.contains("File already exists"), "{text}");
                     }
                 }
             }
@@ -2383,9 +2454,13 @@ mod tests {
             state.activity.as_mut().unwrap().quality_note = "720p (1080p unavailable)".into();
             state.activity.as_mut().unwrap().message = "Saved /tmp/episode.mkv".into();
             state.activity.as_mut().unwrap().phase = JobPhase::Finished;
+            state.screen = Screen::Episodes;
+            state.episodes.anime = Some(state.activity.as_ref().unwrap().anime.clone());
             for (w, h) in [(32, 12), (80, 24)] {
                 let text = render_text(&mut state, w, h);
-                assert!(text.contains("720p (1080p unavailable)"), "{text}");
+                if w >= 60 {
+                    assert!(text.contains("720p (1080p unavailable)"), "{text}");
+                }
                 state.help = true;
                 state.view.help_scroll = u16::MAX;
                 let text = render_text(&mut state, w, h);
@@ -2393,6 +2468,91 @@ mod tests {
                 assert!(!text.contains("Saved /tmp/episode.mkv"), "{text}");
                 state.help = false;
             }
+        }
+    }
+
+    #[test]
+    fn downloads_use_one_scan_line_and_keep_saved_confirmation_on_its_episode_screen() {
+        for ascii in [false, true] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "1080p".into(), false, ascii, true);
+            let anime = Anime {
+                id: "mushi-shi".into(),
+                title: "Mushi-Shi".into(),
+                ..Default::default()
+            };
+            state.activity = Some(Activity {
+                anime: anime.clone(),
+                episodes: (1..=3)
+                    .map(|n| Episode {
+                        provider: Default::default(),
+                        id: n.to_string(),
+                        number: n.to_string(),
+                        title: String::new(),
+                    })
+                    .collect(),
+                index: 0,
+                remaining: [1, 2].into(),
+                mode: Mode::Sub,
+                quality: "1080p".into(),
+                quality_note: "1080p".into(),
+                kind: JobKind::Download,
+                phase: JobPhase::Running,
+                message: "Downloaded through 00:02:02.38".into(),
+            });
+            for animate in [false, true] {
+                state.animate = animate;
+                for frame in [0, 1, 6, 11] {
+                    state.frame = frame;
+                    for width in [32, 40, 59, 60, 80, 120] {
+                        let text = render_text(&mut state, width, 24);
+                        let status = text.lines().find(|line| line.contains("Ep 1 SUB")).unwrap();
+                        assert!(status.contains(&scan(&state)), "{text}");
+                        assert!(status.contains(if width < 60 { "2 left" } else { "2 queued" }));
+                        if width >= 60 {
+                            assert!(
+                                status.contains("1080p") && status.contains("02:02"),
+                                "{text}"
+                            );
+                        }
+                        assert_eq!(activity_height(&state), 1);
+                        assert!(
+                            !text.contains("Downloading:") && !text.contains("Downloaded through")
+                        );
+                    }
+                }
+            }
+            let activity = state.activity.as_mut().unwrap();
+            activity.phase = JobPhase::Finished;
+            activity.remaining.clear();
+            activity.message = "Saved /downloads/Mushi-Shi _ Episode 1 SUB.mkv".into();
+            state.screen = Screen::Episodes;
+            state.episodes.anime = Some(anime);
+            for width in [32, 80, 120] {
+                let text = render_text(&mut state, width, 24);
+                let status = text.lines().find(|line| line.contains("Saved")).unwrap();
+                assert!(status.contains("Ep 1 SUB"), "{text}");
+                assert!(
+                    !text.contains(".mkv") && !text.contains("Finished:"),
+                    "{text}"
+                );
+                assert_eq!(activity_height(&state), 1);
+            }
+            for screen in [Screen::Home, Screen::Search, Screen::History] {
+                state.screen = screen;
+                let text = render_text(&mut state, 80, 24);
+                assert!(
+                    !text.contains("Saved") && !text.contains("x Dismiss"),
+                    "{text}"
+                );
+                assert_eq!(activity_height(&state), 0);
+            }
+            state.screen = Screen::Episodes;
+            state.details = true;
+            assert_eq!(activity_height(&state), 0);
+            state.details = false;
+            state.episodes.anime.as_mut().unwrap().id = "other-series".into();
+            assert_eq!(activity_height(&state), 0);
         }
     }
 
