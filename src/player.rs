@@ -15,7 +15,7 @@ pub fn player_args(player: &str, stream: &Stream, quality: &str, title: &str) ->
             format!("--http-referrer={}", stream.referer),
             format!("--meta-title={title}"),
         ]);
-        let slaves = [stream.audio.as_deref(), stream.subtitle.as_deref()]
+        let slaves = [variant.audio_url(), stream.subtitle.as_deref()]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -37,7 +37,7 @@ pub fn player_args(player: &str, stream: &Stream, quality: &str, title: &str) ->
             ),
             "--demuxer-lavf-o-append=rw_timeout=20000000".into(),
         ]);
-        if let Some(url) = &stream.audio {
+        if let Some(url) = variant.audio_url() {
             args.push(format!("--audio-file={url}"));
         }
         if let Some(url) = &stream.subtitle {

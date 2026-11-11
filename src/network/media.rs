@@ -451,7 +451,6 @@ mod tests {
             Stream {
                 variants: vec![],
                 referer: String::new(),
-                audio: None,
                 subtitle: None,
             },
             Http::new(&http_url(&url).unwrap()).unwrap(),

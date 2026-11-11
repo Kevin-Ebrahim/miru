@@ -4,12 +4,14 @@
 Run after cargo build: python tests/smoke.py [path/to/miru]
 Everything, including history and downloaded media, lives in a temporary directory.
 """
+import array
 import base64
 import functools
 import hashlib
 import html
 import http.server
 import json
+import math
 import os
 import pathlib
 import signal
@@ -19,6 +21,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+import wave
 
 
 def run(argv, **kwargs):
@@ -28,6 +31,27 @@ def run(argv, **kwargs):
 def snapshot(path):
     metadata = path.stat()
     return hashlib.sha256(path.read_bytes()).digest(), metadata.st_ino, metadata.st_mtime_ns
+
+
+def assert_tone(path, expected):
+    """Distinguish the fixture's two tones after real decoding/muxing/playback."""
+    with wave.open(str(path), "rb") as recording:
+        assert recording.getnchannels() == 1 and recording.getsampwidth() == 2
+        rate = recording.getframerate()
+        samples = array.array("h", recording.readframes(recording.getnframes()))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    samples = samples[rate // 10:rate * 3 // 5]
+    assert len(samples) >= rate // 4, f"Audio recording is incomplete: {path}"
+
+    def energy(frequency):
+        step = 2 * math.pi * frequency / rate
+        real = sum(sample * math.cos(step * index) for index, sample in enumerate(samples))
+        imaginary = sum(sample * math.sin(step * index) for index, sample in enumerate(samples))
+        return real * real + imaginary * imaginary
+
+    other = 880 if expected == 440 else 440
+    assert energy(expected) > 10 * energy(other), f"Wrong audio group in {path}: expected {expected} Hz"
 
 
 def main():
@@ -142,6 +166,44 @@ def main():
             assert all(snapshot(file) == original for file, original in saved.items()), "Existing downloads changed"
             series.update(id="smoke-1", title="Smoke & Test")
             dub_available.clear()
+            # The two video qualities deliberately use different default audio groups.
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                 "testsrc=size=64x48:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-f", "hls", "-hls_playlist_type", "vod", str(root / "video-low.m3u8")])
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                 "sine=frequency=880:sample_rate=44100", "-t", "1", "-c:a", "aac",
+                 "-f", "hls", "-hls_playlist_type", "vod", str(root / "audio-low.m3u8")])
+            master = root / "master.m3u8"
+            original_master = master.read_text()
+            master.write_text(
+                '#EXTM3U\n'
+                '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a1",NAME="First",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"\n'
+                '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a2",NAME="Second",DEFAULT=YES,AUTOSELECT=YES,URI="audio-low.m3u8"\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=128x96,AUDIO="a1"\nvideo.m3u8\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=64x48,AUDIO="a2"\nvideo-low.m3u8\n')
+            resolved = json.loads(run(common + ["--resolve", "Smoke"]).stdout)
+            base = f"http://127.0.0.1:{server.server_port}/"
+            assert resolved["audio"] == base + "audio.m3u8", resolved
+            assert resolved["variants"][0]["audio"] == {"group": "a1", "url": base + "audio.m3u8"}
+            assert resolved["variants"][1]["audio"] == {"group": "a2", "url": base + "audio-low.m3u8"}
+            for quality, tone, size in (("best", 440, (128, 96)), ("worst", 880, (64, 48)),
+                                        ("96p", 440, (128, 96)), ("48p", 880, (64, 48))):
+                destination = root / f"grouped-{quality}"
+                run(common + ["--download", "Smoke", "--quality", quality, "--download-dir", str(destination)])
+                media = next(destination.glob("*.mkv"))
+                info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
+                video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+                assert (video["width"], video["height"]) == size, info
+                decoded = root / f"download-{quality}.wav"
+                run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(media),
+                     "-vn", "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", str(decoded)])
+                assert_tone(decoded, tone)
+                played = root / f"playback-{quality}.wav"
+                run(common + ["--play", "Smoke", "--quality", quality, "--player-arg=--no-config",
+                              "--player-arg=--vo=null", "--player-arg=--ao=pcm", "--player-arg=--audio-format=s16",
+                              "--player-arg=--audio-channels=mono", f"--player-arg=--ao-pcm-file={played}"])
+                assert_tone(played, tone)
+            master.write_text(original_master)
             # Check nested protocol restrictions without breaking encrypted HLS.
             key = root / "encrypt.key"
             key.write_bytes(os.urandom(16))
@@ -202,7 +264,7 @@ def main():
                                 os.kill(int(pid), signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
-            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB, long UTF-8 filenames, distinct episodes/languages and shared prefixes")
+            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, encrypted HLS, protocol restrictions, no-clobber, missing DUB, long UTF-8 filenames, distinct episodes/languages and shared prefixes, per-quality audio identity in downloads and mpv playback")
         finally:
             server.shutdown()
             server.server_close()

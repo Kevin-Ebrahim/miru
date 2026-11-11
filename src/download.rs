@@ -93,6 +93,7 @@ pub async fn download(
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<PathBuf>> {
     let stream = media.stream();
+    let (variant, _) = stream.select(quality);
     let destination = dir.join(format!("{}.mkv", name.filename()?));
     tokio::fs::create_dir_all(dir)
         .await
@@ -123,10 +124,10 @@ pub async fn download(
         "-referer",
         &stream.referer,
         "-i",
-        &stream.select(quality).0.url,
+        &variant.url,
     ]);
     let mut input = 1;
-    let audio_index = stream.audio.as_ref().map(|url| {
+    let audio_index = variant.audio_url().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
         cmd.args([
             "-extension_picky",

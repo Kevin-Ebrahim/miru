@@ -55,8 +55,20 @@ per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
 supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
 to pass additional player options.
 
+`--resolve` keeps the existing top-level `variants`, `referer`, `subtitle`, and
+`audio` fields. The top-level `audio` remains a URL or null and describes the
+best video variant for compatibility. Each variant now also includes `audio`:
+either null for no declared group, or an object with `group` and `url`. A null
+`url` means that rendition's audio is included in the video. Scripts choosing
+a particular quality should use that variant's audio rather than the top-level
+compatibility field.
+
 Downloads are saved as Matroska files with the selected video, separate audio
 when available, and the default or English subtitle track when available.
+Playback and downloads use audio from the selected video's
+[HLS rendition group](https://www.rfc-editor.org/rfc/rfc8216#section-4.3.4.2).
+The group's default rendition is preferred; otherwise its first rendition is
+used. A variant without a separate audio rendition uses its embedded audio.
 Existing files are never overwritten; failed or cancelled downloads do not
 leave a completed file or mark episodes as watched.
 

@@ -113,17 +113,53 @@ impl Mode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Variant {
-    pub height: u32,
-    pub url: String,
+pub struct Audio {
+    pub group: String,
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Variant {
+    pub height: u32,
+    pub url: String,
+    #[serde(default)]
+    pub audio: Option<Audio>,
+}
+
+impl Variant {
+    pub fn audio_url(&self) -> Option<&str> {
+        self.audio.as_ref().and_then(|audio| audio.url.as_deref())
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Stream {
     pub variants: Vec<Variant>,
     pub referer: String,
     pub subtitle: Option<String>,
-    pub audio: Option<String>,
+}
+
+impl Serialize for Stream {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        // Preserve the original export fields; runtime selection owns no global audio.
+        #[derive(Serialize)]
+        struct Export<'a> {
+            variants: &'a [Variant],
+            referer: &'a str,
+            subtitle: &'a Option<String>,
+            audio: Option<&'a str>,
+        }
+        Export {
+            variants: &self.variants,
+            referer: &self.referer,
+            subtitle: &self.subtitle,
+            audio: self.variants.first().and_then(Variant::audio_url),
+        }
+        .serialize(serializer)
+    }
 }
 
 impl Stream {
