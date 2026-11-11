@@ -188,6 +188,11 @@ its own transport settings. This policy is not an operating-system sandbox.
 
 ## Development
 
+GitHub Actions runs the checks below for pull requests to `main`, pushes to
+`main`, and manual runs. The `Build and test` job uses Ubuntu 26.04 with Rust
+stable, FFmpeg 8 and mpv. Select `Build and test` as a required status check in
+the `main` ruleset after its first successful run.
+
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
