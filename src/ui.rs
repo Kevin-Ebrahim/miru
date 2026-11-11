@@ -170,13 +170,7 @@ fn panels(state: &State, area: Rect) -> (Rect, Rect) {
         return (body, Rect::default());
     }
     if area.width >= 72 && body.height >= 12 {
-        let share = if state.screen == Screen::Episodes {
-            65
-        } else if area.width >= 120 {
-            35
-        } else {
-            45
-        };
+        let share = if area.width >= 120 { 35 } else { 45 };
         let [list, preview] = Layout::horizontal([
             Constraint::Percentage(share),
             Constraint::Percentage(100 - share),
@@ -222,11 +216,7 @@ fn preview_regions(state: &State, area: Rect) -> (Rect, Rect) {
     let image_height = if state.details {
         (inner.height / 3).min(8)
     } else {
-        (inner.height * 2 / 5).min(if state.screen == Screen::Episodes {
-            12
-        } else {
-            16
-        })
+        (inner.height * 2 / 5).min(16)
     };
 
     let cover = Rect::new(inner.x, inner.y, inner.width, image_height);
