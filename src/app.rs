@@ -1735,7 +1735,6 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('y') if self.state.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
@@ -2016,6 +2015,26 @@ mod tests {
                 download_dir: dir.join("downloads"),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn lowercase_q_does_not_quit_when_changing_quality() {
+        let dir = tempfile::tempdir().unwrap();
+        for screen in [Screen::Search, Screen::History, Screen::Episodes] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = screen;
+            state.focus = Focus::List;
+            let mut app = test_app(state, dir.path());
+            app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+            assert!(!app.quit);
+            assert_eq!(app.state.quality, "best");
+            app.key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::NONE));
+            assert!(!app.quit);
+            assert_ne!(app.state.quality, "best");
+            app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            assert!(app.quit);
+        }
     }
 
     #[tokio::test]

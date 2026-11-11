@@ -1687,7 +1687,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "App controls",
         &[
             ("? / F1", "Help (F1 also works while typing)"),
-            ("q", "Close Help/Details; otherwise quit"),
+            ("q", "Close Help/Details"),
             ("Ctrl+c", "Quit from anywhere"),
         ],
     ),
