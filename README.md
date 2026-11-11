@@ -51,6 +51,10 @@ Use Tab on Home to select audio or quality, then the arrow keys to change it.
 
 History remembers the last episode launched, not playback position or completion.
 
+Downloads go to your system Downloads folder under `miru/` by default. Set a
+saved download folder in the [configuration file](docs/guide.md#download-location),
+or use `--download-dir PATH` to override it for one run.
+
 ## From the command line
 
 ```sh

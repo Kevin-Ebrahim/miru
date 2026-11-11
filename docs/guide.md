@@ -83,6 +83,8 @@ Use `i` for full details when the terminal is too small for a preview.
 
 | Data | Default location |
 | --- | --- |
+| Download folder preference | `$XDG_CONFIG_HOME/miru/config.json` |
+| Downloaded episodes | `<system Downloads>/miru/` |
 | History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
 | Last player and download errors | `$XDG_STATE_HOME/miru/player.log` and `download.log` |
 | Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
@@ -92,6 +94,38 @@ When XDG variables are unset, state defaults to `~/.local/state` and cache to
 after two seconds instead of blocking exit indefinitely. Pending preference
 changes are coalesced; queued history changes are flushed on shutdown. An invalid
 history file is reported and left intact.
+
+### Download location
+
+The TUI and CLI use the same download folder. Without an override, episodes go
+into a `miru` subfolder of your system Downloads folder. On Linux, Miru respects
+the Downloads location in XDG `user-dirs.dirs`, including renamed or relocated
+folders. If no location is configured, it uses `~/Downloads/miru`. The folder is
+created when a download starts.
+
+To save a custom default, create `~/.config/miru/config.json` (or
+`$XDG_CONFIG_HOME/miru/config.json` if set):
+
+```json
+{
+  "download_dir": "~/Videos/anime"
+}
+```
+
+On macOS, the config file is `~/Library/Application Support/miru/config.json`.
+The saved directory must be an absolute path or start with `~/`, so launching
+Miru from another directory does not change it. Episodes are saved directly in
+the chosen directory. Omit `download_dir`, set it to `null`, or remove the file
+to restore the automatic default. Until a settings page is available, edit this
+file to change the saved preference.
+
+`--download-dir PATH` overrides the location for one run without modifying the
+config file. Relative paths are allowed for this flag; use `--download-dir .`
+to save into the current working directory. Downloads previously saved in your
+launch directory stay where they are. A destination that cannot be created is
+reported as an error; Miru does not switch to another folder.
+
+### Environment overrides
 
 | Environment variable | Command-line equivalent | Purpose |
 | --- | --- | --- |
