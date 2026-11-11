@@ -205,9 +205,10 @@ The active terminal theme supplies its surface, text and focus colours. Narrow
 terminals and `--ascii` use a plain wordmark; settings, history and keyboard hints
 remain available. Larger terminals show a theme-coloured, dotted sakura with drifting
 petals around the search area. Its silhouette follows the approved concept artwork,
-with fine ring-shaped blossoms, a spreading root base, and theme-derived shading.
-Motion settles while typing and resumes after a short
-idle pause. `--no-animation` keeps the tree still; compact terminals omit the scene.
+with clustered halftone blossoms, fine bark texture, a spreading root base, and
+soft lighting drawn from the terminal theme. Motion settles while typing and
+resumes after a short idle pause. `--no-animation` keeps the tree still;
+compact terminals omit the scene.
 The scene uses terminal characters, including plain ASCII and `NO_COLOR` fallbacks,
 and stops animating outside Home. The executable and saved-data
 paths remain `ani-watch` for compatibility.

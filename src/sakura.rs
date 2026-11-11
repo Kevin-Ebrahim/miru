@@ -10,6 +10,10 @@ use std::sync::OnceLock;
 
 const WIDTH: usize = 360;
 const HEIGHT: usize = 200;
+const BRAILLE: [u32; 8] = [1, 8, 2, 16, 4, 32, 64, 128];
+const BAYER: [f32; 16] = [
+    0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.,
+];
 
 pub struct Motion {
     step: u32,
@@ -76,15 +80,32 @@ impl Widget for Sakura<'_> {
             0.0
         };
         let breeze = (time * 0.62).sin() * (0.35 + 0.65 * (time * 0.17).sin().powi(2)) * strength;
+        let atmosphere = matches!(
+            (self.palette.canvas, self.palette.focus),
+            (Color::Rgb(..), Color::Rgb(..))
+        );
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 let clearance = clearance(self.protected, x as f32, y as f32);
                 if clearance == 0.0 {
                     continue;
                 }
+                let scene_x = usize::from(x - area.x) * WIDTH / usize::from(area.width);
+                let scene_y = usize::from(y - area.y) * HEIGHT / usize::from(area.height);
+                if atmosphere
+                    && let Some(background) = tint(
+                        self.palette,
+                        self.palette.focus,
+                        f32::from(tree[scene_y * WIDTH + scene_x].haze) / 255.0 * clearance,
+                    )
+                    .fg
+                {
+                    buf[(x, y)].set_bg(background);
+                }
                 let mut shade = 0.0_f32;
                 let mut blossoms = 0;
                 let mut count = 0;
+                let mut mask = 0;
                 for dy in 0..4 {
                     for dx in 0..2 {
                         let sy = (((y - area.y) as f32 + dy as f32 / 4.0) / area.height as f32
@@ -104,6 +125,7 @@ impl Widget for Sakura<'_> {
                         shade += sample.shade as f32;
                         blossoms += usize::from(sample.blossom);
                         count += 1;
+                        mask |= BRAILLE[dy * 2 + dx];
                     }
                 }
                 if count == 0 {
@@ -121,9 +143,16 @@ impl Widget for Sakura<'_> {
                 let cell = &mut buf[(x, y)];
                 if self.ascii {
                     cell.set_char(b".,:+*"[(count - 1) * 5 / 8] as char);
+                } else if blossoms <= count / 2 {
+                    cell.set_char(char::from_u32(0x2800 + mask).unwrap());
                 } else if count >= 5 {
-                    cell.set_symbol(if noise(x as usize, y as usize, 91) < 0.2 {
-                        "•\u{030a}\u{0325}"
+                    // Halftone coverage follows the lighting, instead of repeating one stamp.
+                    let tone = shade / 255.0
+                        + (BAYER[(scene_y & 3) * 4 + (scene_x & 3)] / 16.0 - 0.47) * 0.16;
+                    cell.set_symbol(if tone > 0.72 {
+                        "•\u{0307}\u{0323}"
+                    } else if tone > 0.48 {
+                        "•\u{0323}"
                     } else {
                         "∘\u{030a}\u{0325}"
                     });
@@ -144,9 +173,6 @@ impl Widget for Sakura<'_> {
         }
         // Drift, sway, tumble and halftone dots adapted from Kyoto Dusk.
         // See assets/kyoto-dusk/LICENSE. Motion uses its 200 x 100 scene coordinates.
-        const BAYER: [f32; 16] = [
-            0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.,
-        ];
         const COVER: [f32; 4] = [0., 0.3, 0.6, 1.];
         for i in 0..50 {
             let phase = noise(i, 107, 0) * std::f32::consts::TAU;
@@ -224,6 +250,7 @@ fn tint(palette: Palette, color: Color, amount: f32) -> Style {
 struct Sample {
     shade: u8,
     blossom: bool,
+    haze: u8,
 }
 
 fn noise(x: usize, y: usize, seed: usize) -> f32 {
@@ -233,6 +260,27 @@ fn noise(x: usize, y: usize, seed: usize) -> f32 {
         .wrapping_add((seed as u32).wrapping_mul(127_412_617));
     n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
     (n ^ (n >> 16)) as f32 / u32::MAX as f32
+}
+
+// Smooth, layered noise from Kyoto Dusk's clump and lighting treatment.
+fn cloud_noise(x: f32, y: f32) -> f32 {
+    let mut sum = 0.0;
+    let mut amplitude = 0.5;
+    let mut frequency = 1.0;
+    for _ in 0..3 {
+        let (x, y) = (x * frequency, y * frequency);
+        let (ix, iy) = (x.floor() as usize, y.floor() as usize);
+        let (fx, fy) = (x.fract(), y.fract());
+        let (u, v) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+        let a = noise(ix, iy, 0);
+        let b = noise(ix + 1, iy, 0);
+        let c = noise(ix, iy + 1, 0);
+        let d = noise(ix + 1, iy + 1, 0);
+        sum += amplitude * (a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v);
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    sum / 0.875
 }
 
 fn tree() -> &'static [Sample] {
@@ -246,6 +294,10 @@ fn tree() -> &'static [Sample] {
             for x in 0..WIDTH {
                 let u = x as f32 / WIDTH as f32;
                 let v = y as f32 / HEIGHT as f32;
+                let veil = cloud_noise(u * 3.0 + 7.0, v * 4.0 + 2.0);
+                let glow = (-((u - 0.10).powi(2) * 22.0 + (v - 0.48).powi(2) * 8.0)).exp();
+                let haze = ((0.012 * veil + 0.035 * glow) * 255.0) as u8;
+                map[y * WIDTH + x].haze = haze;
                 // The source is the approved composition. Read only its tree;
                 // controls, background and static petals are never used as artwork.
                 let tree_region = u < 0.17
@@ -268,10 +320,19 @@ fn tree() -> &'static [Sample] {
                 // Extract ink coverage, not the source's green hue. Every emitted
                 // cell is recoloured using the live terminal palette.
                 if peak >= 64 {
-                    let shade = ((peak as f32 - 45.0) / 150.0 * 255.0).clamp(0.0, 255.0) as u8;
+                    let blossom = v < 0.34 && peak > 95;
+                    let clump = cloud_noise(u * 22.0 + 2.0, v * 27.0 + 5.0);
+                    let light = if blossom {
+                        0.65 + 0.85 * clump + 0.12 * glow - 0.16 * (v / 0.34)
+                    } else {
+                        0.95 + 0.18 * glow
+                    };
+                    let shade =
+                        ((peak as f32 - 45.0) / 150.0 * light * 255.0).clamp(0.0, 255.0) as u8;
                     map[y * WIDTH + x] = Sample {
                         shade,
-                        blossom: v < 0.34 && peak > 95,
+                        blossom,
+                        haze,
                     };
                 }
             }
@@ -315,20 +376,31 @@ mod tests {
         for _ in 0..130 {
             motion.advance();
         }
-        for ascii in [false, true] {
-            let buf = draw(
-                area,
-                protected,
-                &motion,
-                true,
-                ascii,
-                Palette::terminal(true),
-            );
+        let themed = Palette::themed(
+            &crate::theme::Theme::parse(
+                "background = '#172b23'\nforeground = '#e1eee7'\naccent = '#8fbaa7'",
+            )
+            .unwrap(),
+            false,
+        );
+        for (ascii, palette) in [
+            (false, Palette::terminal(true)),
+            (true, Palette::terminal(true)),
+            (false, themed),
+            (true, themed),
+        ] {
+            let buf = draw(area, protected, &motion, true, ascii, palette);
             let mut painted = 0;
             for pos in buf.area.positions() {
                 let cell = &buf[pos];
                 if protected.contains(pos) || !area.contains(pos) {
                     assert_eq!(cell.symbol(), "@");
+                    assert_eq!(
+                        cell.bg,
+                        Color::Reset,
+                        "atmosphere must stay outside controls"
+                    );
+                    assert_eq!(cell.fg, Color::Reset);
                 }
                 if cell.symbol() != "@" {
                     painted += 1;
@@ -336,8 +408,10 @@ mod tests {
                 if ascii {
                     assert!(cell.symbol().is_ascii());
                 }
-                assert_eq!(cell.bg, Color::Reset);
-                assert_eq!(cell.fg, Color::Reset);
+                if palette.canvas == Color::Reset {
+                    assert_eq!(cell.bg, Color::Reset);
+                    assert_eq!(cell.fg, Color::Reset);
+                }
             }
             assert!(
                 painted > 100,
