@@ -1,6 +1,7 @@
 mod app;
 mod artwork;
 mod download;
+mod input;
 mod jobs;
 mod model;
 mod palette;
@@ -8,8 +9,10 @@ mod persistence;
 mod player;
 mod provider;
 mod sakura;
+mod state;
 mod theme;
 mod ui;
+mod view;
 
 use anyhow::{Context, Result, ensure};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
@@ -271,7 +274,7 @@ async fn main() -> Result<()> {
         Images::Iterm2 => picker.set_protocol_type(ProtocolType::Iterm2),
         _ => {}
     }
-    let mut state = app::State::new(
+    let mut state = state::State::new(
         query,
         mode,
         quality,
@@ -280,10 +283,10 @@ async fn main() -> Result<()> {
         !cli.no_animation,
     );
     state.colorless = colorless;
-    state.history = library.entries;
+    state.history.entries = library.entries;
     if cli.resume {
-        state.screen = app::Screen::History;
-        state.focus = app::Focus::List;
+        state.screen = state::Screen::History;
+        state.focus = state::Focus::List;
         state.status = "Enter opens episodes with the next episode selected.".into();
     }
     let options = app::Options {

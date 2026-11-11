@@ -1,7 +1,8 @@
 use crate::{
-    app::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis, TextView},
     artwork::Artwork,
     palette::Palette,
+    state::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis},
+    view::TextView,
 };
 use ratatui::{
     Frame,
@@ -64,7 +65,7 @@ fn symbol<'a>(state: &State, unicode: &'a str, ascii: &'a str) -> &'a str {
 }
 
 fn episode_refresh_error(state: &State) -> Option<&str> {
-    if state.screen == Screen::Episodes && !state.details && !state.episodes.is_empty() {
+    if state.screen == Screen::Episodes && !state.details && !state.episodes.items.is_empty() {
         state.request_error.as_deref()
     } else {
         None
@@ -283,8 +284,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         area,
     );
     if area.width < 32 || area.height < 12 {
-        state.text_view = None;
-        state.text_selection = None;
+        state.view.text_view = None;
+        state.view.text_selection = None;
         frame.render_widget(
             Paragraph::new(vec![
                 Line::raw("Miru"),
@@ -297,8 +298,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         return;
     }
     if state.screen == Screen::Home && !state.details {
-        state.text_view = None;
-        state.text_selection = None;
+        state.view.text_view = None;
+        state.view.text_selection = None;
         render_home(frame, state, area);
         if state.help {
             render_help(frame, state);
@@ -318,8 +319,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         if preview.width > 0 {
             render_preview(frame, state, art, preview);
         } else {
-            state.text_view = None;
-            state.text_selection = None;
+            state.view.text_view = None;
+            state.view.text_selection = None;
         }
     }
     if status.height > 0 {
@@ -356,8 +357,9 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let hints = key_hints(
         state,
         area.width as usize,
-        (state.details || state.text_view.is_some()).then_some(
-            if state.text_selection.is_some() && (state.details || state.focus == Focus::List) {
+        (state.details || state.view.text_view.is_some()).then_some(
+            if state.view.text_selection.is_some() && (state.details || state.focus == Focus::List)
+            {
                 "y Copy"
             } else {
                 "Drag Select"
@@ -437,7 +439,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         u16::from(space.height >= 10)
     };
-    let history = !state.history.is_empty();
+    let history = !state.history.entries.is_empty();
     let hint_height = 1;
     let gap = u16::from(space.height >= 16);
     let box_height = if space.height >= 12 { 5 } else { 4 };
@@ -524,14 +526,14 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         .style(Style::default().bg(palette(state).surface));
     let inner = block.inner(field);
     frame.render_widget(block, field);
-    let prefix = if state.exact { "[EXACT] " } else { "" };
+    let prefix = if state.search.exact { "[EXACT] " } else { "" };
     let input_width = inner.width.saturating_sub(prefix.len() as u16);
     let (query, cursor) = input_window(
-        &state.query.text,
-        state.query.cursor,
+        &state.search.query.text,
+        state.search.query.cursor,
         usize::from(input_width.saturating_sub(1)),
     );
-    let input = if state.query.text.is_empty() {
+    let input = if state.search.query.text.is_empty() {
         Line::from(vec![
             Span::styled(prefix, accent(state)),
             Span::styled("Search anime...", muted(state)),
@@ -707,7 +709,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         }
         if state.screen == Screen::Episodes {
             nav.push(Span::styled("Episodes", accent(state).underlined()));
-            if let Some(anime) = &state.anime {
+            if let Some(anime) = &state.episodes.anime {
                 let separator = symbol(state, " · ", " / ");
                 let available = usize::from(area.width)
                     .saturating_sub(settings.width() + " Episodes".width() + separator.width() + 2);
@@ -734,7 +736,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     frame.render_widget(Paragraph::new(navigation), left);
     frame.render_widget(Paragraph::new(settings), right);
     if inline_search(state, area.width) {
-        let label = if state.exact { "[EXACT] " } else { "" };
+        let label = if state.search.exact { "[EXACT] " } else { "" };
         let field = Rect::new(middle.x, middle.y, middle.width.saturating_sub(2), 1);
         let content = Rect::new(
             field.x + label.len() as u16,
@@ -744,8 +746,8 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
         );
         frame.render_widget(Paragraph::new(label).style(accent(state)), field);
         let (text, cursor) = input_window(
-            &state.query.text,
-            state.query.cursor,
+            &state.search.query.text,
+            state.search.query.cursor,
             content.width.saturating_sub(1) as usize,
         );
         frame.render_widget(
@@ -767,7 +769,8 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     let block = panel(
         format!(
             "{title}{}",
-            if state.exact && state.focus != Focus::Range && state.screen != Screen::History {
+            if state.search.exact && state.focus != Focus::Range && state.screen != Screen::History
+            {
                 "[EXACT] "
             } else {
                 ""
@@ -778,11 +781,11 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     );
     let inner = block.inner(area);
     let input = if state.focus == Focus::Range {
-        &state.range
+        &state.episodes.range
     } else if state.screen == Screen::History {
-        &state.history_query
+        &state.history.query
     } else {
-        &state.query
+        &state.search.query
     };
     let (text, cursor) = input_window(
         &input.text,
@@ -827,14 +830,14 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         vec!["Enter Mark range".into(), "Esc Cancel".into()]
     } else if state.request_blocks_list() {
         vec!["F5 Retry".into(), "/ Search".into(), "Esc Back".into()]
-    } else if state.screen == Screen::Episodes && state.episodes.is_empty() {
+    } else if state.screen == Screen::Episodes && state.episodes.items.is_empty() {
         let mut hints = vec!["Esc Back".into(), "i Details".into()];
         if !state.loading {
             hints.push("F5 Retry".into());
         }
         hints
     } else if state.screen == Screen::Episodes {
-        let count = state.marked.len();
+        let count = state.episodes.marked.len();
         let suffix = if count > 0 {
             format!(" {count}")
         } else {
@@ -866,7 +869,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 .into(),
             ];
         }
-        if state.screen == Screen::History && !state.history.is_empty() {
+        if state.screen == Screen::History && !state.history.entries.is_empty() {
             hints.push("Delete Remove".into());
         }
         hints
@@ -974,7 +977,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
         );
     }
     if compact && !state.details && state.focus == Focus::List && !state.request_blocks_list() {
-        if state.screen == Screen::Episodes && !state.episodes.is_empty() {
+        if state.screen == Screen::Episodes && !state.episodes.items.is_empty() {
             global.retain(|hint| hint != "F1 Help");
             return vec![
                 fit_hints(&["Space Mark".into(), ": Range".into()], width, state),
@@ -1036,18 +1039,21 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     let visible = state.visible();
     let (label, count, selected) = match state.screen {
         Screen::Home => return,
-        Screen::Search => ("Results", visible.len(), state.selected),
+        Screen::Search => ("Results", visible.len(), state.search.selected),
         Screen::History => (
             "History",
             state.visible_history().len(),
-            state.history_selected,
+            state.history.selected,
         ),
-        Screen::Episodes => ("List", state.episodes.len(), state.episode_selected),
+        Screen::Episodes => ("List", state.episodes.items.len(), state.episodes.selected),
     };
-    let mut title = if state.marked.is_empty() || state.screen != Screen::Episodes {
+    let mut title = if state.episodes.marked.is_empty() || state.screen != Screen::Episodes {
         format!(" {label} / {count} ")
     } else {
-        format!(" {label} / {count} / {} marked ", state.marked.len())
+        format!(
+            " {label} / {count} / {} marked ",
+            state.episodes.marked.len()
+        )
     };
     if state.loading && count > 0 {
         title.push_str(&format!(
@@ -1094,19 +1100,19 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 ("Searching...", "")
             }
         } else if state.screen == Screen::History {
-            if state.history.is_empty() {
+            if state.history.entries.is_empty() {
                 ("No history", "")
             } else {
                 ("No matches", "")
             }
         } else if state.screen == Screen::Episodes {
             ("No episodes", "")
-        } else if state.query.text.trim().is_empty() {
+        } else if state.search.query.text.trim().is_empty() {
             ("Enter a title", "")
         } else {
             (
                 "No matches",
-                if state.exact {
+                if state.search.exact {
                     "Alt+e Turn off exact match"
                 } else {
                     "Try another title"
@@ -1128,7 +1134,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .visible_history()
             .into_iter()
             .map(|i| {
-                let entry = &state.history[i];
+                let entry = &state.history.entries[i];
                 series_item(
                     &entry.anime.title,
                     &format!(
@@ -1144,12 +1150,13 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         Screen::Search => visible
             .iter()
             .map(|i| {
-                let anime = &state.results[*i];
+                let anime = &state.search.results[*i];
                 series_item(&anime.title, &anime.info, item_width, state)
             })
             .collect(),
         Screen::Episodes => state
             .episodes
+            .items
             .iter()
             .enumerate()
             .map(|(i, ep)| {
@@ -1159,7 +1166,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                     }) && state.current_episode_index() == Some(i);
                 let indicator = if playing {
                     symbol(state, "▶", ">")
-                } else if state.marked.contains(&i) {
+                } else if state.episodes.marked.contains(&i) {
                     symbol(state, "✓", "*")
                 } else {
                     " "
@@ -1181,9 +1188,9 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         })
         .highlight_style(palette(state).selection);
     let mut selection = ListState::default().with_selected(Some(selected));
-    *selection.offset_mut() = state.list_offsets[state.screen as usize];
+    *selection.offset_mut() = state.view.list_offsets[state.screen as usize];
     frame.render_stateful_widget(list, inner, &mut selection);
-    state.list_offsets[state.screen as usize] = selection.offset();
+    state.view.list_offsets[state.screen as usize] = selection.offset();
 }
 
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
@@ -1202,8 +1209,8 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     );
     let (cover, metadata) = preview_regions(state, area);
     let Some(anime) = state.selected_anime() else {
-        state.text_view = None;
-        state.text_selection = None;
+        state.view.text_view = None;
+        state.view.text_selection = None;
         empty_message(
             frame,
             state,
@@ -1255,6 +1262,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         Screen::History => state.selected_history(),
         _ => state
             .history
+            .entries
             .iter()
             .find(|e| e.anime.id == anime.id && e.mode == state.mode),
     };
@@ -1272,7 +1280,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     }
     if state.details
         && state.screen == Screen::Episodes
-        && let Some(ep) = state.episodes.get(state.episode_selected)
+        && let Some(ep) = state.episodes.items.get(state.episodes.selected)
     {
         if !compact_details {
             push("", Style::default());
@@ -1326,35 +1334,36 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     }
     let text_lines: Vec<_> = details.iter().map(ToString::to_string).collect();
     if state
+        .view
         .text_view
         .as_ref()
         .is_none_or(|view| view.area.width != metadata.width || view.lines != text_lines)
     {
-        state.text_selection = None;
-        state.preview_scroll = 0;
+        state.view.text_selection = None;
+        state.view.preview_scroll = 0;
     }
     let max_scroll = details
         .len()
         .saturating_sub(metadata.height as usize)
         .min(u16::MAX as usize) as u16;
     let scroll = if state.details {
-        &mut state.details_scroll
+        &mut state.view.details_scroll
     } else {
-        &mut state.preview_scroll
+        &mut state.view.preview_scroll
     };
     *scroll = (*scroll).min(max_scroll);
     let scroll = *scroll;
     let content_length = details.len();
     let offset = usize::from(scroll).min(text_lines.len());
     let height = usize::from(metadata.height).min(text_lines.len() - offset);
-    state.text_view = (height > 0).then(|| TextView {
+    state.view.text_view = (height > 0).then(|| TextView {
         area: Rect::new(metadata.x, metadata.y, metadata.width, height as u16),
         offset,
         lines: text_lines,
     });
     frame.render_widget(Paragraph::new(details).scroll((scroll, 0)), metadata);
     {
-        if let (Some(view), Some(selection)) = (&state.text_view, state.text_selection) {
+        if let (Some(view), Some(selection)) = (&state.view.text_view, state.view.text_selection) {
             let (start, end) = selection.range();
             for row in 0..view.area.height {
                 let line = view.offset + usize::from(row);
@@ -1834,13 +1843,16 @@ fn render_help(frame: &mut Frame, state: &mut State) {
     }
     let lines = help_lines(state, usize::from(body.width));
     let content_length = lines.len();
-    state.help_scroll = state.help_scroll.min(
+    state.view.help_scroll = state.view.help_scroll.min(
         content_length
             .saturating_sub(usize::from(body.height))
             .min(usize::from(u16::MAX)) as u16,
     );
-    frame.render_widget(Paragraph::new(lines).scroll((state.help_scroll, 0)), body);
-    render_scrollbar(frame, state, body, content_length, state.help_scroll);
+    frame.render_widget(
+        Paragraph::new(lines).scroll((state.view.help_scroll, 0)),
+        body,
+    );
+    render_scrollbar(frame, state, body, content_length, state.view.help_scroll);
     let hints: &[(&str, &str)] = if state.help_filtering {
         if footer.width >= 55 {
             &[
@@ -1913,8 +1925,8 @@ pub fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Activity;
     use crate::model::{Anime, Episode, Mode};
+    use crate::state::Activity;
     use ratatui::{
         Terminal,
         backend::{Backend, TestBackend},
@@ -1974,20 +1986,20 @@ mod tests {
         );
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
-        state.anime = Some(Anime {
+        state.episodes.anime = Some(Anime {
             id: "series".into(),
             title: "Cowboy Bebop".into(),
             ..Default::default()
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "1".into(),
             number: "1".into(),
             title: "Asteroid Blues".into(),
         }];
-        state.marked.insert(0);
+        state.episodes.marked.insert(0);
         state.activity = Some(Activity {
-            anime: state.anime.clone().unwrap(),
-            episodes: state.episodes.clone(),
+            anime: state.episodes.anime.clone().unwrap(),
+            episodes: state.episodes.items.clone(),
             index: 0,
             remaining: Default::default(),
             mode: Mode::Sub,
@@ -2039,7 +2051,7 @@ mod tests {
                 );
                 state.screen = screen;
                 state.focus = Focus::List;
-                state.anime = Some(Anime {
+                state.episodes.anime = Some(Anime {
                     title: "A long series title 日本語".into(),
                     ..Default::default()
                 });
@@ -2075,7 +2087,7 @@ mod tests {
                         false,
                     );
                     state.focus = focus;
-                    state.history.push(crate::persistence::Entry {
+                    state.history.entries.push(crate::persistence::Entry {
                         anime: Anime {
                             title: "History stays in History".into(),
                             ..Default::default()
@@ -2097,13 +2109,13 @@ mod tests {
                     assert!(!text.contains("History stays in History"));
                     assert!(!text.contains("Ctrl+c Quit"));
                     assert!(!text.contains("/ Search  s Audio  Q Quality"));
-                    assert!(state.text_view.is_none());
+                    assert!(state.view.text_view.is_none());
                     assert_eq!(
                         cover_area(&state, Rect::new(0, 0, width, height)),
                         Rect::default()
                     );
-                    state.query.set("日本語 e\u{301} query ".repeat(20));
-                    state.exact = true;
+                    state.search.query.set("日本語 e\u{301} query ".repeat(20));
+                    state.search.exact = true;
                     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                     let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
                     terminal.draw(|f| render(f, &mut state, &art)).unwrap();
@@ -2187,7 +2199,7 @@ mod tests {
         );
         state.accept_search(0, Ok(vec![anime.clone()]));
         state.focus = Focus::List;
-        state.history.push(crate::persistence::Entry {
+        state.history.entries.push(crate::persistence::Entry {
             anime,
             episode: "1".into(),
             mode: Mode::Sub,
@@ -2200,7 +2212,7 @@ mod tests {
                 let area = Rect::new(0, 0, w, h);
                 let (list, preview) = panels(&state, area);
                 let cover = cover_area(&state, area);
-                let reading = state.text_view.as_ref().unwrap().area;
+                let reading = state.view.text_view.as_ref().unwrap().area;
                 assert!(preview.width > list.width);
                 assert!(cover.width <= 20);
                 assert_eq!(cover.y, reading.y);
@@ -2221,20 +2233,20 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
-        state.anime = Some(Anime {
+        state.episodes.anime = Some(Anime {
             title: "A series".into(),
             ..Default::default()
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
         }];
         for (w, h) in [(32, 12), (40, 18), (52, 12), (71, 24), (72, 12), (80, 24)] {
             for marked in [false, true] {
-                state.marked.clear();
+                state.episodes.marked.clear();
                 if marked {
-                    state.marked.insert(0);
+                    state.episodes.marked.insert(0);
                 }
                 let text = render_text(&mut state, w, h);
                 for label in [
@@ -2249,8 +2261,8 @@ mod tests {
             }
         }
         state.screen = Screen::Search;
-        state.query.set("series".into());
-        state.accept_search(0, Ok(vec![state.anime.clone().unwrap()]));
+        state.search.query.set("series".into());
+        state.accept_search(0, Ok(vec![state.episodes.anime.clone().unwrap()]));
         let text = render_text(&mut state, 32, 12);
         for label in ["i Details", "/ Edit", "F1 Help"] {
             assert!(text.contains(label), "{text}");
@@ -2308,7 +2320,7 @@ mod tests {
                     }
                 }
             }
-            state.history.push(crate::persistence::Entry {
+            state.history.entries.push(crate::persistence::Entry {
                 anime: state.activity.as_ref().unwrap().anime.clone(),
                 episode: "1".into(),
                 mode: Mode::Sub,
@@ -2354,7 +2366,7 @@ mod tests {
                 let text = render_text(&mut state, w, h);
                 assert!(text.contains("720p (1080p unavailable)"), "{text}");
                 state.help = true;
-                state.help_scroll = u16::MAX;
+                state.view.help_scroll = u16::MAX;
                 let text = render_text(&mut state, w, h);
                 assert!(!text.contains("1080p unavailable"), "{text}");
                 assert!(!text.contains("Saved /tmp/episode.mkv"), "{text}");
@@ -2398,7 +2410,7 @@ mod tests {
                 ("playback quality", "Change quality"),
             ] {
                 state.help_query.set(query.into());
-                state.help_scroll = u16::MAX;
+                state.view.help_scroll = u16::MAX;
                 let text = render_text(&mut state, width, height);
                 assert!(text.contains(expected), "{text}");
                 assert!(
@@ -2406,7 +2418,7 @@ mod tests {
                     "{text}"
                 );
                 assert!(!text.contains("Terminal options"));
-                assert_eq!(state.help_scroll, 0);
+                assert_eq!(state.view.help_scroll, 0);
             }
             state.help_query.set("no-such-shortcut".into());
             assert!(render_text(&mut state, width, height).contains("No matching shortcuts"));
@@ -2417,10 +2429,10 @@ mod tests {
     fn help_reaches_last_shortcuts_and_clamps_after_resize() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.help = true;
-        state.help_scroll = u16::MAX;
+        state.view.help_scroll = u16::MAX;
         let text = render_text(&mut state, 32, 12);
         assert!(text.contains("Quit from anywhere"), "{text}");
-        assert!(state.help_scroll > 40 && state.help_scroll < u16::MAX);
+        assert!(state.view.help_scroll > 40 && state.view.help_scroll < u16::MAX);
         let text = render_text(&mut state, 120, 80);
         assert!(text.contains("App controls"));
         for removed in [
@@ -2433,7 +2445,7 @@ mod tests {
         ] {
             assert!(!text.contains(removed), "{text}");
         }
-        assert_eq!(state.help_scroll, 0);
+        assert_eq!(state.view.help_scroll, 0);
     }
 
     #[test]
@@ -2467,18 +2479,18 @@ mod tests {
             );
             state.focus = Focus::List;
             for width in [117, 80, 52, 32] {
-                state.selected = 0;
+                state.search.selected = 0;
                 let text = render_text(&mut state, width, 28);
                 assert!(text.contains("Season 2"), "{width}: {text}");
                 assert!(text.contains("TV / SUB 12"));
-                state.results[1].title = format!(
+                state.search.results[1].title = format!(
                     "{} Season 2",
                     "A very long 日本語 title e\u{301} ".repeat(15)
                 );
                 let text = render_text(&mut state, width, 28);
                 assert!(text.contains("Season 2"), "{width}: {text}");
                 assert!(text.contains(if ascii { "..." } else { "…" }));
-                state.results[1].title = format!("{title} Season 2");
+                state.search.results[1].title = format!("{title} Season 2");
             }
         }
     }
@@ -2489,20 +2501,20 @@ mod tests {
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
         state.focus = Focus::List;
-        state.anime = Some(Anime {
+        state.episodes.anime = Some(Anime {
             id: "series".into(),
             title: "Series".into(),
             description: "A synopsis.".into(),
             ..Default::default()
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "1".into(),
             number: "1".into(),
             title: "Opening".into(),
         }];
         state.activity = Some(Activity {
-            anime: state.anime.clone().unwrap(),
-            episodes: state.episodes.clone(),
+            anime: state.episodes.anime.clone().unwrap(),
+            episodes: state.episodes.items.clone(),
             index: 0,
             remaining: Default::default(),
             mode: Mode::Sub,
@@ -2513,7 +2525,7 @@ mod tests {
             message: String::new(),
         });
         for width in [120, 133, 160] {
-            state.text_view = None;
+            state.view.text_view = None;
             let text = render_text(&mut state, width, 40);
             for hint in ["F1 Help", "d Download", "Space Mark", ": Range"] {
                 assert!(text.contains(hint), "{width} missing {hint}: {text}");
@@ -2536,7 +2548,7 @@ mod tests {
             false,
         );
         state.focus = Focus::Search;
-        state.exact = true;
+        state.search.exact = true;
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
         terminal.draw(|f| render(f, &mut state, &art)).unwrap();
@@ -2600,14 +2612,14 @@ mod tests {
             description: "Opening sentence.".into(),
             ..Default::default()
         };
-        state.anime = Some(anime.clone());
-        state.history.push(crate::persistence::Entry {
+        state.episodes.anime = Some(anime.clone());
+        state.history.entries.push(crate::persistence::Entry {
             anime,
             episode: "5".into(),
             mode: Mode::Sub,
             watched_at: 1,
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "6".into(),
             number: "6".into(),
             title: "Arrival".into(),
@@ -2621,16 +2633,16 @@ mod tests {
         ] {
             assert!(text.contains(content), "{text}");
         }
-        let view = state.text_view.as_ref().unwrap();
+        let view = state.view.text_view.as_ref().unwrap();
         let line = view
             .lines
             .iter()
             .position(|line| line.contains("Episode 6 / Arrival"))
             .unwrap();
         assert_eq!(
-            view.selected_text(crate::app::TextSelection {
-                anchor: crate::app::TextPosition { line, column: 0 },
-                end: crate::app::TextPosition { line, column: 19 },
+            view.selected_text(crate::view::TextSelection {
+                anchor: crate::view::TextPosition { line, column: 0 },
+                end: crate::view::TextPosition { line, column: 19 },
                 dragging: false,
             }),
             "Episode 6 / Arrival"
@@ -2662,16 +2674,16 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
-        state.anime = Some(Anime {
+        state.episodes.anime = Some(Anime {
             title: "Series".into(),
             ..Default::default()
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
         }];
-        state.marked.insert(0);
+        state.episodes.marked.insert(0);
         state.request_error = Some("Service unavailable".into());
         for (w, h) in [(80, 24), (40, 18), (32, 12)] {
             let text = render_text(&mut state, w, h);
@@ -2680,7 +2692,7 @@ mod tests {
             assert!(text.contains("Space Mark"));
             assert!(!text.contains("Episodes unavailable"));
         }
-        state.episodes.clear();
+        state.episodes.items.clear();
         let text = render_text(&mut state, 80, 24);
         assert!(text.contains("Episodes unavailable"));
         assert!(!text.contains("Enter Play"));
@@ -2691,12 +2703,12 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
-        state.anime = Some(Anime {
+        state.episodes.anime = Some(Anime {
             id: "series".into(),
             title: "A series".into(),
             ..Default::default()
         });
-        state.episodes = vec![Episode {
+        state.episodes.items = vec![Episode {
             id: "1".into(),
             number: "1".into(),
             title: "The beginning".into(),
@@ -2705,7 +2717,7 @@ mod tests {
         state.status = "Range must go forward".into();
         state.error = true;
         state.focus = Focus::Range;
-        state.range.set("3-1".into());
+        state.episodes.range.set("3-1".into());
         for (w, h) in [(80, 24), (32, 12)] {
             let text = render_text(&mut state, w, h);
             assert!(text.contains("Range must go forward"), "{text}");
@@ -2719,7 +2731,7 @@ mod tests {
         let text = render_text(&mut state, 80, 24);
         assert!(!text.contains("Refresh failed"));
         state.help = true;
-        state.help_scroll = u16::MAX;
+        state.view.help_scroll = u16::MAX;
         let text = render_text(&mut state, 120, 60);
         assert!(!text.contains("Persistent provider failure"), "{text}");
     }
@@ -2729,7 +2741,7 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::History;
         state.focus = Focus::List;
-        state.history.push(crate::persistence::Entry {
+        state.history.entries.push(crate::persistence::Entry {
             anime: Anime {
                 id: "1".into(),
                 title: "Frieren".into(),
@@ -2746,19 +2758,19 @@ mod tests {
         assert!(!text.contains("Your next story starts here"));
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
-        state.episodes = (1..=100)
+        state.episodes.items = (1..=100)
             .map(|n| Episode {
                 id: n.to_string(),
                 number: n.to_string(),
                 title: format!("Title {n}"),
             })
             .collect();
-        state.episode_selected = 60;
+        state.episodes.selected = 60;
         render_text(&mut state, 80, 24);
-        let offset = state.list_offsets[Screen::Episodes as usize];
-        state.episode_selected = 59;
+        let offset = state.view.list_offsets[Screen::Episodes as usize];
+        state.episodes.selected = 59;
         render_text(&mut state, 80, 24);
-        assert_eq!(state.list_offsets[Screen::Episodes as usize], offset);
+        assert_eq!(state.view.list_offsets[Screen::Episodes as usize], offset);
     }
 
     #[test]
@@ -2794,7 +2806,7 @@ mod tests {
         );
         state.synopses.put("series-1".into(), Synopsis::Ready(full));
         for (w, h) in [(180, 45), (80, 24), (60, 40), (40, 18), (32, 12)] {
-            state.details_scroll = 0;
+            state.view.details_scroll = 0;
             let text = render_text(&mut state, w, h);
             assert!(text.contains("Synopsis"), "{w}x{h}");
             assert!(!text.contains("truncated snippet"));
@@ -2808,10 +2820,10 @@ mod tests {
                     .nth(reading.right() as usize),
                 Some('┃')
             );
-            state.details_scroll = u16::MAX;
+            state.view.details_scroll = u16::MAX;
             let end = render_text(&mut state, w, h);
             assert!(end.contains("THE_END"), "{w}x{h}: {end}");
-            assert!(state.details_scroll < u16::MAX);
+            assert!(state.view.details_scroll < u16::MAX);
             assert_eq!(
                 end.lines()
                     .nth(reading.bottom() as usize - 1)
@@ -2834,7 +2846,7 @@ mod tests {
                 .nth(reading.right() as usize),
             Some(' ')
         );
-        assert_eq!(state.details_scroll, 0);
+        assert_eq!(state.view.details_scroll, 0);
     }
 
     #[test]
@@ -2860,7 +2872,7 @@ mod tests {
         );
         state.details = true;
         render_text(&mut state, 120, 40);
-        let view = state.text_view.as_ref().unwrap();
+        let view = state.view.text_view.as_ref().unwrap();
         let text = view.lines.join("\n");
         assert!(text.contains("The first paragraph.") && text.contains("[Written by Someone]"));
         assert!(
@@ -2868,31 +2880,32 @@ mod tests {
                 && text.contains("A series title")
                 && text.contains("TV / SUB")
         );
-        state.text_selection = Some(crate::app::TextSelection {
-            anchor: crate::app::TextPosition { line: 0, column: 0 },
-            end: crate::app::TextPosition { line: 0, column: 3 },
+        state.view.text_selection = Some(crate::view::TextSelection {
+            anchor: crate::view::TextPosition { line: 0, column: 0 },
+            end: crate::view::TextPosition { line: 0, column: 3 },
             dragging: false,
         });
         render_text(&mut state, 120, 40);
-        assert!(state.text_selection.is_some());
+        assert!(state.view.text_selection.is_some());
         assert_eq!(
             state
+                .view
                 .text_view
                 .as_ref()
                 .unwrap()
-                .selected_text(state.text_selection.unwrap()),
+                .selected_text(state.view.text_selection.unwrap()),
             "A s"
         );
         render_text(&mut state, 32, 12);
-        assert!(state.text_selection.is_none());
+        assert!(state.view.text_selection.is_none());
         state.details = false;
         render_text(&mut state, 120, 40);
-        assert!(state.text_view.is_some());
+        assert!(state.view.text_view.is_some());
         render_text(&mut state, 20, 8);
-        assert!(state.text_view.is_none());
-        let anime = state.results[0].clone();
-        state.anime = Some(anime.clone());
-        state.history = vec![crate::persistence::Entry {
+        assert!(state.view.text_view.is_none());
+        let anime = state.search.results[0].clone();
+        state.episodes.anime = Some(anime.clone());
+        state.history.entries = vec![crate::persistence::Entry {
             anime,
             episode: "1".into(),
             mode: Mode::Sub,
@@ -2901,7 +2914,7 @@ mod tests {
         for screen in [Screen::Search, Screen::Episodes, Screen::History] {
             state.screen = screen;
             render_text(&mut state, 120, 40);
-            let view = state.text_view.as_ref().unwrap();
+            let view = state.view.text_view.as_ref().unwrap();
             assert!(
                 view.lines.join("\n").contains("A series title"),
                 "{screen:?}"
