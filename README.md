@@ -212,9 +212,7 @@ python3 tests/theme_smoke.py target/release/miru
 The smoke tests use isolated temporary state and local provider fixtures. The
 media and navigation checks need ffmpeg; the media check also needs mpv and
 ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
-testing in every terminal. The GitHub Actions workflow is configured to run
-these checks on Linux with Rust 1.90.0 and build a release binary; it does not
-publish a release.
+testing in every terminal.
 
 ## License and credits
 
