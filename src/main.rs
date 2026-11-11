@@ -1,6 +1,7 @@
 mod app;
 mod artwork;
 mod download;
+mod jobs;
 mod model;
 mod palette;
 mod persistence;
@@ -156,6 +157,7 @@ impl Drop for TerminalGuard {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse_with_legacy_env()?;
+    let signals = jobs::shutdown_signals()?;
     let provider = provider::Provider::new(&cli.provider)?;
     let query = cli.query.join(" ");
     let state_dir = cli
@@ -201,75 +203,36 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| library.quality.clone());
     if cli.list || cli.resolve || cli.play || cli.download {
-        ensure!(!query.trim().is_empty(), "Provide a search query");
-        let mut results = provider.search(&query).await?;
-        if cli.exact {
-            results.retain(|a| normalized(&a.title) == normalized(&query));
-        }
-        if cli.list {
-            println!("{}", serde_json::to_string_pretty(&results)?);
-            return Ok(());
-        }
-        let anime = cli
-            .select_nth
-            .checked_sub(1)
-            .and_then(|i| results.get(i))
-            .context("Selected result does not exist (--select-nth is 1-based)")?;
-        let episodes = provider.episodes(anime).await?;
-        let indices = model::episode_range(&cli.episode, &episodes)?;
         if cli.play || cli.download {
             tokio::fs::create_dir_all(&state_dir).await?;
         }
-        for i in indices {
-            let stream = provider.resolve(&episodes[i], mode).await?;
-            if cli.resolve {
-                println!("{}", serde_json::to_string(&stream)?);
-            } else if cli.download {
-                let title = format!(
-                    "{} Episode {} {}",
-                    anime.title,
-                    episodes[i].number,
-                    mode.as_str().to_uppercase()
-                );
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                let progress = tokio::spawn(async move {
-                    while let Some(text) = rx.recv().await {
-                        eprintln!("{text}");
-                    }
-                });
-                let log = state_dir.join("download.log");
-                let download =
-                    download::download(&stream, &quality, &title, &cli.download_dir, &log, tx);
-                let path = tokio::select! {
-                    result = download => result?,
-                    _ = tokio::signal::ctrl_c() => { eprintln!("Download cancelled."); return Ok(()); }
-                };
-                progress.await?;
-                println!("Saved {}", path.display());
-            } else {
-                let title = format!("{} / Episode {}", anime.title, episodes[i].number);
-                let mut child = player::launch(
-                    &cli.player,
-                    &cli.player_arg,
-                    &stream,
-                    &quality,
-                    &title,
-                    &state_dir.join("player.log"),
-                )?;
-                store.update(persistence::Change::Record {
-                    anime: anime.clone(),
-                    episode: episodes[i].number.clone(),
-                    mode,
-                })?;
-                let status = tokio::select! { status = child.wait() => status?, _ = tokio::signal::ctrl_c() => { child.kill().await?; return Ok(()); } };
-                ensure!(
-                    status.success(),
-                    "Player failed ({status}); see {}/player.log",
-                    state_dir.display()
-                );
+        let (mut writer, mut library_rx) = persistence::Writer::new(store.clone());
+        let mut runner = jobs::Jobs::new(
+            provider.clone(),
+            jobs::Options {
+                player: cli.player.clone(),
+                player_args: cli.player_arg.clone(),
+                state_dir: state_dir.clone(),
+                download_dir: cli.download_dir.clone(),
+                history: writer.sender(),
+            },
+        );
+        let [mut interrupt, mut terminate, mut hangup] = signals;
+        let result = tokio::select! {
+            result = run_cli(&cli, &provider, mode, &quality, &mut runner) => result,
+            _ = async { tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {}, _ = hangup.recv() => {} } } => {
+                if cli.download { eprintln!("Download cancelled."); }
+                Ok(())
             }
+        };
+        let stopped = runner.shutdown().await;
+        let saved = writer.shutdown().await;
+        stopped?;
+        saved?;
+        while let Ok(library) = library_rx.try_recv() {
+            library?;
         }
-        return Ok(());
+        return result;
     }
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
@@ -278,8 +241,6 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("Could not create Miru state directory")?;
-    // Register before entering raw mode, including the capability-query startup window.
-    let signals = app::shutdown_signals()?;
     let _guard = TerminalGuard;
     let mut terminal = ratatui::try_init()?;
     execute!(io::stdout(), EnableBracketedPaste)?;
@@ -343,4 +304,82 @@ async fn main() -> Result<()> {
             theme::ThemeSource::new(cli.theme, colorless),
         )
         .await
+}
+
+async fn run_cli(
+    cli: &Cli,
+    provider: &provider::Provider,
+    mode: Mode,
+    quality: &str,
+    runner: &mut jobs::Jobs,
+) -> Result<()> {
+    let query = cli.query.join(" ");
+    ensure!(!query.trim().is_empty(), "Provide a search query");
+    let mut results = provider.search(&query).await?;
+    if cli.exact {
+        results.retain(|a| normalized(&a.title) == normalized(&query));
+    }
+    if cli.list {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+        return Ok(());
+    }
+    let anime = cli
+        .select_nth
+        .checked_sub(1)
+        .and_then(|i| results.get(i))
+        .context("Selected result does not exist (--select-nth is 1-based)")?;
+    let episodes = provider.episodes(anime).await?;
+    let indices = model::episode_range(&cli.episode, &episodes)?;
+    for (id, i) in indices.into_iter().enumerate() {
+        if cli.resolve {
+            println!(
+                "{}",
+                serde_json::to_string(&provider.resolve(&episodes[i], mode).await?)?
+            );
+            continue;
+        }
+        let title = if cli.download {
+            format!(
+                "{} Episode {} {}",
+                anime.title,
+                episodes[i].number,
+                mode.as_str().to_uppercase()
+            )
+        } else {
+            format!("{} / Episode {}", anime.title, episodes[i].number)
+        };
+        runner.start(jobs::Request {
+            id: id as u64,
+            episode: episodes[i].clone(),
+            anime: anime.clone(),
+            mode,
+            quality: quality.into(),
+            title,
+            kind: if cli.download {
+                jobs::JobKind::Download
+            } else {
+                jobs::JobKind::Playback
+            },
+        });
+        loop {
+            let event = runner
+                .recv()
+                .await
+                .context("Job worker stopped unexpectedly")?;
+            if event.id != id as u64 {
+                continue;
+            }
+            match event.update {
+                jobs::Update::Progress(text) => eprintln!("{text}"),
+                jobs::Update::Finished(result) => {
+                    if let jobs::Output::Download(path) = result? {
+                        println!("Saved {}", path.display());
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }

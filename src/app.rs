@@ -1,7 +1,7 @@
 use crate::{
     artwork::Artwork,
-    model::{Anime, Episode, Mode, Stream, normalized},
-    player,
+    jobs::{self, Jobs},
+    model::{Anime, Episode, Mode, normalized},
     provider::Provider,
     ui,
 };
@@ -41,11 +41,7 @@ pub enum Focus {
     Quality,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JobKind {
-    Playback,
-    Download,
-}
+pub use crate::jobs::JobKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobPhase {
@@ -566,10 +562,6 @@ enum Message {
     Synopsis(u64, String, Result<String>),
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
-    Resolved(u64, Result<Stream>),
-    Finished(u64, Result<()>),
-    Downloaded(u64, Result<PathBuf>),
-    Progress(u64, String),
     Library(Result<crate::persistence::Library>),
 }
 
@@ -618,7 +610,7 @@ pub struct App {
     synopsis_generation: u64,
     synopsis_target: Option<String>,
     synopsis_due: Option<Instant>,
-    play_task: Option<JoinHandle<()>>,
+    jobs: Jobs,
     search_due: Option<Instant>,
     job: u64,
     quit: bool,
@@ -635,15 +627,6 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
     }
 }
 
-pub fn shutdown_signals() -> Result<[tokio::signal::unix::Signal; 3]> {
-    use tokio::signal::unix::{SignalKind, signal};
-    Ok([
-        signal(SignalKind::interrupt())?,
-        signal(SignalKind::terminate())?,
-        signal(SignalKind::hangup())?,
-    ])
-}
-
 impl App {
     pub fn new(state: State, provider: Provider, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -654,6 +637,16 @@ impl App {
         } else {
             Some(Instant::now())
         };
+        let jobs = Jobs::new(
+            provider.clone(),
+            jobs::Options {
+                player: options.player.clone(),
+                player_args: options.player_args.clone(),
+                state_dir: options.state_dir.clone(),
+                download_dir: options.download_dir.clone(),
+                history: writer.sender(),
+            },
+        );
         Self {
             state,
             provider,
@@ -666,7 +659,7 @@ impl App {
             synopsis_generation: 0,
             synopsis_target: None,
             synopsis_due: None,
-            play_task: None,
+            jobs,
             search_due,
             job: 0,
             quit: false,
@@ -969,7 +962,7 @@ impl App {
 
     fn stop(&mut self) {
         self.job += 1;
-        abort(&mut self.play_task);
+        self.jobs.stop();
         self.state.activity = None;
     }
 
@@ -1039,15 +1032,19 @@ impl App {
         activity.message.clear();
         activity.quality_note.clear();
         self.job += 1;
-        abort(&mut self.play_task);
-        let job = self.job;
-        let mode = activity.mode;
-        let provider = self.provider.clone();
-        let tx = self.tx.clone();
-        self.play_task = Some(tokio::spawn(async move {
-            let result = provider.resolve(&episode, mode).await;
-            let _ = tx.send(Message::Resolved(job, result));
-        }));
+        let mut title = format!("{} / Episode {}", activity.anime.title, episode.number);
+        if activity.kind == JobKind::Download {
+            title.push_str(&format!(" {}", activity.mode.as_str().to_uppercase()));
+        }
+        self.jobs.start(jobs::Request {
+            id: self.job,
+            episode,
+            anime: activity.anime.clone(),
+            mode: activity.mode,
+            quality: activity.quality.clone(),
+            title,
+            kind: activity.kind,
+        });
     }
 
     fn finish(&mut self, result: Result<()>, success: String) {
@@ -1125,94 +1122,6 @@ impl App {
                     }
                 }
             }
-            Message::Resolved(job, result) if job == self.job => {
-                let stream = match result {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        self.finish(Err(err), String::new());
-                        return;
-                    }
-                };
-                let Some(activity) = self.state.activity.as_mut() else {
-                    return;
-                };
-                let episode = &activity.episodes[activity.index];
-                let title = format!("{} / Episode {}", activity.anime.title, episode.number);
-                let quality = activity.quality.clone();
-                let (variant, fallback) = stream.select(&quality);
-                activity.quality_note = if fallback {
-                    format!("{}p ({quality} unavailable)", variant.height)
-                } else {
-                    format!("{}p", variant.height)
-                };
-                let log = self
-                    .options
-                    .state_dir
-                    .join(if activity.kind == JobKind::Download {
-                        "download.log"
-                    } else {
-                        "player.log"
-                    });
-                if activity.kind == JobKind::Download {
-                    let title = format!("{title} {}", activity.mode.as_str().to_uppercase());
-                    let dir = self.options.download_dir.clone();
-                    let tx = self.tx.clone();
-                    activity.phase = JobPhase::Running;
-                    activity.message.clear();
-                    self.play_task = Some(tokio::spawn(async move {
-                        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
-                        let task = crate::download::download(
-                            &stream,
-                            &quality,
-                            &title,
-                            &dir,
-                            &log,
-                            progress_tx,
-                        );
-                        tokio::pin!(task);
-                        let result = loop {
-                            tokio::select! {
-                                result = &mut task => break result,
-                                Some(text) = progress_rx.recv() => { let _ = tx.send(Message::Progress(job, text)); }
-                            }
-                        };
-                        let _ = tx.send(Message::Downloaded(job, result));
-                    }));
-                    return;
-                }
-                match player::launch(
-                    &self.options.player,
-                    &self.options.player_args,
-                    &stream,
-                    &quality,
-                    &title,
-                    &log,
-                ) {
-                    Ok(mut child) => {
-                        activity.phase = JobPhase::Running;
-                        activity.message.clear();
-                        let change = crate::persistence::Change::Record {
-                            anime: activity.anime.clone(),
-                            episode: episode.number.clone(),
-                            mode: activity.mode,
-                        };
-                        self.persist(change);
-                        let tx = self.tx.clone();
-                        self.play_task = Some(tokio::spawn(async move {
-                            let result = match child.wait().await {
-                                Ok(status) if status.success() => Ok(()),
-                                Ok(status) => Err(anyhow::anyhow!(
-                                    "Player exited with {status}. See {}",
-                                    log.display()
-                                )),
-                                Err(err) => Err(err.into()),
-                            };
-                            let _ = tx.send(Message::Finished(job, result));
-                        }));
-                    }
-                    Err(err) => self.finish(Err(err), String::new()),
-                }
-            }
             Message::Library(result) => match result {
                 Ok(library) => {
                     let previous = self.state.history_selected;
@@ -1236,19 +1145,31 @@ impl App {
                     .state
                     .message(format!("History was not saved: {err:#}"), true),
             },
-            Message::Progress(job, text) if job == self.job => {
-                if let Some(activity) = &mut self.state.activity {
-                    activity.message = text;
-                }
-            }
-            Message::Downloaded(job, result) if job == self.job => match result {
-                Ok(path) => self.finish(Ok(()), format!("Saved {}", path.display())),
-                Err(err) => self.finish(Err(err), String::new()),
-            },
-            Message::Finished(job, result) if job == self.job => {
-                self.finish(result, "Player closed".into());
-            }
             _ => {}
+        }
+    }
+
+    fn job_message(&mut self, event: jobs::Event) {
+        if event.id != self.job {
+            return;
+        }
+        let Some(activity) = self.state.activity.as_mut() else {
+            return;
+        };
+        match event.update {
+            jobs::Update::Resolved(note) => activity.quality_note = note,
+            jobs::Update::Started => {
+                activity.phase = JobPhase::Running;
+                activity.message.clear();
+            }
+            jobs::Update::Progress(text) => activity.message = text,
+            jobs::Update::Finished(result) => match result {
+                Ok(jobs::Output::Playback) => self.finish(Ok(()), "Player closed".into()),
+                Ok(jobs::Output::Download(path)) => {
+                    self.finish(Ok(()), format!("Saved {}", path.display()))
+                }
+                Err(error) => self.finish(Err(error), String::new()),
+            },
         }
     }
 
@@ -1838,6 +1759,29 @@ impl App {
         signals: [tokio::signal::unix::Signal; 3],
         theme: crate::theme::ThemeSource,
     ) -> Result<()> {
+        let result = self.run_loop(terminal, picker, signals, theme).await;
+        self.stop();
+        abort(&mut self.search_task);
+        abort(&mut self.episode_task);
+        abort(&mut self.synopsis_task);
+        let jobs = self.jobs.shutdown().await;
+        let saved = self.writer.shutdown().await;
+        result?;
+        jobs?;
+        saved?;
+        while let Ok(result) = self.library_rx.try_recv() {
+            result?;
+        }
+        Ok(())
+    }
+
+    async fn run_loop(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        picker: Picker,
+        signals: [tokio::signal::unix::Signal; 3],
+        theme: crate::theme::ThemeSource,
+    ) -> Result<()> {
         self.state.palette = theme.load(self.state.colorless).await;
         let mut theme_tick = tokio::time::interval(Duration::from_secs(1));
         let mut art = Artwork::new(picker, self.options.cache.clone(), self.options.images);
@@ -1946,6 +1890,7 @@ impl App {
                         }
                     }
                 }
+                Some(event) = self.jobs.recv() => { self.job_message(event); dirty = true; },
                 Some(result) = self.library_rx.recv() => { self.message(Message::Library(result)); dirty = true; },
                 Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
                 Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
@@ -1957,14 +1902,6 @@ impl App {
         if mouse_capture {
             execute!(std::io::stdout(), DisableMouseCapture)?;
         }
-        self.stop();
-        abort(&mut self.search_task);
-        abort(&mut self.episode_task);
-        abort(&mut self.synopsis_task);
-        self.writer.shutdown().await?;
-        while let Ok(result) = self.library_rx.try_recv() {
-            result?;
-        }
         Ok(())
     }
 }
@@ -1974,7 +1911,7 @@ impl Drop for App {
         abort(&mut self.synopsis_task);
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
-        abort(&mut self.play_task);
+        self.jobs.stop();
     }
 }
 
@@ -2400,25 +2337,20 @@ mod tests {
         }];
         let mut app = test_app(state, dir.path());
         app.start_selection(true);
-        abort(&mut app.play_task);
+        app.jobs.stop();
         let job = app.job;
-        app.message(Message::Resolved(
-            job,
-            Ok(Stream {
-                variants: vec![crate::model::Variant {
-                    height: 720,
-                    url: "http://127.0.0.1:9/video".into(),
-                }],
-                referer: String::new(),
-                audio: None,
-                subtitle: None,
-            }),
-        ));
+        app.job_message(jobs::Event {
+            id: job,
+            update: jobs::Update::Resolved("720p (1080p unavailable)".into()),
+        });
         assert_eq!(
             app.state.activity.as_ref().unwrap().quality_note,
             "720p (1080p unavailable)"
         );
-        app.message(Message::Progress(job, "Downloaded through 00:00:01".into()));
+        app.job_message(jobs::Event {
+            id: job,
+            update: jobs::Update::Progress("Downloaded through 00:00:01".into()),
+        });
         assert!(
             app.state
                 .activity
@@ -2427,7 +2359,12 @@ mod tests {
                 .quality_note
                 .contains("1080p unavailable")
         );
-        app.message(Message::Downloaded(job, Ok(dir.path().join("episode.mkv"))));
+        app.job_message(jobs::Event {
+            id: job,
+            update: jobs::Update::Finished(Ok(jobs::Output::Download(
+                dir.path().join("episode.mkv"),
+            ))),
+        });
         let activity = app.state.activity.as_ref().unwrap();
         assert_eq!(activity.phase, JobPhase::Finished);
         assert_eq!(activity.quality_note, "720p (1080p unavailable)");
@@ -2572,15 +2509,10 @@ mod tests {
         assert!(app.state.episodes.is_empty());
         let old_job = app.job;
         app.stop();
-        app.message(Message::Resolved(
-            old_job,
-            Ok(Stream {
-                variants: vec![],
-                referer: String::new(),
-                audio: None,
-                subtitle: None,
-            }),
-        ));
+        app.job_message(jobs::Event {
+            id: old_job,
+            update: jobs::Update::Resolved("stale".into()),
+        });
         assert!(app.state.activity.is_none());
         app.synopsis_generation = 2;
         app.message(Message::Synopsis(1, "old".into(), Ok("Stale text".into())));

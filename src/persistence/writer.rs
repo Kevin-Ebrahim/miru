@@ -17,6 +17,12 @@ struct Pending {
     closed: bool,
 }
 
+#[derive(Clone)]
+pub struct Sender {
+    pending: Arc<Mutex<Pending>>,
+    ready: Arc<Notify>,
+}
+
 pub struct Writer {
     pending: Arc<Mutex<Pending>>,
     ready: Arc<Notify>,
@@ -62,6 +68,32 @@ impl Writer {
         )
     }
 
+    pub fn sender(&self) -> Sender {
+        Sender {
+            pending: self.pending.clone(),
+            ready: self.ready.clone(),
+        }
+    }
+
+    pub fn submit(&self, change: Change) -> Result<()> {
+        self.sender().submit(change)
+    }
+
+    fn close(&self) {
+        self.pending.lock().unwrap().closed = true;
+        self.ready.notify_one();
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        self.close();
+        if let Some(task) = self.task.take() {
+            task.await?;
+        }
+        Ok(())
+    }
+}
+
+impl Sender {
     pub fn submit(&self, change: Change) -> Result<()> {
         let mut pending = self.pending.lock().unwrap();
         ensure!(!pending.closed, "History writer has shut down");
@@ -76,19 +108,6 @@ impl Writer {
         );
         pending.changes.push_back(change);
         self.ready.notify_one();
-        Ok(())
-    }
-
-    fn close(&self) {
-        self.pending.lock().unwrap().closed = true;
-        self.ready.notify_one();
-    }
-
-    pub async fn shutdown(&mut self) -> Result<()> {
-        self.close();
-        if let Some(task) = self.task.take() {
-            task.await?;
-        }
         Ok(())
     }
 }

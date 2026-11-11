@@ -7,7 +7,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 
 pub fn filename(title: &str) -> String {
@@ -37,7 +37,8 @@ pub async fn download(
     dir: &Path,
     log: &Path,
     progress: mpsc::UnboundedSender<String>,
-) -> Result<PathBuf> {
+    cancel: &mut oneshot::Receiver<()>,
+) -> Result<Option<PathBuf>> {
     tokio::fs::create_dir_all(dir)
         .await
         .context("Could not create download directory")?;
@@ -111,15 +112,25 @@ pub async fn download(
         .take()
         .context("Missing ffmpeg progress pipe")?;
     let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
-        if let Some(time) = line.strip_prefix("out_time=") {
-            let _ = progress.send(format!(
-                "Downloaded through {}",
-                time.trim_end_matches('0').trim_end_matches('.')
-            ));
+    let transfer = async {
+        while let Some(line) = lines.next_line().await? {
+            if let Some(time) = line.strip_prefix("out_time=") {
+                let _ = progress.send(format!(
+                    "Downloaded through {}",
+                    time.trim_end_matches('0').trim_end_matches('.')
+                ));
+            }
         }
-    }
-    let status = child.wait().await?;
+        child.wait().await
+    };
+    let status = tokio::select! {
+        biased;
+        _ = cancel => { child.kill().await?; return Ok(None); },
+        result = transfer => match result {
+            Ok(status) => status,
+            Err(error) => { let _ = child.kill().await; return Err(error.into()); }
+        },
+    };
     ensure!(
         status.success(),
         "Download failed ({status}). See {}",
@@ -129,7 +140,7 @@ pub async fn download(
     temporary
         .persist_noclobber(&destination)
         .context("Could not save download; destination may already exist")?;
-    Ok(destination)
+    Ok(Some(destination))
 }
 
 #[cfg(test)]

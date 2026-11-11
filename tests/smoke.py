@@ -9,6 +9,7 @@ import functools
 import hashlib
 import http.server
 import json
+import os
 import pathlib
 import signal
 import shutil
@@ -105,20 +106,40 @@ def main():
             assert missing.returncode != 0 and "No DUB source" in missing.stderr
             assert json.loads(run(common + ["--history"]).stdout) == history
             slow.set()
-            cancel_dir = root / "cancelled"
-            cancelling = subprocess.Popen(common + ["--download", "Smoke", "--download-dir", str(cancel_dir)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            try:
-                assert segment_requested.wait(timeout=10), "Download never reached media transfer"
-                cancelling.send_signal(signal.SIGINT)
-                _, stderr = cancelling.communicate(timeout=5)
-                assert cancelling.returncode == 0 and "cancelled" in stderr
-                assert not list(cancel_dir.iterdir()), "Cancellation left partial media behind"
-            finally:
-                release_segment.set()
-                if cancelling.poll() is None:
-                    cancelling.kill()
-                    cancelling.wait()
-            print("PASS: cancellation, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, no-clobber, missing DUB")
+            for operation in ("--download", "--play"):
+                for stop_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    segment_requested.clear()
+                    release_segment.clear()
+                    cancel_dir = root / f"cancelled-{operation[2:]}-{stop_signal}"
+                    args = [operation, "Smoke"]
+                    if operation == "--download":
+                        args += ["--download-dir", str(cancel_dir)]
+                    else:
+                        args += ["--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"]
+                    cancelling = subprocess.Popen(common + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    children = []
+                    try:
+                        assert segment_requested.wait(timeout=10), "Job never reached media transfer"
+                        children = run(["ps", "-o", "pid=", "--ppid", str(cancelling.pid)]).stdout.split()
+                        assert children, "Media child was not running"
+                        cancelling.send_signal(stop_signal)
+                        _, stderr = cancelling.communicate(timeout=5)
+                        assert cancelling.returncode == 0, stderr
+                        if operation == "--download":
+                            assert "cancelled" in stderr
+                            assert not list(cancel_dir.iterdir()), "Cancellation left partial media behind"
+                        assert not any(pathlib.Path("/proc", pid).exists() for pid in children), "Cancellation did not reap its child"
+                    finally:
+                        release_segment.set()
+                        if cancelling.poll() is None:
+                            cancelling.kill()
+                            cancelling.wait()
+                        for pid in children:
+                            try:
+                                os.kill(int(pid), signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+            print("PASS: INT/TERM/HUP cleanup for playback and downloads, HTTP provider, exact search, ranges, mpv, history, ffmpeg audio/subtitle mux, no-clobber, missing DUB")
         finally:
             server.shutdown()
             server.server_close()

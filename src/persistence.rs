@@ -1,5 +1,5 @@
 mod writer;
-pub use writer::Writer;
+pub use writer::{Sender, Writer};
 
 use crate::model::{Anime, Episode, Mode};
 use anyhow::{Context, Result, ensure};
