@@ -316,6 +316,21 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     }
 }
 
+fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) -> Style {
+    use ratatui::style::Color;
+    let style = Style::default().fg(color);
+    match (color, palette(state).canvas) {
+        (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) => {
+            let blend = |ink: u8, background: u8| {
+                ((u16::from(ink) * strength + u16::from(background) * (100 - strength)) / 100) as u8
+            };
+            style.fg(Color::Rgb(blend(r, br), blend(g, bg), blend(b, bb)))
+        }
+        _ if strength < 100 => style.dim(),
+        _ => style,
+    }
+}
+
 fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     let activity_height = state.activity.as_ref().map_or(0, |a| {
         if a.message.is_empty() && a.quality_note.is_empty() {
@@ -383,11 +398,33 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             .copied()
             .enumerate()
             .map(|(i, (left, right))| {
-                let shaded = if large_logo { i == 4 || i == 5 } else { i == 2 };
-                let band = |style: Style| if shaded { style.dim() } else { style };
+                let strength = if large_logo {
+                    match i {
+                        3 | 5 => 78,
+                        4 => 90,
+                        _ => 100,
+                    }
+                } else if i == 2 {
+                    82
+                } else {
+                    100
+                };
+                let scanlines = |text: &str| {
+                    if large_logo {
+                        text.replace('█', "▇")
+                    } else {
+                        text.to_owned()
+                    }
+                };
                 Line::from(vec![
-                    Span::styled(left, band(muted(state))),
-                    Span::styled(right, band(Style::default().fg(palette(state).text))),
+                    Span::styled(
+                        scanlines(left),
+                        wordmark_style(state, palette(state).secondary, strength),
+                    ),
+                    Span::styled(
+                        scanlines(right),
+                        wordmark_style(state, palette(state).text, strength),
+                    ),
                 ])
                 .centered()
             })
