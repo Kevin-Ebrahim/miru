@@ -113,11 +113,11 @@ impl Widget for Sakura<'_> {
                     continue;
                 }
                 let color = if blossoms > count / 2 {
-                    // A little foreground light on the upper surfaces; shadows retain
+                    // Foreground light on the upper surfaces; shadows retain
                     // the theme's richer blossom hue, on light backgrounds too.
                     match (blossom_color, self.palette.text) {
                         (Color::Rgb(r, g, b), Color::Rgb(tr, tg, tb)) => {
-                            let light = ((shade / 255.0 - 0.55) / 0.45).clamp(0.0, 1.0) * 0.2;
+                            let light = 0.2 + ((shade / 255.0 - 0.3) / 0.7).clamp(0.0, 1.0) * 0.45;
                             let mix =
                                 |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * light) as u8;
                             Color::Rgb(mix(r, tr), mix(g, tg), mix(b, tb))
@@ -136,21 +136,25 @@ impl Widget for Sakura<'_> {
                     // Halftone coverage follows the lighting, instead of repeating one stamp.
                     let tone = shade / 255.0
                         + (BAYER[(scene_y & 3) * 4 + (scene_x & 3)] / 16.0 - 0.47) * 0.16;
-                    cell.set_symbol(if tone > 0.72 {
+                    cell.set_symbol(if tone > 0.64 {
                         "•\u{0307}\u{0323}"
-                    } else if tone > 0.48 {
+                    } else if tone > 0.32 {
                         "•\u{0323}"
                     } else {
                         "∘\u{030a}\u{0325}"
                     });
                 } else if count >= 3 {
-                    cell.set_symbol("∘\u{030a}");
+                    cell.set_symbol(if shade > 100.0 {
+                        "•\u{0323}"
+                    } else {
+                        "∘\u{030a}"
+                    });
                 } else {
                     cell.set_char('·');
                 }
                 // Lift faint branches and blossom midtones without flattening highlights.
                 let ink = if blossoms > count / 2 {
-                    (shade / 255.0).powf(0.8).clamp(0.34, 0.95)
+                    (shade / 255.0 * 1.8).sqrt().clamp(0.78, 1.0)
                 } else {
                     (shade / 255.0 * 1.5).sqrt().min(0.95)
                 };
