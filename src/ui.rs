@@ -28,6 +28,35 @@ fn palette(state: &State) -> Palette {
 fn muted(state: &State) -> Style {
     Style::default().fg(palette(state).secondary)
 }
+fn key_style(state: &State) -> Style {
+    Style::default().fg(palette(state).text).bold()
+}
+
+fn shortcut(state: &State, key: &str, action: &str) -> Line<'static> {
+    let base = if key == "Enter" {
+        palette(state).selection
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled(key.to_owned(), base.patch(key_style(state))),
+        Span::styled(format!(" {action}"), base.patch(muted(state).not_bold())),
+    ])
+}
+
+fn hint_message(state: &State, text: &str, style: Style) -> Line<'static> {
+    if let Some(action) = text.strip_prefix("Alt+e ") {
+        return shortcut(state, "Alt+e", action);
+    }
+    if let Some((before, after)) = text.split_once("F5 Retry") {
+        let mut spans = vec![Span::styled(before.to_owned(), style)];
+        spans.extend(shortcut(state, "F5", "Retry").spans);
+        spans.push(Span::styled(after.to_owned(), style));
+        return Line::from(spans);
+    }
+    Line::styled(text.to_owned(), style)
+}
+
 fn accent(state: &State) -> Style {
     Style::default().fg(palette(state).focus).bold()
 }
@@ -231,8 +260,12 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         state.text_view = None;
         state.text_selection = None;
         frame.render_widget(
-            Paragraph::new("Miru\nResize to at least 32 x 12\nCtrl+C quit")
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(vec![
+                Line::raw("Miru"),
+                Line::raw("Resize to at least 32 x 12"),
+                shortcut(state, "Ctrl+C", "quit"),
+            ])
+            .wrap(Wrap { trim: true }),
             area,
         );
         return;
@@ -279,13 +312,17 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
             )
         };
         frame.render_widget(
-            Paragraph::new(text)
-                .style(if error {
-                    Style::default().fg(palette(state).error)
-                } else {
-                    Style::default()
-                })
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(
+                text.lines()
+                    .map(|line| hint_message(state, line, Style::default()))
+                    .collect::<Vec<_>>(),
+            )
+            .style(if error {
+                Style::default().fg(palette(state).error)
+            } else {
+                Style::default()
+            })
+            .wrap(Wrap { trim: true }),
             status,
         );
     }
@@ -518,23 +555,25 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             1,
         ),
     );
-    let controls = match state.focus {
-        Focus::Audio | Focus::Quality if state.ascii => "</> Change",
-        Focus::Audio | Focus::Quality => "←/→ Change",
-        _ => "",
-    };
-    let hint = if history && controls.is_empty() {
-        "Alt+h History".into()
-    } else if history {
-        format!(
-            "{controls}{}Alt+h History",
-            if width < 50 { "\n" } else { "  " }
-        )
-    } else {
-        controls.into()
-    };
+    let mut hint = Line::default();
+    if matches!(state.focus, Focus::Audio | Focus::Quality) {
+        hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
+    }
+    let mut hints = Vec::new();
+    if history {
+        if !hint.spans.is_empty() {
+            if width < 50 {
+                hints.push(hint);
+                hint = Line::default();
+            } else {
+                hint.spans.push(Span::raw("  "));
+            }
+        }
+        hint.spans.extend(shortcut(state, "Alt+h", "History").spans);
+    }
+    hints.push(hint);
     frame.render_widget(
-        Paragraph::new(hint).style(muted(state)),
+        Paragraph::new(hints),
         Rect::new(x, field.bottom() + hint_gap, width, hint_height),
     );
     if status.height > 0 {
@@ -551,21 +590,19 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     }
     render_activity(frame, state, activity);
     frame.render_widget(
-        Paragraph::new("F1 Help")
-            .right_aligned()
-            .style(muted(state).bold()),
+        Paragraph::new(shortcut(state, "F1", "Help")).right_aligned(),
         footer,
     );
     if state.activity.is_some() {
         let action = if state.activity.as_ref().is_some_and(|a| a.retryable()) {
-            "F6 Retry"
+            shortcut(state, "F6", "Retry")
         } else if state.focus == Focus::List {
-            "x Stop/Dismiss"
+            shortcut(state, "x", "Stop/Dismiss")
         } else {
-            "Esc Controls"
+            shortcut(state, "Esc", "Controls")
         };
         frame.render_widget(
-            Paragraph::new(action).centered().style(muted(state)),
+            Paragraph::new(action).centered(),
             if footer.width >= 54 {
                 footer
             } else {
@@ -616,16 +653,19 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     frame.render_widget(Block::default().style(bar), area);
     let shortcuts = state.focus == Focus::List && !state.details;
     let settings = if shortcuts {
-        format!(
-            "s {}   Q {} ",
-            state.mode.as_str().to_uppercase(),
-            state.quality
-        )
+        let mut spans = shortcut(state, "s", &state.mode.as_str().to_uppercase()).spans;
+        spans.push(Span::raw("   "));
+        spans.extend(shortcut(state, "Q", &state.quality).spans);
+        spans.push(Span::raw(" "));
+        Line::from(spans)
     } else {
-        format!(
-            "{} / {} ",
-            state.mode.as_str().to_uppercase(),
-            state.quality
+        Line::styled(
+            format!(
+                "{} / {} ",
+                state.mode.as_str().to_uppercase(),
+                state.quality
+            ),
+            muted(state),
         )
     };
     let mut nav = vec![Span::raw(" ")];
@@ -642,7 +682,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
             }
             let active = state.screen == screen;
             if shortcuts && !active {
-                nav.push(Span::styled(format!("{key} "), muted(state).bold()));
+                nav.push(Span::styled(format!("{key} "), key_style(state)));
             }
             nav.push(Span::styled(
                 label,
@@ -673,7 +713,7 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     ])
     .areas(Rect::new(area.x, area.y, area.width, 1));
     frame.render_widget(Paragraph::new(navigation), left);
-    frame.render_widget(Paragraph::new(settings).style(muted(state)), right);
+    frame.render_widget(Paragraph::new(settings), right);
     if inline_search(state, area.width) {
         let label = if state.exact { "[EXACT] " } else { "" };
         let field = Rect::new(middle.x, middle.y, middle.width.saturating_sub(2), 1);
@@ -747,12 +787,7 @@ fn fit_hints(hints: &[String], width: usize, state: &State) -> Line<'static> {
         used += separator.len() + hint.width();
         spans.push(Span::raw(separator));
         let (key, label) = hint.split_once(' ').unwrap_or((hint.as_str(), ""));
-        if key == "Enter" {
-            spans.push(Span::styled(hint.clone(), palette(state).selection.bold()));
-        } else {
-            spans.push(Span::styled(key.to_owned(), muted(state).bold()));
-            spans.push(Span::raw(format!(" {label}")));
-        }
+        spans.extend(shortcut(state, key, label).spans);
     }
     Line::from(spans)
 }
@@ -873,14 +908,13 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 .into_iter()
                 .filter(|hint| !matches!(hint.as_str(), "F1 Help" | "Ctrl+C Quit")),
         );
-        let right = Line::from(vec![
-            Span::styled("F1", muted(state).bold()),
-            Span::raw(" Help   "),
-            Span::styled("Ctrl+C", muted(state).bold()),
-            Span::raw(" Quit   "),
-            Span::styled(format!(" {action} "), palette(state).selection.bold()),
-            Span::raw(" "),
-        ]);
+        let mut right = shortcut(state, "F1", "Help");
+        right.spans.push(Span::raw("   "));
+        right.spans.extend(shortcut(state, "Ctrl+C", "Quit").spans);
+        right.spans.push(Span::raw("    "));
+        let (key, label) = action.split_once(' ').unwrap_or((&action, ""));
+        right.spans.extend(shortcut(state, key, label).spans);
+        right.spans.push(Span::raw("  "));
         let secondary_width = 1
             + secondary.iter().map(|hint| hint.width()).sum::<usize>()
             + secondary.len().saturating_sub(1) * 3;
@@ -1267,7 +1301,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         details.extend(
             wrap_prose(message, metadata.width as usize)
                 .into_iter()
-                .map(|line| Line::styled(line, Style::default().fg(color))),
+                .map(|line| hint_message(state, &line, Style::default().fg(color))),
         );
     }
     let text_lines: Vec<_> = details.iter().map(ToString::to_string).collect();
@@ -1656,7 +1690,7 @@ fn help_key_aliases(keys: &str) -> String {
 fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     let query = state.help_query.text.to_lowercase();
     let mut lines = Vec::new();
-    let key_style = Style::default().fg(palette(state).text).bold();
+    let key_style = key_style(state);
     for (group, entries) in HELP_GROUPS {
         let entries: Vec<_> = entries
             .iter()
@@ -1739,25 +1773,16 @@ fn render_help(frame: &mut Frame, state: &mut State) {
         Paragraph::new("Keybindings").style(Style::default().bold()),
         header,
     );
-    let close = if state.help_filtering {
-        " F1 close "
-    } else {
-        " Esc close "
-    };
+    let close = shortcut(
+        state,
+        if state.help_filtering { "F1" } else { "Esc" },
+        "close",
+    );
     if header.width >= 26 {
+        let close_width = close.width() as u16;
         frame.render_widget(
-            Paragraph::new(close).style(
-                Style::default()
-                    .fg(palette(state).canvas)
-                    .bg(palette(state).focus)
-                    .bold(),
-            ),
-            Rect::new(
-                header.right() - close.len() as u16,
-                header.y,
-                close.len() as u16,
-                1,
-            ),
+            Paragraph::new(close).style(Style::default().bg(palette(state).surface)),
+            Rect::new(header.right() - close_width, header.y, close_width, 1),
         );
     }
     if state.help_filtering || !state.help_query.text.is_empty() {
@@ -1775,7 +1800,7 @@ fn render_help(frame: &mut Frame, state: &mut State) {
         }
     } else {
         frame.render_widget(
-            Paragraph::new("/ Filter by key or action").style(muted(state)),
+            Paragraph::new(shortcut(state, "/", "Filter by key or action")),
             filter,
         );
     }
@@ -1788,18 +1813,33 @@ fn render_help(frame: &mut Frame, state: &mut State) {
     );
     frame.render_widget(Paragraph::new(lines).scroll((state.help_scroll, 0)), body);
     render_scrollbar(frame, state, body, content_length, state.help_scroll);
-    let hint = if state.help_filtering {
+    let hints: &[(&str, &str)] = if state.help_filtering {
         if footer.width >= 55 {
-            "Enter/Esc Done   Ctrl+u Clear   Down Scroll"
+            &[
+                ("Enter/Esc", "Done"),
+                ("Ctrl+u", "Clear"),
+                ("Down", "Scroll"),
+            ]
         } else {
-            "Enter/Esc Done"
+            &[("Enter/Esc", "Done")]
         }
     } else if footer.width >= 64 {
-        "/ Filter   j/k or Up/Down Scroll   Esc Close"
+        &[
+            ("/", "Filter"),
+            ("j/k or Up/Down", "Scroll"),
+            ("Esc", "Close"),
+        ]
     } else {
-        "/ Filter  j/k Move  Esc Close"
+        &[("/", "Filter"), ("j/k", "Move"), ("Esc", "Close")]
     };
-    frame.render_widget(Paragraph::new(hint).style(muted(state)), footer);
+    let mut spans = Vec::new();
+    for (key, action) in hints {
+        if !spans.is_empty() {
+            spans.push(Span::raw(if footer.width >= 55 { "   " } else { "  " }));
+        }
+        spans.extend(shortcut(state, key, action).spans);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), footer);
 }
 fn empty_art(
     frame: &mut Frame,
@@ -1812,7 +1852,7 @@ fn empty_art(
     let lines: Vec<_> = [(title, accent(state)), (hint, muted(state))]
         .into_iter()
         .filter(|(text, _)| !text.is_empty())
-        .map(|(text, style)| Line::styled(text, style))
+        .map(|(text, style)| hint_message(state, text, style))
         .collect();
     let caption_height = (lines.len() as u16
         + u16::from(title.width() > usize::from(area.width))
