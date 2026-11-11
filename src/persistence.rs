@@ -68,21 +68,24 @@ impl Store {
                 return Err(e).with_context(|| format!("Could not read {}", self.path.display()));
             }
         };
-        let library: Library = serde_json::from_slice(&bytes).with_context(|| {
+        Self::parse_library(&bytes, &self.path)
+    }
+    fn parse_library(bytes: &[u8], path: &Path) -> Result<Library> {
+        let library: Library = serde_json::from_slice(bytes).with_context(|| {
             format!(
                 "Invalid history in {}. Preserve this file and repair or rename it before retrying",
-                self.path.display()
+                path.display()
             )
         })?;
         ensure!(
             library.version == 1,
             "Unsupported history version {} in {}",
             library.version,
-            self.path.display()
+            path.display()
         );
         Ok(library)
     }
-    pub fn update(&self, change: Change) -> Result<Library> {
+    fn lock(&self) -> Result<File> {
         let dir = self.path.parent().context("Missing state directory")?;
         fs::create_dir_all(dir)?;
         let lock = OpenOptions::new()
@@ -92,6 +95,39 @@ impl Store {
             .write(true)
             .open(dir.join("library.lock"))?;
         lock.lock()?;
+        Ok(lock)
+    }
+    pub fn migrate_from(&self, old: &Store) -> Result<()> {
+        if self.path.try_exists()? {
+            return Ok(());
+        }
+        let bytes = match fs::read(&old.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Could not read {}", old.path.display()));
+            }
+        };
+        let _lock = self.lock()?;
+        if self.path.try_exists()? {
+            return Ok(());
+        }
+        Self::parse_library(&bytes, &old.path)?;
+        let dir = self.path.parent().context("Missing state directory")?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        temp.write_all(&bytes)?;
+        temp.as_file().sync_all()?;
+        match temp.persist_noclobber(&self.path) {
+            Ok(_) => File::open(dir)?.sync_all()?,
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error).context("Could not migrate history"),
+        }
+        Ok(())
+    }
+    pub fn update(&self, change: Change) -> Result<Library> {
+        let _lock = self.lock()?;
+        let dir = self.path.parent().context("Missing state directory")?;
         let mut library = self.load()?;
         match change {
             Change::Record {

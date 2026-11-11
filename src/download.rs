@@ -48,7 +48,7 @@ pub async fn download(
         destination.display()
     );
     let temporary = tempfile::Builder::new()
-        .prefix(".ani-watch-")
+        .prefix(".miru-")
         .suffix(".part")
         .tempfile_in(dir)?;
     let mut cmd = Command::new("ffmpeg");

@@ -24,8 +24,8 @@ import urllib.parse
 
 
 def main():
-    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/ani-watch").resolve()
-    with tempfile.TemporaryDirectory(prefix="ani-watch-navigation-") as directory:
+    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
+    with tempfile.TemporaryDirectory(prefix="miru-navigation-") as directory:
         root = pathlib.Path(directory)
         resolving = threading.Event()
         release = threading.Event()
@@ -240,9 +240,11 @@ while not (root / str(os.getpid())).exists():
             history = json.loads((root / "library.json").read_text())["entries"]
             assert history[0]["anime"]["id"] == "original-1" and history[0]["episode"] == "2", history
             assert history[0]["mode"] == "sub", history
-            send(b"/")
-            send(b"\r\r")  # Open the other series from the retained search.
-            pump()
+            send(b"H")  # History's / now filters locally; use Home for catalogue search.
+            send(b"\r")  # Submit the retained search.
+            output.clear()
+            send(b"\r")  # Open the other series.
+            wait_for(lambda: b"Part 1" in output)
             send(b"D \x1b[B d")  # SUB, mark two episodes, download.
             wait_for(media_requested.is_set)
             send(b"H\x1bh/")

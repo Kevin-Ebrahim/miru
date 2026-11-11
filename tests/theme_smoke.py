@@ -31,7 +31,7 @@ selection = "#c4d6dd"
 
 
 def check(binary, mode):
-    with tempfile.TemporaryDirectory(prefix="ani-watch-theme-") as directory:
+    with tempfile.TemporaryDirectory(prefix="miru-theme-") as directory:
         root = pathlib.Path(directory)
         palette = root / "desktop/omarchy/current/theme/colors.toml"
         palette.parent.mkdir(parents=True)
@@ -45,7 +45,7 @@ def check(binary, mode):
             }],
         }))
         env = dict(os.environ)
-        for key in ("NO_COLOR", "ANI_WATCH_THEME", "SSH_CONNECTION"):
+        for key in ("NO_COLOR", "MIRU_THEME", "ANI_WATCH_THEME", "SSH_CONNECTION"):
             env.pop(key, None)
         env.update(XDG_STATE_HOME=str(root / "desktop"), XDG_CONFIG_HOME=str(root / "config"))
         if mode == "no-color":
@@ -117,7 +117,7 @@ def check(binary, mode):
 
 
 if __name__ == "__main__":
-    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/ani-watch").resolve()
+    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
     for mode in ("auto", "terminal", "no-color", "ssh"):
         check(binary, mode)
     print("PASS: desktop colors, live dark-to-light reload, image-independent theme, terminal override, NO_COLOR and SSH fallbacks")

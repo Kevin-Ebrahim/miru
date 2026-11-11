@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline end-to-end smoke test with real HTTP, mpv, and ffmpeg.
 
-Run after cargo build: python tests/smoke.py [path/to/ani-watch]
+Run after cargo build: python tests/smoke.py [path/to/miru]
 Everything, including history and downloaded media, lives in a temporary directory.
 """
 import base64
@@ -24,11 +24,11 @@ def run(argv, **kwargs):
 
 
 def main():
-    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/ani-watch").resolve()
+    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
     for command in ("ffmpeg", "ffprobe", "mpv"):
         if not shutil.which(command):
             raise SystemExit(f"Install {command} to run the media smoke test")
-    with tempfile.TemporaryDirectory(prefix="ani-watch-smoke-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="miru-smoke-") as temporary:
         root = pathlib.Path(temporary)
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
              "testsrc=size=128x96:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",

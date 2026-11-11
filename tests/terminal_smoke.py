@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PTY regression: resize and restore terminal modes on q, Ctrl+C, TERM and HUP.
+"""PTY regression: resize and restore terminal modes on Ctrl+C, TERM and HUP.
 
 This emulates cursor replies; it does NOT replace visual Kitty/Herdr testing.
 """
@@ -17,7 +17,7 @@ import time
 
 
 def check(binary, exit_method, animate=False):
-    with tempfile.TemporaryDirectory(prefix="ani-watch-pty-") as directory:
+    with tempfile.TemporaryDirectory(prefix="miru-pty-") as directory:
         master, slave = os.openpty()
         before = termios.tcgetattr(slave)
         os.set_blocking(master, False)
@@ -91,6 +91,9 @@ def check(binary, exit_method, animate=False):
                 os.write(master, b"\x1b")
                 pump(0.1)
                 os.write(master, b"q")
+                pump(0.2)
+                assert process.poll() is None, "lowercase q must not quit"
+                os.write(master, b"\x03")
             elif exit_method == "ctrl+c":
                 os.write(master, b"\x03")
             else:
@@ -110,8 +113,8 @@ def check(binary, exit_method, animate=False):
 
 
 if __name__ == "__main__":
-    executable = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/ani-watch").resolve()
+    executable = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
     for method in ("q", "ctrl+c", signal.SIGTERM, signal.SIGHUP):
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
-    print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")
+    print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q does not quit, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")

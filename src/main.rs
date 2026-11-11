@@ -12,7 +12,7 @@ mod theme;
 mod ui;
 
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 use crossterm::{
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
     execute,
@@ -74,7 +74,7 @@ struct Cli {
     #[arg(long, value_enum, default_value = "auto")]
     images: Images,
     /// Follow the desktop palette when available, or use terminal colors only
-    #[arg(long, value_enum, default_value = "auto", env = "ANI_WATCH_THEME")]
+    #[arg(long, value_enum, default_value = "auto", env = "MIRU_THEME")]
     theme: theme::ThemeMode,
     #[arg(long)]
     ascii: bool,
@@ -93,16 +93,42 @@ struct Cli {
     select_nth: usize,
     #[arg(short = 'e', long, default_value = "1", allow_hyphen_values = true)]
     episode: String,
-    #[arg(
-        long,
-        env = "ANI_WATCH_PROVIDER",
-        default_value = "https://hianime.at/"
-    )]
+    #[arg(long, env = "MIRU_PROVIDER", default_value = "https://hianime.at/")]
     provider: String,
-    #[arg(long, env = "ANI_WATCH_STATE_DIR")]
+    #[arg(long, env = "MIRU_STATE_DIR")]
     state_dir: Option<PathBuf>,
-    #[arg(long, env = "ANI_WATCH_CACHE_DIR")]
+    #[arg(long, env = "MIRU_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
+}
+
+impl Cli {
+    fn parse_with_legacy_env() -> Result<Self> {
+        let matches = Self::command().get_matches();
+        let mut cli = Self::from_arg_matches(&matches)?;
+        if matches.value_source("theme") == Some(ValueSource::DefaultValue)
+            && let Some(value) = std::env::var_os("ANI_WATCH_THEME")
+        {
+            let value = value
+                .to_str()
+                .context("ANI_WATCH_THEME is not valid UTF-8")?;
+            cli.theme = theme::ThemeMode::from_str(value, false)
+                .map_err(|error| anyhow::anyhow!("Invalid ANI_WATCH_THEME: {error}"))?;
+        }
+        if matches.value_source("provider") == Some(ValueSource::DefaultValue)
+            && let Some(value) = std::env::var_os("ANI_WATCH_PROVIDER")
+        {
+            cli.provider = value
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("ANI_WATCH_PROVIDER is not valid UTF-8"))?;
+        }
+        cli.state_dir = cli
+            .state_dir
+            .or_else(|| std::env::var_os("ANI_WATCH_STATE_DIR").map(PathBuf::from));
+        cli.cache_dir = cli
+            .cache_dir
+            .or_else(|| std::env::var_os("ANI_WATCH_CACHE_DIR").map(PathBuf::from));
+        Ok(cli)
+    }
 }
 
 fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
@@ -130,13 +156,18 @@ impl Drop for TerminalGuard {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_with_legacy_env()?;
     let provider = provider::Provider::new(&cli.provider)?;
     let query = cli.query.join(" ");
     let state_dir = cli
         .state_dir
-        .unwrap_or_else(|| directory("XDG_STATE_HOME", ".local/state", "ani-watch"));
+        .clone()
+        .unwrap_or_else(|| directory("XDG_STATE_HOME", ".local/state", "miru"));
     let store = persistence::Store::new(&state_dir);
+    if cli.state_dir.is_none() {
+        let old_dir = directory("XDG_STATE_HOME", ".local/state", "ani-watch");
+        store.migrate_from(&persistence::Store::new(&old_dir))?;
+    }
     if let Some(path) = &cli.import_history {
         let text = tokio::fs::read_to_string(path)
             .await
@@ -247,7 +278,7 @@ async fn main() -> Result<()> {
     );
     tokio::fs::create_dir_all(&state_dir)
         .await
-        .context("Could not create ani-watch state directory")?;
+        .context("Could not create Miru state directory")?;
     // Register before entering raw mode, including the capability-query startup window.
     let signals = app::shutdown_signals()?;
     let _guard = TerminalGuard;
@@ -300,7 +331,7 @@ async fn main() -> Result<()> {
         player_args: cli.player_arg,
         cache: cli
             .cache_dir
-            .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "ani-watch/covers")),
+            .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "miru/covers")),
         state_dir,
         images: images_enabled,
         download_dir: cli.download_dir,

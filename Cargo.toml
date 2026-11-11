@@ -1,10 +1,11 @@
 [package]
-name = "ani-watch"
+name = "miru"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
 description = "A terminal-native anime browser"
 license = "GPL-3.0-only"
+repository = "https://github.com/Kevin-Ebrahim/miru"
 publish = false
 
 [dependencies]
@@ -30,5 +31,5 @@ unicode-width = "0.2"
 url = { version = "2", features = ["serde"] }
 
 [[bin]]
-name = "ani-watch"
+name = "miru"
 path = "src/main.rs"
