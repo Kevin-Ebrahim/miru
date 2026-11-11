@@ -1,293 +1,226 @@
 # Miru
 
-A Rust + Ratatui anime browser for the terminal. Live search, native cover images,
-episode queues, external playback, watch history, and downloads.
+Browse and watch anime from your terminal. Miru is a Rust application with a
+keyboard-driven interface, cover art, watch history, playback queues, and
+downloads.
 
-This is a separate application. The shell reference, including the local changes
-in `/home/kevin/Dev/ani-cli`, remains intact. Nothing installs over `ani-cli`.
+- Search titles and browse episodes with SUB/DUB and quality selection.
+- Play an episode or a range in mpv, or download episodes with ffmpeg.
+- Continue from the last launched episode, with separate SUB and DUB history.
+- Use native terminal images where supported, with a text-based fallback.
+- Follow an Omarchy theme or use your terminal's own colors.
+- Use JSON output and direct playback or download commands in scripts.
 
-## Run locally
+Miru currently uses the HiAnime site and its ZokoAnime server. It is an
+unofficial client: provider availability, challenges, and site changes can
+prevent search or playback. See [Provider and troubleshooting](#provider-and-troubleshooting).
 
-Requires Rust 1.90 or newer and a Unix terminal. Install **mpv** for playback
-(or use `--player vlc`) and **ffmpeg** for downloads.
+## Requirements
+
+- Linux or another Unix-like system, and an interactive terminal for the UI.
+- Rust **1.90 or newer** and Cargo to build from source.
+- [mpv](https://mpv.io/) for playback; VLC is also supported but less tested.
+- [ffmpeg](https://ffmpeg.org/) for downloads. The media smoke tests also need
+  `ffprobe` and Python 3.
+
+Playback and downloads require an internet connection. Search and history can
+be used without installing a player; downloads are optional.
+
+## Install from source
+
+```sh
+git clone https://github.com/Kevin-Ebrahim/miru.git
+cd miru
+cargo install --locked --path .
+miru
+```
+
+Cargo normally installs the executable to `~/.cargo/bin`; make sure that
+directory is on your `PATH`. You can also run a build from the checkout without
+installing it:
 
 ```sh
 cargo build --release --locked
-./target/release/ani-watch
-./target/release/ani-watch frieren
-./target/release/ani-watch --continue
+./target/release/miru
 ```
 
-The app opens on **Home**, with a focused search field. Type an anime title and
-press Enter to open results; Enter again opens the selected series. Tab and
-Shift+Tab move between search, SUB/DUB and quality. On either setting, arrows
-change its value and Enter returns to search. Search starts only when submitted
-from Home; the results screen retains live search while editing.
+There are no published prebuilt releases yet. Run `miru --help` for the full
+command-line reference and `miru --version` for the installed version.
 
-Alt+h opens your saved history. Enter opens a series with the next episode
-selected; Enter again plays it. History records launches, not completed viewing.
-`H` outside input returns Home. Esc retraces your navigation, preserving queries,
-selections and scroll positions. On Home, Esc leaves typing so normal shortcuts
-work; `/` refocuses search. `i` opens full cover/details, including in compact
-terminals. Highlighting a series loads
-its full synopsis automatically in the preview and caches it for Details.
-F5 retries the full synopsis along with the current view.
-Drag over the text in Details or a series preview to select it; releasing the mouse
-copies only that selection. This includes the title, episode, metadata and synopsis.
-Outside text input, press `y` to copy the selection again, or the full text panel
-when nothing is selected. The mouse wheel over a text panel scrolls its content.
-Browsing leaves playback and downloads running; `x` stops the current job or
-dismisses its result.
-Network requests, cover downloads, image decoding, and image encoding run
-outside the terminal input loop.
+## Getting started
 
-## Controls
+Launch `miru`, type a title on Home, and press **Enter**. Select a result and
+press **Enter** to see its episodes, then select an episode and press **Enter**
+to play it. Use Tab on Home to select the SUB/DUB or quality setting; the arrow
+keys change the selected setting.
+
+Press **Alt+h** to open history. Selecting a series opens its episode list with
+the next episode highlighted. History records the last episode launched, not
+playback position or completion. Press **Ctrl+C** to quit and stop jobs started
+by Miru.
+
+### Common controls
 
 | Key | Action |
 | --- | --- |
-| `H` | Open Home (outside text input) |
-| `/` | Open or edit catalogue search (outside text input) |
-| Tab / Shift+Tab on Home | Focus search, SUB/DUB or quality; arrows change a setting |
-| `i` | Full cover and series details; ↑/↓ scroll, Esc closes |
-| Enter | Focus results / browse series / play episode(s) |
-| → / `l` | Open a series; in Episodes, open details without playing |
-| ↑ ↓ or `j` `k` | Navigate |
-| Page Up / Page Down, Ctrl+d/u, Ctrl+f/b | Move ten items, or scroll ten lines |
-| Ctrl+n / Ctrl+p | Next / previous item, outside text input |
-| Home / End or `g` / `G` | First / last item or line; `gg` also works |
-| Alt+e | Toggle normalized exact title matching |
-| `s` (or Shift+D) | Toggle SUB / DUB, including in Details |
-| `Q` | Cycle best, 1080p, 720p, 480p, 360p, worst |
+| `H` | Return Home, outside text input |
+| `/` | Focus search; in History, filter saved entries |
+| ↑ / ↓, `j` / `k` | Navigate the current list |
+| Enter / → / `l` | Open a selection; Enter plays an episode |
+| ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
+| `i` | Open full cover and series details |
+| `s` or Shift+D | Toggle SUB/DUB |
+| `Q` | Cycle playback quality |
+| Alt+e | Toggle exact title matching |
 | Alt+h | Open watch history |
-| Tab / Space in episodes | Mark or unmark an episode |
-| `:` in episodes | Enter a range; Enter marks it |
-| `d` in episodes | Download marked episodes, or the highlighted episode |
-| `n` / `p` / `r` | Next / previous / replay |
-| `x` | Stop the owned player/download queue, or dismiss its result |
-| F5 or `R` | Retry the current view and artwork; F5 also works while typing |
-| F6 | Retry the failed episode and remaining queue, keeping its original settings |
-| Delete in history | Remove the highlighted history entry |
-| `?` or F1 | Help; `/` filters by key or action, ↑/↓ scroll |
-| Esc | Leave input / return to the previous screen / close help or details |
-| ← / `h` / Backspace outside input | Return to the previous screen / close help or details |
-| `q` outside text input | Close Help/Details, otherwise quit and stop owned jobs |
-| Ctrl+C | Quit and stop owned jobs from anywhere |
+| Tab / Space in Episodes | Mark or unmark an episode |
+| `:` in Episodes | Enter an episode range to mark |
+| `d` in Episodes | Download marked episodes, or the highlighted episode |
+| `n` / `p` / `r` | Play next / previous / replay |
+| `x` | Stop the current player or download queue, or dismiss its result |
+| F5 / F6 | Retry the current view / retry a failed queue |
+| Delete in History | Remove the highlighted history entry |
+| `?` / F1 | Open help; `/` filters help by key or action |
+| `q` | Close Help or Details |
+| Ctrl+C | Quit from anywhere and stop owned jobs |
 
-Search and range inputs use Readline-style editing:
+Printable keys enter text while an input is focused. Search and range inputs
+support familiar editing shortcuts such as Ctrl+a/e, Ctrl+w, Ctrl+u/k,
+Alt+b/f, and Ctrl+y. Help lists the complete bindings and the footer shows
+contextual actions.
 
-| Key | Action |
-| --- | --- |
-| Ctrl+a / Ctrl+e | Start / end of line |
-| ← / →, Ctrl+b / Ctrl+f | Previous / next character |
-| Alt+b / Alt+f, Ctrl+← / Ctrl+→ | Previous / next word |
-| Ctrl+u / Ctrl+k | Cut before / after the cursor |
-| Ctrl+w | Cut the previous whitespace-delimited word |
-| Alt+Backspace / Alt+d | Cut the previous / next word |
-| Ctrl+y | Restore the last cut in this input |
-| Ctrl+h / Ctrl+d | Delete the previous / next character |
-| Ctrl+g / Esc | Leave the input |
-| Ctrl+j / Ctrl+m / Enter | Accept the input |
+Ranges use the provider's episode order and can include decimal specials. For
+example: `1-3`, `1, 5, 8`, `1.5-3`, `0--1` (all), or `-1` (last). Miru
+validates the whole range before starting a queue. A queue keeps its original
+series, episodes, language, and quality as you browse. If it fails, F6 retries
+from the failed episode without repeating completed ones.
 
-While typing, printable keys stay text. F1, F5, F6, Alt+h and Ctrl+C also
-work while typing; Alt+e toggles exact matching in Search. History moved from
-`h` to Alt+h so `h` can go back; exact matching moved from Ctrl+e to Alt+e
-so Ctrl+e can move to the end of the input.
-The footer shows the actions available for the current focus; F1 lists all
-shortcuts. On results, history and episode screens at 120 columns and above,
-navigation and language/quality controls move to the top toolbar, alongside the
-search input on Search. Secondary actions
-sit at the bottom left, with Help, Quit and the primary action on the right.
-The footer controls use one row when everything fits and wrap when needed.
-The controls sit directly on the terminal canvas, separated from the panels by
-a blank row when there is room.
-The episode panel border includes the selected anime title. Narrower
-terminals retain the separate search field and compact shortcut rows.
-Loading and error feedback stays with the affected view.
-
-Ranges follow the provider's episode order, including decimal specials. Examples:
-`1-3`, `1, 5, 8`, `1.5-3`, `0--1` (all), and `-1` (last). A range is validated
-in full before anything launches. Queued playback waits for each player to exit.
-Each queue keeps its selected series, episodes, language and quality while you
-browse elsewhere. Language and quality changes apply to your next play/download
-selection; they do not change an existing queue. Missing resolutions fall back to
-best with a notice. SUB and DUB history are tracked separately.
-After a queue fails, F6 retries from the failed episode without repeating completed
-episodes. Failed episode refreshes keep the cached list and selection visible.
-
-## Script-friendly operations
+## Command-line use
 
 ```sh
-./target/release/ani-watch --list frieren
-./target/release/ani-watch --list --exact "Frieren: Beyond Journey's End"
-./target/release/ani-watch --resolve frieren -S 1 -e 1
-./target/release/ani-watch --play frieren -e 1-3 -q 720p
-./target/release/ani-watch --download frieren -e 1-3 --download-dir ./downloads
-./target/release/ani-watch --history
-./target/release/ani-watch --import-history ~/.local/state/ani-cli/ani-hsts
+miru frieren
+miru --continue
+miru --list frieren
+miru --list --exact "Frieren: Beyond Journey's End"
+miru --resolve frieren -S 1 -e 1
+miru --play frieren -e 1-3 -q 720p
+miru --download frieren -e 1-3 --download-dir ./downloads
+miru --history
 ```
 
-`--list` and `--history` print JSON arrays. `--resolve` prints one JSON stream
-record per episode without launching a player. `-S` is a one-based search result
-index; `-e` is used with `--play`, `--download`, or `--resolve`. `--sub`, `--dub`,
-and `--quality` override saved preferences. Use `--player-arg=--option=value` to
-pass an additional argument; repeat for multiple arguments. Custom player paths
-use mpv's option contract, and VLC is recognized by its executable name. No
-shell interpolation is used for titles, URLs, or player arguments.
+`--list` and `--history` output JSON arrays; `--resolve` outputs one JSON object
+per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
+`--quality` override saved preferences. Select VLC with `--player vlc`, or
+supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
+to pass additional player options.
 
-Downloads are Matroska files containing the selected video, separate audio when
-present, and the default/English subtitle track when present. They are written
-to a temporary file and moved into place only on success. Existing files are
-never overwritten. Cancelling a download removes its partial output. Downloads
-do not mark episodes as watched.
+Downloads are saved as Matroska files with the selected video, separate audio
+when available, and the default or English subtitle track when available.
+Existing files are never overwritten; failed or cancelled downloads do not
+leave a completed file or mark episodes as watched.
 
-History records the last **launched** episode, like the shell reference; it is
-not a playback-position or completion tracker. Continue selects the episode
-after that entry and reports when there are no newer episodes. Import reads
-compatible tab-separated `ani-hsts` entries, skips obsolete provider IDs, and
-does not modify the source. Legacy history has no language field, so imported
-entries are SUB. Import is explicit and can be repeated without duplicates.
+## Images and appearance
 
-## Images, themes, and layout
+Miru detects Kitty, Sixel, and iTerm2 image protocols and falls back to colored
+halfblocks when necessary. Use `--images kitty`, `--images sixel`,
+`--images iterm2`, `--images halfblocks`, or `--images off` to choose explicitly.
+Native Kitty rendering has been exercised locally; Sixel, iTerm2, and VLC have
+not received the same visual or playback testing.
 
-The default is `--images auto`. `ratatui-image` queries the terminal before input
-handling starts. Supported native protocols are Kitty, Sixel, and iTerm2, with
-colored halfblocks as a fallback. There is no blanket Herdr-to-text downgrade.
-Kitty images use the library's encoder and virtual placements with owned image
-IDs; cleanup deletes only this application's image data.
+By default `--theme auto` follows Omarchy's active palette when available and
+uses the terminal palette otherwise. `--theme terminal` always uses terminal
+colors. `NO_COLOR` disables color and images, `--ascii` uses ASCII interface
+characters, and `--no-animation` keeps the Home artwork still. For example:
 
 ```sh
-./target/release/ani-watch --images kitty frieren
-./target/release/ani-watch --images halfblocks frieren
-./target/release/ani-watch --images off --ascii --no-animation
+miru --theme terminal --images halfblocks
+miru --images off --ascii --no-animation
 ```
 
-`NO_COLOR` disables color and images, because Kitty placeholders require color
-codes to identify the image. If your launcher exports it unintentionally, use
-`env -u NO_COLOR ./target/release/ani-watch` for native images. `--ascii` changes
-interface borders and indicators; it does not transliterate anime titles.
+The interface adapts to terminal size; use `i` for the full details view when
+space is limited. Some terminals may need additional configuration for images
+or clipboard copying.
 
-The interface keeps the terminal's font and text size. By default, `--theme auto`
-uses Omarchy's active `colors.toml`, including its foreground, background, accent,
-surface and status colors. Focus uses the theme accent; selections use a tint of
-that accent. It checks `$XDG_STATE_HOME/omarchy/current/theme`
-(normally `~/.local/state/omarchy/current/theme`), then the older
-`$XDG_CONFIG_HOME/omarchy/current/theme` location. Changes appear within about a
-second while the app is open, including when images are disabled. Text and focus
-colors are adjusted only where needed for readable contrast.
-
-Without a usable desktop palette, or over SSH, the app uses the terminal's default
-foreground/background and ANSI colors. These follow the terminal's own palette;
-selection uses reverse video. Use `--theme terminal` or `ANI_WATCH_THEME=terminal`
-when the terminal has a different theme from the desktop. This mode leaves panel
-backgrounds at the terminal default. `NO_COLOR` takes precedence over both modes.
-
-Body text is regular; headings and focused controls use bold. Heavy panel borders
-become double borders in focus. Symbols and labels preserve meaning even in
-monochrome themes.
-Home and Search show a list on the left and the selected anime's aspect-preserving
-cover, title and details on the right. Episodes use a wider list and a smaller
-cover, without a persistent search field. A separate activity strip shows the
-current playback/download job and its outcome across screens. Selected episodes
-and marked batches have distinct indicators.
-
-At 72 columns and above, sufficiently tall terminals show both panels. Narrow,
-tall terminals stack them; shorter terminals prioritize the list, with the full
-preview available through `i`. Below 32 × 12 the app displays a resize hint.
-Full details place the cover beside a reading column on wide screens and above
-the text on narrow screens. The synopsis uses the remaining height, wraps to a
-readable width, and scrolls with arrows, Page Up/Down, or Home/End.
-Help and full series details are scrollable. Provider failures have their own
-retry state, separate from a successful search with no matches. Failed or missing
-covers leave the selected title and details visible with a quiet placeholder.
-
-Home uses a shaded, angular Miru wordmark and a centred search box capped at 64 columns.
-The large wordmark uses Nerd Font Powerline corners; smaller layouts use block lettering.
-The active terminal theme supplies its surface, text and focus colours. Narrow
-terminals and `--ascii` use a plain wordmark; settings, history and keyboard hints
-remain available. Larger terminals show a theme-coloured, dotted sakura with drifting
-petals around the search area. Its silhouette follows the approved concept artwork,
-with clustered halftone blossoms, fine bark texture, a spreading root base, and
-soft lighting drawn from the terminal theme. Blossoms and petals use the theme's
-magenta colour (falling back to its accent), with contrast adjusted for light and
-dark backgrounds. Upper blossom edges catch light, with shaded undersides and
-deeper pockets between clusters. Petals drift in three depth layers, with smaller,
-slower dots behind brighter foreground petals. Occasional gentle gusts carry them
-together and sway the canopy. Petals flow immediately and keep moving while typing.
-Returning Home resumes the same animation phase.
-`--no-animation` keeps the tree still; compact terminals omit the scene.
-The scene uses terminal characters, including plain ASCII and `NO_COLOR` fallbacks,
-and stops animating outside Home. The executable and saved-data
-paths remain `ani-watch` for compatibility.
-
-On the results screen, search is debounced by 300 ms and immediately filters
-currently loaded results while new results are pending. Provider alias matches remain visible when the
-response arrives. Search generations, episode generations, playback job IDs,
-and artwork generations reject stale responses. Image selection has a separate
-100 ms delay to avoid fetching everything crossed during fast navigation.
-
-Searches use a 32-entry, ten-minute in-memory cache. Covers use a 12-image decoded
-LRU and a disk cache capped at 128 files / 128 MiB, with a 30-day freshness limit.
-Corrupt cached images are fetched again. Failed covers leave navigation usable.
-Selection, empty searches, help, resizing, and exit clear the previous image.
-
-## Local data and troubleshooting
+## Data and configuration
 
 | Data | Default location |
 | --- | --- |
-| History and language/quality preferences | `$XDG_STATE_HOME/ani-watch/library.json` |
-| Last player / download errors | Same directory, `player.log` / `download.log` |
-| Cover cache | `$XDG_CACHE_HOME/ani-watch/covers/` |
+| History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
+| Last player and download errors | `$XDG_STATE_HOME/miru/player.log` and `download.log` |
+| Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
 
-XDG fallbacks are `~/.local/state` and `~/.cache`. Use `--state-dir`, `--cache-dir`,
-`ANI_WATCH_STATE_DIR`, and `ANI_WATCH_CACHE_DIR` for isolation. History updates
-use a file lock and atomic replacement. Malformed history is reported with its
-path and preserved, rather than silently discarded.
+When XDG variables are unset, state defaults to `~/.local/state` and cache to
+`~/.cache`. History is saved with a lock and atomic replacement. An invalid
+history file is reported and left intact.
 
-The provider defaults to `https://hianime.at/`, using its episode API and the
-ZokoAnime embed format observed in the shell reference. `--provider` or
-`ANI_WATCH_PROVIDER` overrides the base URL for testing. Only the ZokoAnime
-server is supported, matching the current reference resolver. HTTP failures,
-provider challenges, missing language sources, and changed markup are reported
-in the UI; `?` also shows the current error in full. This does not circumvent
-provider challenges or guarantee future provider availability.
+| Environment variable | Command-line equivalent | Purpose |
+| --- | --- | --- |
+| `MIRU_STATE_DIR` | `--state-dir` | Override the state directory |
+| `MIRU_CACHE_DIR` | `--cache-dir` | Override the cover cache directory |
+| `MIRU_THEME` | `--theme` | Set `auto` or `terminal` |
+| `MIRU_PROVIDER` | `--provider` | Override the provider's base URL |
 
-This version targets local Linux/Unix use. Shell-specific integrations such as
-Android intents, Chromecast, Syncplay, ani-skip, release countdowns, rofi/dmenu,
-system-log viewing, and self-update are not implemented. VLC command construction
-is supported but only mpv was exercised on this machine. Sixel and iTerm2 use the
-library backends and have not been visually tested here.
+Command-line options take precedence over `MIRU_*` variables. The previous
+`ANI_WATCH_STATE_DIR`, `ANI_WATCH_CACHE_DIR`, `ANI_WATCH_THEME`, and
+`ANI_WATCH_PROVIDER` variables remain supported as lower-priority fallbacks.
 
-## Verification
+### Moving from ani-watch
+
+On first use, if the default Miru library does not exist, Miru copies and
+validates the old `$XDG_STATE_HOME/ani-watch/library.json` into its new state
+directory. The original remains in place; an existing Miru library is never
+overwritten. The two copies do not stay synchronized. An explicitly configured
+state directory is used directly instead of triggering this migration. Covers
+are cached again as needed; old cache and log files are left in place.
+
+To import a compatible history file from the separate shell-based ani-cli app:
+
+```sh
+miru --import-history ~/.local/state/ani-cli/ani-hsts
+```
+
+Import does not modify the source, skips obsolete provider IDs, and can be
+repeated without duplicates. Because that format has no language field, imported
+entries are treated as SUB.
+
+## Provider and troubleshooting
+
+Miru defaults to `https://hianime.at/` and supports the ZokoAnime embed format.
+`--provider` and `MIRU_PROVIDER` change the base URL for a compatible provider;
+they do not add support for other sites' APIs. Site challenges, missing language
+sources, and changed markup may prevent playback. Errors appear in the affected
+view, and F5 retries it. Check the logs in the state directory for player or
+download errors.
+
+Miru does not currently implement ani-cli integrations such as Android intents,
+Chromecast, Syncplay, ani-skip, release countdowns, rofi/dmenu, or self-update.
+
+## Development
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
-cargo build --locked
-python tests/smoke.py
-python tests/terminal_smoke.py
-python tests/navigation_smoke.py
+cargo build --release --locked
+python3 tests/rename_smoke.py target/release/miru
+python3 tests/smoke.py target/release/miru
+python3 tests/terminal_smoke.py target/release/miru
+python3 tests/navigation_smoke.py target/release/miru
+python3 tests/theme_smoke.py target/release/miru
 ```
 
-Unit tests cover HTML parsing, embed decoding, HLS relative URLs/audio/quality,
-episode ranges, stale responses, Unicode input, responsive layouts, history
-continuation, atomic persistence and concurrent writers. `tests/smoke.py` serves
-a local provider fixture and generates a one-second media clip: it runs real mpv
-and ffmpeg, validates audio/video/subtitle tracks, checks history, and checks that
-an existing download is preserved. It needs Python, mpv, ffmpeg and ffprobe.
-`tests/terminal_smoke.py` emulates cursor replies in a PTY and checks resizing and
-terminal restoration for q, Ctrl+C, SIGTERM and SIGHUP. It is not a graphics test.
-`tests/navigation_smoke.py` uses a local provider, controllable player process and
-generated one-second clip (requires ffmpeg) to verify Home continuation, navigation
-during resolution/playback/downloads, queue ownership across series, correct
-history, fixed queue language, explicit stop, cached refresh failures, and partial
-download recovery without repeating saved episodes.
+The smoke tests use isolated temporary state and local provider fixtures. The
+media and navigation checks need ffmpeg; the media check also needs mpv and
+ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
+testing in every terminal. The GitHub Actions workflow is configured to run
+these checks on Linux with Rust 1.90.0 and build a release binary; it does not
+publish a release.
 
-Implementation references: [Ratatui](https://ratatui.rs/),
-[ratatui-image](https://docs.rs/ratatui-image/11.1.0/ratatui_image/),
-[Kitty graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
-[Herdr graphics configuration](https://herdr.dev/tui/docs/configuration/).
+## License and credits
 
-Licensed under GPL-3.0; see [LICENSE](LICENSE). The shell behavior and provider
-integration were studied from the locally modified
-[pystardust/ani-cli](https://github.com/pystardust/ani-cli) checkout.
+Miru is licensed under [GPL-3.0-only](LICENSE). The bundled Kyoto Dusk artwork
+and animation source are by [bas3line](https://github.com/bas3line) and carry
+their own [MIT license](assets/kyoto-dusk/LICENSE). The Home artwork reference
+and its use are described in [assets/sakura/README.md](assets/sakura/README.md).
+The shell workflow and provider integration were studied from
+[ani-cli](https://github.com/pystardust/ani-cli).
