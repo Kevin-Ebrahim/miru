@@ -54,7 +54,7 @@ def check(binary, exit_method, animate=False):
                 if b"anime" in output:
                     break
                 pump(0.1)
-            assert b"anime" in output, "Mado search did not draw"
+            assert b"anime" in output, "Miru search did not draw"
             pump(0.2)
             drawn = len(output)
             if animate:

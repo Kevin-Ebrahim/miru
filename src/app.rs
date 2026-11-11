@@ -2043,7 +2043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mado_home_submits_explicitly_and_settings_never_edit_the_query() {
+    async fn miru_home_submits_explicitly_and_settings_never_edit_the_query() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = test_app(
             State::new(String::new(), Mode::Sub, "best".into(), false, false, false),

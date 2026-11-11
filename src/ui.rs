@@ -231,7 +231,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         state.text_view = None;
         state.text_selection = None;
         frame.render_widget(
-            Paragraph::new("Mado\nResize to at least 32 x 12\nCtrl+C quit")
+            Paragraph::new("Miru\nResize to at least 32 x 12\nCtrl+C quit")
                 .wrap(Wrap { trim: true }),
             area,
         );
@@ -410,20 +410,20 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     }
     if big_logo {
         let compact = [
-            ("           ", "   ▄     "),
-            ("█▀█▀█ ▀▀▀█ ", "█▀▀█ █▀▀█"),
-            ("█ █ █ █▀▀█ ", "█  █ █  █"),
-            ("▀ ▀ ▀ ▀▀▀▀ ", "▀▀▀▀ ▀▀▀▀"),
+            ("      ▀ ", "         "),
+            ("█▀█▀█ █ ", "█▀▀▄ █  █"),
+            ("█ █ █ █ ", "█    █  █"),
+            ("▀ ▀ ▀ ▀ ", "▀    ▀▀▀▀"),
         ];
         let large = [
-            ("                      ", "                  "),
-            ("                      ", "      ██          "),
-            ("██████████  ████████  ", "████████  ████████"),
-            ("██  ██  ██        ██  ", "██    ██  ██    ██"),
-            ("██  ██  ██  ████████  ", "██    ██  ██    ██"),
-            ("██  ██  ██  ██    ██  ", "██    ██  ██    ██"),
-            ("██  ██  ██  ████████  ", "████████  ████████"),
-            ("                      ", "                  "),
+            ("                ", "                  "),
+            ("            ██  ", "                  "),
+            ("██████████      ", "████████  ██    ██"),
+            ("██  ██  ██  ██  ", "██    ██  ██    ██"),
+            ("██  ██  ██  ██  ", "██        ██    ██"),
+            ("██  ██  ██  ██  ", "██        ██    ██"),
+            ("██  ██  ██  ██  ", "██        ████████"),
+            ("                ", "                  "),
         ];
         let logo: &[(&str, &str)] = if large_logo { &large } else { &compact };
         let lines: Vec<_> = logo
@@ -443,9 +443,9 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
                     100
                 };
                 let interior: &[usize] = match (large_logo, i) {
-                    (true, 4) => &[2, 3, 6, 7, 24, 25, 26, 27, 34, 35, 36, 37],
-                    (true, 5) => &[2, 3, 6, 7, 14, 15, 16, 17, 24, 25, 26, 27, 34, 35, 36, 37],
-                    (false, 2) => &[1, 3, 7, 8, 12, 13, 17, 18],
+                    (true, 3) => &[18, 19, 20, 21, 28, 29, 30, 31],
+                    (true, 4 | 5) => &[2, 3, 6, 7, 28, 29, 30, 31],
+                    (false, 2) => &[1, 3, 14, 15],
                     _ => &[],
                 };
                 let inner = wordmark_inner_color(state);
@@ -485,7 +485,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
         frame.render_widget(Paragraph::new(lines), Rect::new(x, y, width, logo_height));
     } else if logo_height > 0 {
         frame.render_widget(
-            Paragraph::new("mado")
+            Paragraph::new("miru")
                 .centered()
                 .style(Style::default().bold()),
             Rect::new(x, y, width, 1),
@@ -1976,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn mado_home_keeps_search_settings_and_cursor_visible_at_supported_sizes() {
+    fn miru_home_keeps_search_settings_and_cursor_visible_at_supported_sizes() {
         for (width, height) in [(32, 12), (40, 18), (80, 24), (160, 50)] {
             for ascii in [false, true] {
                 for focus in [Focus::Search, Focus::Audio, Focus::Quality, Focus::List] {
@@ -2030,7 +2030,7 @@ mod tests {
     }
 
     #[test]
-    fn mado_settings_focus_survives_no_color_and_long_quality_values() {
+    fn miru_settings_focus_survives_no_color_and_long_quality_values() {
         for colorless in [false, true] {
             let mut state =
                 State::new(String::new(), Mode::Sub, "best".into(), false, false, false);

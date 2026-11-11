@@ -1,4 +1,4 @@
-# Mado
+# Miru
 
 A Rust + Ratatui anime browser for the terminal. Live search, native cover images,
 episode queues, external playback, watch history, and downloads.
@@ -200,7 +200,7 @@ Help and full series details are scrollable. Provider failures have their own
 retry state, separate from a successful search with no matches. Failed or missing
 covers leave the selected title and details visible with a quiet placeholder.
 
-Home uses a compact Mado wordmark and a centred search box capped at 64 columns.
+Home uses a compact Miru wordmark and a centred search box capped at 64 columns.
 The active terminal theme supplies its surface, text and focus colours. Narrow
 terminals and `--ascii` use a plain wordmark; settings, history and keyboard hints
 remain available. Larger terminals show a theme-coloured, dotted sakura with drifting
