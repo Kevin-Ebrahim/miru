@@ -1,6 +1,7 @@
 mod app;
 mod artwork;
 mod download;
+mod filter;
 mod input;
 mod jobs;
 mod model;
@@ -283,7 +284,7 @@ async fn main() -> Result<()> {
         !cli.no_animation,
     );
     state.colorless = colorless;
-    state.history.entries = library.entries;
+    state.history.replace_entries(library.entries);
     if cli.resume {
         state.screen = state::Screen::History;
         state.focus = state::Focus::List;

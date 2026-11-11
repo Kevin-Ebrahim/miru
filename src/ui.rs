@@ -439,7 +439,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     } else {
         u16::from(space.height >= 10)
     };
-    let history = !state.history.entries.is_empty();
+    let history = !state.history.entries().is_empty();
     let hint_height = 1;
     let gap = u16::from(space.height >= 16);
     let box_height = if space.height >= 12 { 5 } else { 4 };
@@ -869,7 +869,7 @@ fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<L
                 .into(),
             ];
         }
-        if state.screen == Screen::History && !state.history.entries.is_empty() {
+        if state.screen == Screen::History && !state.history.entries().is_empty() {
             hints.push("Delete Remove".into());
         }
         hints
@@ -1100,7 +1100,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 ("Searching...", "")
             }
         } else if state.screen == Screen::History {
-            if state.history.entries.is_empty() {
+            if state.history.entries().is_empty() {
                 ("No history", "")
             } else {
                 ("No matches", "")
@@ -1128,13 +1128,22 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         return;
     }
     let item_width = usize::from(inner.width.saturating_sub(2));
+    let playing = state
+        .activity
+        .as_ref()
+        .is_some_and(|activity| {
+            activity.kind == JobKind::Playback && activity.phase == JobPhase::Running
+        })
+        .then(|| state.current_episode_index())
+        .flatten();
     let items: Vec<ListItem> = match state.screen {
         Screen::Home => vec![],
         Screen::History => state
             .visible_history()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|i| {
-                let entry = &state.history.entries[i];
+                let entry = &state.history.entries()[i];
                 series_item(
                     &entry.anime.title,
                     &format!(
@@ -1150,7 +1159,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         Screen::Search => visible
             .iter()
             .map(|i| {
-                let anime = &state.search.results[*i];
+                let anime = &state.search.results()[*i];
                 series_item(&anime.title, &anime.info, item_width, state)
             })
             .collect(),
@@ -1160,11 +1169,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, ep)| {
-                let playing =
-                    state.activity.as_ref().is_some_and(|a| {
-                        a.kind == JobKind::Playback && a.phase == JobPhase::Running
-                    }) && state.current_episode_index() == Some(i);
-                let indicator = if playing {
+                let indicator = if playing == Some(i) {
                     symbol(state, "▶", ">")
                 } else if state.episodes.marked.contains(&i) {
                     symbol(state, "✓", "*")
@@ -1262,7 +1267,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         Screen::History => state.selected_history(),
         _ => state
             .history
-            .entries
+            .entries()
             .iter()
             .find(|e| e.anime.id == anime.id && e.mode == state.mode),
     };
@@ -2087,15 +2092,19 @@ mod tests {
                         false,
                     );
                     state.focus = focus;
-                    state.history.entries.push(crate::persistence::Entry {
-                        anime: Anime {
-                            title: "History stays in History".into(),
-                            ..Default::default()
-                        },
-                        episode: "1".into(),
-                        mode: Mode::Sub,
-                        watched_at: 1,
-                    });
+                    {
+                        let mut entries = state.history.entries().to_vec();
+                        entries.push(crate::persistence::Entry {
+                            anime: Anime {
+                                title: "History stays in History".into(),
+                                ..Default::default()
+                            },
+                            episode: "1".into(),
+                            mode: Mode::Sub,
+                            watched_at: 1,
+                        });
+                        state.history.replace_entries(entries);
+                    }
                     let text = render_text(&mut state, width, height);
                     for label in [
                         "Search anime...",
@@ -2199,12 +2208,16 @@ mod tests {
         );
         state.accept_search(0, Ok(vec![anime.clone()]));
         state.focus = Focus::List;
-        state.history.entries.push(crate::persistence::Entry {
-            anime,
-            episode: "1".into(),
-            mode: Mode::Sub,
-            watched_at: 1,
-        });
+        {
+            let mut entries = state.history.entries().to_vec();
+            entries.push(crate::persistence::Entry {
+                anime,
+                episode: "1".into(),
+                mode: Mode::Sub,
+                watched_at: 1,
+            });
+            state.history.replace_entries(entries);
+        }
         for screen in [Screen::Search, Screen::History] {
             state.screen = screen;
             for (w, h) in [(120, 40), (180, 45)] {
@@ -2320,12 +2333,16 @@ mod tests {
                     }
                 }
             }
-            state.history.entries.push(crate::persistence::Entry {
-                anime: state.activity.as_ref().unwrap().anime.clone(),
-                episode: "1".into(),
-                mode: Mode::Sub,
-                watched_at: 1,
-            });
+            {
+                let mut entries = state.history.entries().to_vec();
+                entries.push(crate::persistence::Entry {
+                    anime: state.activity.as_ref().unwrap().anime.clone(),
+                    episode: "1".into(),
+                    mode: Mode::Sub,
+                    watched_at: 1,
+                });
+                state.history.replace_entries(entries);
+            }
             state.status = "Audio applies to the next queue.".into();
             state.focus = Focus::Audio;
             let text = render_text(&mut state, 32, 12);
@@ -2483,14 +2500,18 @@ mod tests {
                 let text = render_text(&mut state, width, 28);
                 assert!(text.contains("Season 2"), "{width}: {text}");
                 assert!(text.contains("TV / SUB 12"));
-                state.search.results[1].title = format!(
+                let mut results = state.search.results().to_vec();
+                results[1].title = format!(
                     "{} Season 2",
                     "A very long 日本語 title e\u{301} ".repeat(15)
                 );
+                state.search.replace_results(results);
                 let text = render_text(&mut state, width, 28);
                 assert!(text.contains("Season 2"), "{width}: {text}");
                 assert!(text.contains(if ascii { "..." } else { "…" }));
-                state.search.results[1].title = format!("{title} Season 2");
+                let mut results = state.search.results().to_vec();
+                results[1].title = format!("{title} Season 2");
+                state.search.replace_results(results);
             }
         }
     }
@@ -2613,12 +2634,16 @@ mod tests {
             ..Default::default()
         };
         state.episodes.anime = Some(anime.clone());
-        state.history.entries.push(crate::persistence::Entry {
-            anime,
-            episode: "5".into(),
-            mode: Mode::Sub,
-            watched_at: 1,
-        });
+        {
+            let mut entries = state.history.entries().to_vec();
+            entries.push(crate::persistence::Entry {
+                anime,
+                episode: "5".into(),
+                mode: Mode::Sub,
+                watched_at: 1,
+            });
+            state.history.replace_entries(entries);
+        }
         state.episodes.items = vec![Episode {
             id: "6".into(),
             number: "6".into(),
@@ -2741,16 +2766,20 @@ mod tests {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::History;
         state.focus = Focus::List;
-        state.history.entries.push(crate::persistence::Entry {
-            anime: Anime {
-                id: "1".into(),
-                title: "Frieren".into(),
-                ..Default::default()
-            },
-            episode: "6".into(),
-            mode: Mode::Sub,
-            watched_at: 0,
-        });
+        {
+            let mut entries = state.history.entries().to_vec();
+            entries.push(crate::persistence::Entry {
+                anime: Anime {
+                    id: "1".into(),
+                    title: "Frieren".into(),
+                    ..Default::default()
+                },
+                episode: "6".into(),
+                mode: Mode::Sub,
+                watched_at: 0,
+            });
+            state.history.replace_entries(entries);
+        }
         let text = render_text(&mut state, 120, 40);
         assert!(text.contains("History"));
         assert!(text.contains("Series"));
@@ -2903,14 +2932,16 @@ mod tests {
         assert!(state.view.text_view.is_some());
         render_text(&mut state, 20, 8);
         assert!(state.view.text_view.is_none());
-        let anime = state.search.results[0].clone();
+        let anime = state.search.results()[0].clone();
         state.episodes.anime = Some(anime.clone());
-        state.history.entries = vec![crate::persistence::Entry {
-            anime,
-            episode: "1".into(),
-            mode: Mode::Sub,
-            watched_at: 1,
-        }];
+        state
+            .history
+            .replace_entries(vec![crate::persistence::Entry {
+                anime,
+                episode: "1".into(),
+                mode: Mode::Sub,
+                watched_at: 1,
+            }]);
         for screen in [Screen::Search, Screen::Episodes, Screen::History] {
             state.screen = screen;
             render_text(&mut state, 120, 40);

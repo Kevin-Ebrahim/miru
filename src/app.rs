@@ -562,11 +562,11 @@ impl App {
                         .state
                         .selected_history()
                         .map(|e| (e.anime.id.clone(), e.mode));
-                    self.state.history.entries = library.entries;
+                    self.state.history.replace_entries(library.entries);
                     self.state.history.selected = key
                         .and_then(|(id, mode)| {
                             self.state.visible_history().iter().position(|i| {
-                                let e = &self.state.history.entries[*i];
+                                let e = &self.state.history.entries()[*i];
                                 e.anime.id == id && e.mode == mode
                             })
                         })
@@ -1565,12 +1565,16 @@ mod tests {
                 state.screen = screen;
                 state.focus = Focus::List;
                 state.episodes.anime = Some(anime("series", "A series"));
-                state.history.entries.push(crate::persistence::Entry {
-                    anime: state.episodes.anime.clone().unwrap(),
-                    episode: last.into(),
-                    mode: Mode::Dub,
-                    watched_at: 1,
-                });
+                {
+                    let mut entries = state.history.entries().to_vec();
+                    entries.push(crate::persistence::Entry {
+                        anime: state.episodes.anime.clone().unwrap(),
+                        episode: last.into(),
+                        mode: Mode::Dub,
+                        watched_at: 1,
+                    });
+                    state.history.replace_entries(entries);
+                }
                 state.episodes.items = (1..=3)
                     .map(|n| Episode {
                         id: n.to_string(),
@@ -1840,27 +1844,29 @@ mod tests {
         );
         state.screen = Screen::History;
         state.focus = Focus::List;
-        state.history.entries = ["Frieren", "Cowboy Bebop", "Cowboy Bebop Movie"]
-            .iter()
-            .enumerate()
-            .map(|(i, title)| crate::persistence::Entry {
-                anime: anime(&i.to_string(), title),
-                episode: "4".into(),
-                mode: Mode::Sub,
-                watched_at: i as u64,
-            })
-            .collect();
+        state.history.replace_entries(
+            ["Frieren", "Cowboy Bebop", "Cowboy Bebop Movie"]
+                .iter()
+                .enumerate()
+                .map(|(i, title)| crate::persistence::Entry {
+                    anime: anime(&i.to_string(), title),
+                    episode: "4".into(),
+                    mode: Mode::Sub,
+                    watched_at: i as u64,
+                })
+                .collect(),
+        );
         let mut app = test_app(state, dir.path());
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         app.paste("BEBOP");
         assert_eq!(app.state.screen, Screen::History);
         assert_eq!(app.state.search.query.text, "original search");
         assert!(app.search_due.is_none() && app.search_task.is_none());
-        assert_eq!(app.state.visible_history(), [1, 2]);
+        assert_eq!(app.state.visible_history().as_ref(), [1, 2]);
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.state.selected_history().unwrap().anime.id, "2");
-        let mut entries = app.state.history.entries.clone();
+        let mut entries = app.state.history.entries().to_vec();
         entries.remove(2);
         app.message(Message::Library(Ok(crate::persistence::Library {
             entries,
@@ -1881,16 +1887,18 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let mut state =
                 State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
-            state.history.entries = (0..4)
-                .map(|n| crate::persistence::Entry {
-                    anime: anime(&n.to_string(), &format!("Series {n}")),
-                    episode: "1".into(),
-                    mode: Mode::Sub,
-                    watched_at: n,
-                })
-                .collect();
+            state.history.replace_entries(
+                (0..4)
+                    .map(|n| crate::persistence::Entry {
+                        anime: anime(&n.to_string(), &format!("Series {n}")),
+                        episode: "1".into(),
+                        mode: Mode::Sub,
+                        watched_at: n,
+                    })
+                    .collect(),
+            );
             state.history.selected = removed;
-            let mut entries = state.history.entries.clone();
+            let mut entries = state.history.entries().to_vec();
             entries.remove(removed);
             let mut app = test_app(state, dir.path());
             app.message(Message::Library(Ok(crate::persistence::Library {
@@ -1898,7 +1906,7 @@ mod tests {
                 ..Default::default()
             })));
             assert_eq!(app.state.history.selected, removed.min(2));
-            let selected = app.state.history.entries[app.state.history.selected]
+            let selected = app.state.history.entries()[app.state.history.selected]
                 .anime
                 .id
                 .clone();
@@ -1908,7 +1916,7 @@ mod tests {
                 ..Default::default()
             })));
             assert_eq!(
-                app.state.history.entries[app.state.history.selected]
+                app.state.history.entries()[app.state.history.selected]
                     .anime
                     .id,
                 selected
@@ -1930,7 +1938,7 @@ mod tests {
         );
         let results = vec![anime("1", "Frieren"), anime("2", "Another English title")];
         state.accept_search(0, Ok(results.clone()));
-        assert_eq!(state.visible(), [0, 1]);
+        assert_eq!(state.visible().as_ref(), [0, 1]);
         state.search.selected = 1;
         state.accept_search(0, Ok(results));
         assert_eq!(state.search.selected, 1);
@@ -2113,7 +2121,7 @@ mod tests {
                 ..Default::default()
             }])
         ));
-        assert!(state.search.results.is_empty());
+        assert!(state.search.results().is_empty());
         assert!(state.accept_search(
             state.search_generation,
             Ok(vec![Anime {
@@ -2124,7 +2132,7 @@ mod tests {
         state.search.query.set(String::new());
         state.invalidate_search();
         assert!(!state.accept_search(old + 1, Ok(vec![Anime::default()])));
-        assert!(state.search.results.is_empty());
+        assert!(state.search.results().is_empty());
     }
     #[tokio::test]
     async fn episode_forward_navigation_opens_details_without_starting_playback() {

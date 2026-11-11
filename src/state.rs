@@ -1,6 +1,7 @@
 use crate::{
+    filter::TitleList,
     input::Input,
-    model::{Anime, Episode, Mode, normalized},
+    model::{Anime, Episode, Mode},
 };
 use anyhow::Result;
 use lru::LruCache;
@@ -68,17 +69,44 @@ pub enum Synopsis {
 #[derive(Clone, Default)]
 pub struct SearchState {
     pub query: Input,
-    pub results: Vec<Anime>,
+    results: TitleList<Anime>,
     pub results_query: String,
     pub selected: usize,
     pub exact: bool,
 }
 
-#[derive(Default)]
 pub struct HistoryState {
-    pub entries: Vec<crate::persistence::Entry>,
+    entries: TitleList<crate::persistence::Entry>,
     pub query: Input,
     pub selected: usize,
+}
+
+impl SearchState {
+    pub fn results(&self) -> &[Anime] {
+        self.results.items()
+    }
+    pub fn replace_results(&mut self, results: Vec<Anime>) {
+        self.results.replace(results, |anime| &anime.title);
+    }
+}
+
+impl Default for HistoryState {
+    fn default() -> Self {
+        Self {
+            entries: TitleList::new(str::to_lowercase),
+            query: Input::default(),
+            selected: 0,
+        }
+    }
+}
+
+impl HistoryState {
+    pub fn entries(&self) -> &[crate::persistence::Entry] {
+        self.entries.items()
+    }
+    pub fn replace_entries(&mut self, entries: Vec<crate::persistence::Entry>) {
+        self.entries.replace(entries, |entry| &entry.anime.title);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -177,45 +205,24 @@ impl State {
         }
     }
 
-    pub fn visible(&self) -> Vec<usize> {
-        let query = normalized(&self.search.query.text);
-        self.search
-            .results
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| {
-                let title = normalized(&a.title);
-                if self.search.exact {
-                    title == query
-                } else {
-                    query == normalized(&self.search.results_query) || title.contains(&query)
-                }
-            })
-            .map(|(i, _)| i)
-            .collect()
+    pub fn visible(&self) -> std::sync::Arc<[usize]> {
+        self.search.results.visible(
+            &self.search.query.text,
+            self.search.exact,
+            Some(&self.search.results_query),
+        )
     }
 
-    pub fn visible_history(&self) -> Vec<usize> {
-        let query = self.history.query.text.trim().to_lowercase();
+    pub fn visible_history(&self) -> std::sync::Arc<[usize]> {
         self.history
             .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                entry
-                    .anime
-                    .title
-                    .to_lowercase()
-                    .contains(&query)
-                    .then_some(i)
-            })
-            .collect()
+            .visible(self.history.query.text.trim(), false, None)
     }
 
     pub fn selected_history(&self) -> Option<&crate::persistence::Entry> {
         self.visible_history()
             .get(self.history.selected)
-            .and_then(|i| self.history.entries.get(*i))
+            .and_then(|i| self.history.entries().get(*i))
     }
 
     pub(crate) fn history_filter_changed(&mut self) {
@@ -230,7 +237,7 @@ impl State {
             Screen::Search => self
                 .visible()
                 .get(self.search.selected)
-                .and_then(|i| self.search.results.get(*i)),
+                .and_then(|i| self.search.results().get(*i)),
             Screen::Episodes => self.episodes.anime.as_ref(),
             Screen::History => self.selected_history().map(|e| &e.anime),
         }
@@ -256,7 +263,7 @@ impl State {
         self.request_error = None;
         self.status.clear();
         if !self.loading {
-            self.search.results.clear();
+            self.search.replace_results(vec![]);
         }
     }
 
@@ -268,13 +275,13 @@ impl State {
         match result {
             Ok(results) => {
                 let selected_id = self.selected_anime().map(|a| a.id.clone());
-                self.search.results = results;
+                self.search.replace_results(results);
                 self.search.results_query = self.search.query.text.clone();
                 self.search.selected = selected_id
                     .and_then(|id| {
                         self.visible()
                             .iter()
-                            .position(|i| self.search.results[*i].id == id)
+                            .position(|i| self.search.results()[*i].id == id)
                     })
                     .unwrap_or(0);
                 self.error = false;
