@@ -208,8 +208,11 @@ petals around the search area. Its silhouette follows the approved concept artwo
 with clustered halftone blossoms, fine bark texture, a spreading root base, and
 soft lighting drawn from the terminal theme. Blossoms and petals use the theme's
 magenta colour (falling back to its accent), with contrast adjusted for light and
-dark backgrounds. Petals flow immediately and keep
-moving while typing. Returning Home resumes the same animation phase.
+dark backgrounds. Upper blossom edges catch light, with shaded undersides and
+deeper pockets between clusters. Petals drift in three depth layers, with smaller,
+slower dots behind brighter foreground petals. Occasional gentle gusts carry them
+together and sway the canopy. Petals flow immediately and keep moving while typing.
+Returning Home resumes the same animation phase.
 `--no-animation` keeps the tree still; compact terminals omit the scene.
 The scene uses terminal characters, including plain ASCII and `NO_COLOR` fallbacks,
 and stops animating outside Home. The executable and saved-data
