@@ -12,16 +12,13 @@ mod player;
 mod provider;
 mod sakura;
 mod state;
+mod terminal;
 mod theme;
 mod ui;
 mod view;
 
 use anyhow::{Context, Result, ensure};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
-use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
-    execute,
-};
 use model::{Mode, normalized};
 use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
 use std::{
@@ -146,19 +143,6 @@ fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
         .join(name)
 }
 
-struct TerminalGuard;
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = execute!(
-            io::stdout(),
-            crossterm::terminal::EndSynchronizedUpdate,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        ratatui::restore();
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse_with_legacy_env()?;
@@ -246,19 +230,7 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("Could not create Miru state directory")?;
-    let _guard = TerminalGuard;
-    let mut terminal = ratatui::try_init()?;
-    execute!(io::stdout(), EnableBracketedPaste)?;
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(
-            io::stdout(),
-            crossterm::terminal::EndSynchronizedUpdate,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        original_hook(info);
-    }));
+    let (_guard, mut terminal) = terminal::init()?;
     let colorless = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let images_enabled = !matches!(cli.images, Images::Off) && !colorless;
     let mut picker = if !images_enabled || matches!(cli.images, Images::Halfblocks) {

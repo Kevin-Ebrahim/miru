@@ -6,6 +6,7 @@ This emulates cursor replies; it does NOT replace visual Kitty/Herdr testing.
 import fcntl
 import os
 import pathlib
+import resource
 import select
 import signal
 import struct
@@ -17,6 +18,7 @@ import time
 
 
 def check(binary, exit_method, animate=False, locked=False):
+    closing_terminal = exit_method in ("terminal-close", "terminal-close-help")
     with tempfile.TemporaryDirectory(prefix="miru-pty-") as directory:
         held_lock = None
         if locked:
@@ -29,8 +31,15 @@ def check(binary, exit_method, animate=False, locked=False):
         command = [str(binary), "--images", "off", "--state-dir", directory]
         if not animate:
             command.append("--no-animation")
+
+        def own_terminal():
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
         process = subprocess.Popen(command,
-                                   stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+                                   stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+                                   preexec_fn=own_terminal if closing_terminal else None)
+        closed = False
         output = bytearray()
         pending = bytearray()
 
@@ -91,6 +100,17 @@ def check(binary, exit_method, animate=False, locked=False):
                     compact_drawn = len(output)
                     pump(0.4)
                     assert len(output) == compact_drawn, "Compact layout kept animating"
+            if closing_terminal:
+                if exit_method == "terminal-close-help":
+                    os.write(master, b"\x1bOP")
+                    pump(0.2)
+                    assert b"Keybindings" in output, "Help did not draw before closing"
+                os.close(master)
+                os.close(slave)
+                closed = True
+                status = process.wait(timeout=3)
+                assert status == 0, f"Closing the terminal exited with {status}"
+                return
             if locked:
                 os.write(master, b"\t\x1b[C")  # Change audio and queue a save.
                 pump(0.1)
@@ -118,8 +138,9 @@ def check(binary, exit_method, animate=False, locked=False):
             if process.poll() is None:
                 process.kill()
                 process.wait()
-            os.close(master)
-            os.close(slave)
+            if not closed:
+                os.close(master)
+                os.close(slave)
             if held_lock:
                 held_lock.close()
 
@@ -130,4 +151,6 @@ if __name__ == "__main__":
         check(executable, method)
     check(executable, "ctrl+c", animate=True)
     check(executable, "ctrl+c", locked=True)
-    print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q does not quit, Ctrl+C, SIGTERM, SIGHUP, terminal restoration")
+    check(executable, "terminal-close")
+    check(executable, "terminal-close-help")
+    print("PASS: sakura immediate start/persistent typing/return, hidden/compact/reduced-motion stillness, PTY resize, q does not quit, Ctrl+C, SIGTERM, SIGHUP, actual terminal close, terminal restoration")

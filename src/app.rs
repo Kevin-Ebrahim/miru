@@ -1205,7 +1205,7 @@ impl App {
 
     pub async fn run(
         &mut self,
-        terminal: &mut ratatui::DefaultTerminal,
+        terminal: &mut crate::terminal::Terminal,
         picker: Picker,
         signals: [tokio::signal::unix::Signal; 3],
         theme: crate::theme::ThemeSource,
@@ -1217,7 +1217,12 @@ impl App {
         abort(&mut self.synopsis_task);
         let jobs = self.jobs.shutdown().await;
         let saved = self.writer.shutdown().await;
-        result?;
+        if let Err(error) = result {
+            // A terminal close can surface as I/O failure before SIGHUP is polled.
+            if !error.is::<std::io::Error>() || !crate::terminal::is_disconnected() {
+                return Err(error);
+            }
+        }
         jobs?;
         saved?;
         while let Ok(result) = self.library_rx.try_recv() {
@@ -1228,7 +1233,7 @@ impl App {
 
     async fn run_loop(
         &mut self,
-        terminal: &mut ratatui::DefaultTerminal,
+        terminal: &mut crate::terminal::Terminal,
         picker: Picker,
         signals: [tokio::signal::unix::Signal; 3],
         theme: crate::theme::ThemeSource,
