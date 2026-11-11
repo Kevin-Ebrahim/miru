@@ -331,16 +331,6 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
     }
 }
 
-fn wordmark_inner_color(state: &State) -> Option<ratatui::style::Color> {
-    use ratatui::style::Color;
-    let colors = palette(state);
-    let Color::Rgb(r, g, b) = colors.canvas else {
-        return None;
-    };
-    let light = u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114 >= 128_000;
-    wordmark_style(state, colors.text, if light { 32 } else { 16 }).fg
-}
-
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
     let activity_height = state.activity.as_ref().map_or(0, |a| {
         if a.message.is_empty() && a.quality_note.is_empty() {
@@ -442,13 +432,6 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
                 } else {
                     100
                 };
-                let interior: &[usize] = match (large_logo, i) {
-                    (true, 3) => &[18, 19, 20, 21, 28, 29, 30, 31],
-                    (true, 4 | 5) => &[2, 3, 6, 7, 28, 29, 30, 31],
-                    (false, 2) => &[1, 3, 14, 15],
-                    _ => &[],
-                };
-                let inner = wordmark_inner_color(state);
                 let left_width = left.chars().count();
                 let spans: Vec<_> = left
                     .chars()
@@ -460,22 +443,12 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
                         } else {
                             palette(state).text
                         };
-                        let mut style = wordmark_style(state, color, strength);
-                        let mut glyph = if large_logo && glyph == '█' {
+                        let style = wordmark_style(state, color, strength);
+                        let glyph = if large_logo && glyph == '█' {
                             '▇'
                         } else {
                             glyph
                         };
-                        if interior.contains(&column)
-                            && let Some(fill) = inner
-                        {
-                            if glyph == ' ' {
-                                glyph = if large_logo { '▇' } else { '█' };
-                                style = Style::default().fg(fill);
-                            } else {
-                                style = style.bg(fill);
-                            }
-                        }
                         Span::styled(glyph.to_string(), style)
                     })
                     .collect();
