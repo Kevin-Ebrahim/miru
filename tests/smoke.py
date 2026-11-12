@@ -182,7 +182,15 @@ def main():
             assert found[0]["id"] == "smoke-1"
             streams = [json.loads(line) for line in run(common + ["--resolve", "Smoke", "-e", "0--1"]).stdout.splitlines()]
             assert len(streams) == 2 and streams[0]["audio"] and streams[0]["subtitle"]
-            run(common + ["--play", "Smoke", "-e", "1-2", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"])
+            played = run(common + ["--play", "Smoke", "-e", "1-2", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null"])
+            assert not played.stdout and not played.stderr, "Successful playback leaked player output"
+            invalid = subprocess.run(common + ["--play", "Smoke", "-e", "2", "--player-arg=--no-config",
+                                               "--player-arg=--miru-review-invalid-option"],
+                                     capture_output=True, text=True, timeout=10)
+            log = root / "state/player.log"
+            assert invalid.returncode != 0 and str(log) in invalid.stderr, invalid
+            assert "Error parsing option miru-review-invalid-option" in log.read_text(), "Missing mpv startup diagnostic"
+            assert not invalid.stdout and "Error parsing option" not in invalid.stderr, "Player diagnostics leaked into CLI output"
             for path, backend in (("vlc-backup with spaces/mpv", None), ("wrapper names/my-vlc-wrapper", None),
                                   ("literal $(touch marker) vlc/mpv", None), ("overrides/vlc", "mpv")):
                 alias = root / path
@@ -211,8 +219,8 @@ def main():
                     arguments += ["--player-backend", override]
                 run(arguments, cwd=root)
                 recorded = json.loads((wrapper_dir / "arguments.json").read_text())
-                expected = "--play-and-exit" if backend == "vlc" else "--no-terminal"
-                excluded = "--no-terminal" if backend == "vlc" else "--play-and-exit"
+                expected = "--play-and-exit" if backend == "vlc" else "--input-terminal=no"
+                excluded = "--input-terminal=no" if backend == "vlc" else "--play-and-exit"
                 assert expected in recorded and excluded not in recorded, recorded
                 assert literal in recorded and any(argument.startswith("--http-proxy=") for argument in recorded), recorded
                 assert not (root / "marker").exists(), "Player argument was evaluated by a shell"

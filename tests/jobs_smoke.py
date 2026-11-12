@@ -3,6 +3,7 @@
 
 Uses local provider metadata and disposable mpv/ffmpeg-compatible wrappers.
 Actual media decoding/muxing is covered by smoke.py and network_smoke.py.
+Player wrappers emit large diagnostics on both streams before becoming ready.
 """
 import argparse
 import base64
@@ -127,6 +128,10 @@ while not (root / ("child-" + token)).exists():
 if pathlib.Path(__file__).name == "ffmpeg":
     pathlib.Path(sys.argv[-1]).write_bytes(b"owned partial fixture")
     print("out_time=00:00:00.1", flush=True)
+else:
+    for stream, label in ((sys.stdout, "STDOUT"), (sys.stderr, "STDERR")):
+        stream.write("MIRU_PLAYER_" + label + "_BEGIN\\n" + "x" * (256 * 1024) + "\\nMIRU_PLAYER_" + label + "_END\\n")
+        stream.flush()
 with (root / "launches").open("a") as log:
     log.write(json.dumps({"token": token, "args": sys.argv[1:]}) + "\\n")
 while True:
@@ -210,6 +215,12 @@ class Run:
 
     def job(self, number, download):
         wait_for(lambda: len(self.launches()) >= number, self.pump, "Wrapper did not report its descendants ready")
+        if not download:
+            log = (self.root / "state/player.log").read_bytes()
+            for label in (b"STDOUT", b"STDERR"):
+                expected = (b"MIRU_PLAYER_" + label + b"_BEGIN\n" + b"x" * (256 * 1024) +
+                            b"\nMIRU_PLAYER_" + label + b"_END\n")
+                assert expected in log, f"Incomplete {label!r} diagnostic capture"
         executable = str(self.tools / ("ffmpeg" if download else "player"))
         tree = descendants(self.process.pid)
         wrappers = []
@@ -245,6 +256,10 @@ class Run:
 
     def exited(self, expected=0):
         wait_for(lambda: self.process.poll() is not None, self.pump, "Miru did not exit")
+        if not self.interactive:
+            stdout, stderr = self.process.communicate(timeout=1)
+            self.output.extend(stdout + stderr)
+        assert b"MIRU_PLAYER_" not in self.output, "Player diagnostics leaked into CLI/TUI output"
         assert self.process.returncode == expected, f"Unexpected Miru exit {self.process.returncode}: {bytes(self.output)[-1000:]}"
 
     def close(self):

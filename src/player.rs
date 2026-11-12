@@ -67,7 +67,8 @@ impl Player {
                 args.extend([
                     format!("--referrer={}", stream.referer),
                     format!("--force-media-title={title}"),
-                    "--no-terminal".into(),
+                    "--terminal=yes".into(),
+                    "--input-terminal=no".into(),
                     "--network-timeout=20".into(),
                     format!(
                         "--demuxer-lavf-o-append=protocol_whitelist={}",
@@ -101,7 +102,7 @@ pub async fn launch(
     let mut child = media.command(executable, Tool::Player)?
         .args(player.args(media.stream(), quality, title))
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(output.try_clone().context("Could not capture player stdout")?)
         .stderr(output)
         .kill_on_drop(true)
         .spawn()
@@ -146,9 +147,10 @@ mod tests {
             let arguments =
                 Player::new(player, vec![], None).args(&stream(), "best", "Routing Probe");
             assert!(
-                arguments.contains(&"--no-terminal".into()),
+                arguments.contains(&"--input-terminal=no".into()),
                 "{player}: {arguments:?}"
             );
+            assert!(arguments.contains(&"--terminal=yes".into()));
             assert!(!arguments.contains(&"--play-and-exit".into()));
         }
     }
@@ -158,7 +160,7 @@ mod tests {
         for executable in ["vlc", "cvlc", "/usr/bin/vlc", "/tmp/player paths/cvlc"] {
             let arguments = Player::new(executable, vec![], None).args(&stream(), "best", "Probe");
             assert!(arguments.contains(&"--play-and-exit".into()));
-            assert!(!arguments.contains(&"--no-terminal".into()));
+            assert!(!arguments.contains(&"--input-terminal=no".into()));
         }
     }
 
@@ -174,14 +176,14 @@ mod tests {
             (
                 "/tmp/player paths/vlc",
                 Backend::Mpv,
-                "--no-terminal",
+                "--input-terminal=no",
                 "--play-and-exit",
             ),
             (
                 "/tmp/tools/decoder",
                 Backend::Vlc,
                 "--play-and-exit",
-                "--no-terminal",
+                "--input-terminal=no",
             ),
         ] {
             let arguments = Player::new(executable, extra.clone(), Some(backend)).args(
