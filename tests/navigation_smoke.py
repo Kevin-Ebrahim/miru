@@ -140,12 +140,17 @@ while not (root / token).exists():
         master, slave = os.openpty()
         os.set_blocking(master, False)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
+        config_home = root / "config"
+        config = config_home / "miru/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"download_dir": str(root / "downloads")}))
+        saved_config = config.read_bytes()
         process = subprocess.Popen([
             str(binary), "--images", "off", "--no-animation", "--state-dir", str(root),
             "--cache-dir", str(root / "cache"), "--player", str(player), "--player-backend", "mpv",
-            "--download-dir", str(root / "downloads"),
             "--provider", f"http://127.0.0.1:{server.server_port}/",
-        ], stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        ], env={**os.environ, "XDG_CONFIG_HOME": str(config_home)},
+            stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         pending = bytearray()
         output = bytearray()
 
@@ -322,6 +327,7 @@ while not (root / token).exists():
             assert sum("episodeId=11" in url for url in requests) == first_requests
             assert any("episodeId=13" in url for url in requests)
             assert (root / "downloads" / "Original Series _ Episode 1 SUB.mkv").stat().st_mtime_ns == saved.st_mtime_ns
+            assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
             print("PASS: keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")

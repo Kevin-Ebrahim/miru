@@ -22,7 +22,7 @@ fn size_limit_error(limit: u64) -> io::Error {
     )
 }
 
-fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)

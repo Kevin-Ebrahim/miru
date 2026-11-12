@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline regression checks for unsupported history and import storage objects."""
+"""Offline regression checks for unsupported application storage objects."""
 import argparse
 import fcntl
 import json
@@ -47,7 +47,7 @@ def main():
                     process.kill()
                     process.communicate(timeout=3)
 
-        for operation in ("history", "import", "migration"):
+        for operation in ("history", "import", "config", "migration"):
             for kind in ("fifo", "fifo-link", "directory", "device", "socket", "oversized"):
                 directory = root / f"{operation}-{kind}"
                 directory.mkdir()
@@ -61,6 +61,11 @@ def main():
                 elif operation == "import":
                     target.write_text(json.dumps({"version": 2, "mode": "sub", "quality": "best", "entries": []}))
                     arguments = ["--state-dir", str(state), "--import-history", str(source)]
+                elif operation == "config":
+                    environment["XDG_CONFIG_HOME"] = str(directory)
+                    source = directory / "miru/config.json"
+                    source.parent.mkdir()
+                    arguments = ["--state-dir", str(state), "--provider", "http://127.0.0.1:9", "--list", "Probe"]
                 else:
                     environment["XDG_STATE_HOME"] = str(directory)
                     source = directory / "ani-watch/library.json"
@@ -88,7 +93,8 @@ def main():
                         os.chdir(working_directory)
                 else:
                     with source.open("wb") as output:
-                        output.truncate((8 if operation == "import" else 32) * 1024 * 1024 + 1)
+                        budget = 64 * 1024 if operation == "config" else (8 if operation == "import" else 32) * 1024 * 1024
+                        output.truncate(budget + 1)
                 before = snapshot(source)
                 saved = target.read_bytes() if operation == "import" else None
                 try:
@@ -103,6 +109,8 @@ def main():
                         assert target.read_bytes() == saved, "Rejected import changed history"
                     elif operation == "migration":
                         assert not target.exists(), "Rejected migration created history"
+                    elif operation == "config":
+                        assert not target.exists(), "Rejected config created history"
                     print(f"PASS: {operation} rejects {kind} storage without modifying it", flush=True)
                 finally:
                     if listener:

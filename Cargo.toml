@@ -14,6 +14,7 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 # The alternate Unix reader returns on terminal EOF instead of spinning in Mio.
 crossterm = { version = "0.29", features = ["osc52", "use-dev-tty"] }
+dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 libc = "0.2"
 lru = "0.16"

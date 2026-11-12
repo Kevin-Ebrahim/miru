@@ -1,5 +1,6 @@
 mod app;
 mod artwork;
+mod config;
 mod download;
 mod filter;
 mod input;
@@ -77,8 +78,9 @@ struct Cli {
     /// Download directly with ffmpeg instead of opening the TUI
     #[arg(short = 'd', long)]
     download: bool,
-    #[arg(long, default_value = ".")]
-    download_dir: PathBuf,
+    /// Override the download folder for this run without changing the saved default
+    #[arg(long)]
+    download_dir: Option<PathBuf>,
     #[arg(short = 'q', long)]
     quality: Option<String>,
     #[arg(long)]
@@ -209,6 +211,7 @@ async fn run() -> Result<()> {
         ))?;
         return Ok(());
     }
+    let download_dir = config::download_dir(cli.download_dir.as_deref())?;
     // Keep normal signal termination during startup and offline storage operations.
     let signals = jobs::shutdown_signals()?;
     let mode = if cli.dub {
@@ -236,7 +239,7 @@ async fn run() -> Result<()> {
                     cli.player_backend,
                 ),
                 state_dir: state_dir.clone(),
-                download_dir: cli.download_dir.clone(),
+                download_dir: download_dir.clone(),
                 history: writer.sender(),
             },
         );
@@ -304,7 +307,7 @@ async fn run() -> Result<()> {
             .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "miru/covers")),
         state_dir,
         images: images_enabled,
-        download_dir: cli.download_dir,
+        download_dir,
     };
     app::App::new(state, provider, options)
         .run(

@@ -112,6 +112,63 @@ def download_video(common, destination, quality, size):
     return media
 
 
+def check_download_destinations(common, root):
+    home = root / "download-home"
+    config_home = home / "config"
+    config_home.mkdir(parents=True)
+    config = config_home / "miru/config.json"
+    working = root / "working"
+    working.mkdir()
+    env = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(config_home)}
+    download = common + ["--download", "Smoke"]
+
+    def saved_in(folder, args=()):
+        result = run(download + list(args), cwd=working, env=env)
+        media = list(folder.glob("*.mkv"))
+        assert media and all(file.stat().st_size > 0 for file in media), result.stdout
+        return result
+
+    run(common + ["--list", "Smoke"], cwd=working, env=env)
+    assert not (home / "Downloads").exists(), "Browsing created a download directory"
+    assert not config.exists(), "Browsing wrote a config file"
+    saved_in(home / "Downloads/miru")
+    assert not list(working.iterdir()), "Default downloads leaked into the working directory"
+
+    relocated = home / "Téléchargements 日本語"
+    (config_home / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="$HOME/Téléchargements 日本語"\n')
+    saved_in(relocated / "miru")
+    config.parent.mkdir()
+    config.write_text("{}")
+    saved_in(relocated / "miru", ["-e", "2"])
+
+    config.write_text(json.dumps({"download_dir": "~/Anime library/日本語"}))
+    original = config.read_bytes()
+    custom = home / "Anime library/日本語"
+    saved_in(custom)
+    saved_in(working / "one-run", ["--download-dir", "./one-run"])
+    assert config.read_bytes() == original, "A one-run override changed the saved preference"
+    elsewhere = root / "another-working-directory"
+    elsewhere.mkdir()
+    run(download + ["-e", "2"], cwd=elsewhere, env=env)
+    assert len(list(custom.glob("*.mkv"))) == 2, "The saved default was not reused on the next run"
+    assert not list(elsewhere.iterdir()), "The saved path changed with the working directory"
+    saved_in(working, ["--download-dir", "."])
+    assert config.read_bytes() == original
+
+    config.write_text("{invalid json")
+    bad = subprocess.run(download, cwd=working, env=env, text=True, capture_output=True, timeout=10)
+    assert bad.returncode != 0 and str(config) in bad.stderr, bad.stderr
+    saved_in(root / "override-invalid-config", ["--download-dir", str(root / "override-invalid-config")])
+    assert config.read_text() == "{invalid json", "Invalid config was overwritten"
+    blocked = home / "blocked"
+    blocked.write_text("This is a file")
+    config.write_text(json.dumps({"download_dir": str(blocked)}))
+    bad = subprocess.run(download, cwd=working, env=env, text=True, capture_output=True, timeout=10)
+    assert bad.returncode != 0 and "Could not create download directory" in bad.stderr, bad.stderr
+    assert blocked.read_text() == "This is a file"
+    print("PASS: automatic/fallback/XDG download folders, saved config, tilde/Unicode paths, one-run overrides, next-run persistence, invalid/unusable destinations")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", nargs="?", default="target/debug/miru", type=pathlib.Path)
@@ -124,6 +181,7 @@ def main():
             raise SystemExit(f"Install {command} to run the media smoke test")
     with tempfile.TemporaryDirectory(prefix="miru-smoke-") as temporary:
         root = pathlib.Path(temporary)
+        os.environ["XDG_CONFIG_HOME"] = str(root / "isolated-config")
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
              "testsrc=size=128x96:rate=12", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
              "-f", "hls", "-hls_playlist_type", "vod", str(root / "video.m3u8")])
@@ -329,6 +387,7 @@ def main():
             assert run(common + ["--history"]).stdout == before_rejected, "Unsupported playback changed history"
             assert not unsupported_dir.exists(), "Unsupported source left a download directory or partial media"
             master.write_text(original_master)
+            check_download_destinations(common, root)
             # Check nested protocol restrictions without breaking encrypted HLS.
             key = root / "encrypt.key"
             key.write_bytes(os.urandom(16))

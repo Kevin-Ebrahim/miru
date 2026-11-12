@@ -37,6 +37,7 @@ def check(binary, exit_method, animate=False, locked=False):
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
         process = subprocess.Popen(command,
+                                   env={**os.environ, "XDG_CONFIG_HOME": str(pathlib.Path(directory) / "config")},
                                    stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
                                    preexec_fn=own_terminal if closing_terminal else None)
         closed = False

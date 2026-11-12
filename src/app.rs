@@ -68,6 +68,7 @@ pub struct App {
     synopsis_due: Option<Instant>,
     jobs: Jobs,
     search_due: Option<Instant>,
+    activity_due: Option<Instant>,
     job: u64,
     quit: bool,
     copy_requested: bool,
@@ -115,6 +116,7 @@ impl App {
             synopsis_due: None,
             jobs,
             search_due,
+            activity_due: None,
             job: 0,
             quit: false,
             copy_requested: false,
@@ -176,6 +178,15 @@ impl App {
     }
 
     fn show(&mut self, screen: Screen) {
+        if self
+            .state
+            .activity
+            .as_ref()
+            .is_some_and(|activity| activity.phase == JobPhase::Finished)
+        {
+            self.state.activity = None;
+            self.activity_due = None;
+        }
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
@@ -393,6 +404,7 @@ impl App {
         self.job += 1;
         self.jobs.stop();
         self.state.activity = None;
+        self.activity_due = None;
     }
 
     fn retry_activity(&mut self) {
@@ -452,6 +464,7 @@ impl App {
     }
 
     fn play(&mut self, index: usize) {
+        self.activity_due = None;
         let Some(activity) = self.state.activity.as_mut() else {
             return;
         };
@@ -487,6 +500,21 @@ impl App {
                 } else {
                     activity.phase = JobPhase::Finished;
                     activity.message = success;
+                    if activity.kind == JobKind::Download {
+                        if self.state.screen == Screen::Episodes
+                            && !self.state.details
+                            && self
+                                .state
+                                .episodes
+                                .anime
+                                .as_ref()
+                                .is_some_and(|anime| anime.same_source(&activity.anime))
+                        {
+                            self.activity_due = Some(Instant::now() + Duration::from_secs(4));
+                        } else {
+                            self.state.activity = None;
+                        }
+                    }
                 }
             }
             Err(err) => {
@@ -494,6 +522,15 @@ impl App {
                 activity.message = format!("{err:#}");
             }
         }
+    }
+
+    fn expire_activity(&mut self, now: Instant) -> bool {
+        if self.activity_due.is_some_and(|at| now >= at) {
+            self.activity_due = None;
+            self.state.activity = None;
+            return true;
+        }
+        false
     }
 
     fn message(&mut self, message: Message) {
@@ -1356,6 +1393,7 @@ impl App {
                     }
                 }
                 _ = tick.tick() => {
+                    dirty |= self.expire_activity(Instant::now());
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
@@ -1874,6 +1912,65 @@ mod tests {
         assert_eq!(activity.phase, JobPhase::Finished);
         assert_eq!(activity.quality_note, "720p (1080p unavailable)");
         assert!(activity.message.contains("Saved"));
+        let expires = app.activity_due.unwrap();
+        assert!(!app.expire_activity(expires - Duration::from_millis(1)));
+        assert!(app.state.activity.is_some());
+        assert!(app.expire_activity(expires));
+        assert!(app.state.activity.is_none());
+        assert!(!app.expire_activity(expires + Duration::from_secs(1)));
+    }
+
+    #[tokio::test]
+    async fn download_completion_is_dismissed_by_navigation_and_never_appears_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::History,
+            Screen::Episodes,
+        ] {
+            for finish_elsewhere in [false, true] {
+                let mut state = State::new(
+                    String::new(),
+                    Mode::Sub,
+                    "1080p".into(),
+                    false,
+                    false,
+                    false,
+                );
+                state.screen = Screen::Episodes;
+                state.episodes.anime = Some(anime("series", "Series"));
+                state.episodes.items = vec![Episode {
+                    provider: Default::default(),
+                    id: "1".into(),
+                    number: "1".into(),
+                    title: "First".into(),
+                }];
+                let mut app = test_app(state, dir.path());
+                app.start_selection(true);
+                app.jobs.stop();
+                let job = app.job;
+                if finish_elsewhere {
+                    app.state.episodes.anime = Some(anime("other", "Other Series"));
+                    app.navigate(screen);
+                    assert!(app.state.activity.as_ref().unwrap().active());
+                }
+                app.job_message(jobs::Event {
+                    id: job,
+                    update: jobs::Update::Finished(Ok(jobs::Output::Download(
+                        dir.path().join("episode.mkv"),
+                    ))),
+                });
+                if !finish_elsewhere {
+                    assert!(app.activity_due.is_some());
+                    app.navigate(screen);
+                }
+                assert!(app.state.activity.is_none());
+                assert!(app.activity_due.is_none());
+                app.back();
+                assert!(app.state.activity.is_none());
+            }
+        }
     }
 
     #[tokio::test]

@@ -139,6 +139,8 @@ Use `i` for full details when the terminal is too small for a preview.
 
 | Data | Default location |
 | --- | --- |
+| Download folder preference | `$XDG_CONFIG_HOME/miru/config.json` |
+| Downloaded episodes | `<system Downloads>/miru/` |
 | History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
 | Player and download diagnostics | `$XDG_STATE_HOME/miru/logs/player-*.log` and `download-*.log` |
 | Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
@@ -150,11 +152,12 @@ changes are coalesced; queued history changes are flushed on shutdown. An invali
 history file is reported and left intact.
 
 History reads and saves are limited to 32 MiB; ani-cli import sources are limited
-to 8 MiB. Unsupported file types and files over those limits are rejected without
-replacing existing history. Reads follow symlinks to regular files. Saving replaces
-the configured `library.json` path atomically, leaving an original symlink target
-unchanged. Startup and offline commands retain normal signal termination until
-Miru starts work that needs coordinated shutdown.
+to 8 MiB and the download-location config to 64 KiB. Unsupported file types and
+files over those limits are rejected without replacing existing history. Reads
+follow symlinks to regular files. Saving replaces the configured `library.json`
+path atomically, leaving an original symlink target unchanged. Startup and offline
+commands retain normal signal termination until Miru starts work that needs
+coordinated shutdown.
 
 History entries are retained until explicitly removed. Importing history and
 recording new playback do not prune older entries.
@@ -163,6 +166,38 @@ Each media job gets its own diagnostic log, and failures report that exact path.
 Cleanup runs when jobs start and finish, keeping the 32 most recently modified
 completed logs across playback and downloads. Logs for active jobs are
 always preserved, including those belonging to another Miru instance.
+
+### Download location
+
+The TUI and CLI use the same download folder. Without an override, episodes go
+into a `miru` subfolder of your system Downloads folder. On Linux, Miru respects
+the Downloads location in XDG `user-dirs.dirs`, including renamed or relocated
+folders. If no location is configured, it uses `~/Downloads/miru`. The folder is
+created when a download starts.
+
+To save a custom default, create `~/.config/miru/config.json` (or
+`$XDG_CONFIG_HOME/miru/config.json` if set):
+
+```json
+{
+  "download_dir": "~/Videos/anime"
+}
+```
+
+On macOS, the config file is `~/Library/Application Support/miru/config.json`.
+The saved directory must be an absolute path or start with `~/`, so launching
+Miru from another directory does not change it. Episodes are saved directly in
+the chosen directory. Omit `download_dir`, set it to `null`, or remove the file
+to restore the automatic default. Until a settings page is available, edit this
+file to change the saved preference.
+
+`--download-dir PATH` overrides the location for one run without modifying the
+config file. Relative paths are allowed for this flag; use `--download-dir .`
+to save into the current working directory. Downloads previously saved in your
+launch directory stay where they are. A destination that cannot be created is
+reported as an error; Miru does not switch to another folder.
+
+### Environment overrides
 
 | Environment variable | Command-line equivalent | Purpose |
 | --- | --- | --- |
@@ -248,11 +283,19 @@ must apply their own policy.
 
 ## Development
 
+GitHub Actions runs the checks below for pull requests to `main`, pushes to
+`main`, and manual runs. The `Build and test` job uses Ubuntu 26.04 with Rust
+stable, FFmpeg 8 and mpv. Select `Build and test` as a required status check in
+the `main` ruleset after its first successful run.
+
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 cargo build --release --locked
+python3 tests/cli_smoke.py target/release/miru
+python3 tests/output_smoke.py target/release/miru
+python3 tests/storage_smoke.py target/release/miru
 python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
 python3 tests/network_smoke.py target/release/miru
@@ -276,3 +319,15 @@ Run just the optional HLS audio-default checks with
 verifies the expected audio in downloads and mpv playback with `DEFAULT=YES`,
 `DEFAULT=NO`, and the attribute omitted. It also checks default/autoselect
 priority and stable selection among equally ranked renditions.
+
+### CodeQL schedule
+
+The `CodeQL weekly` workflow scans Rust, Python and JavaScript/TypeScript on
+Mondays at 02:17 UTC (04:17 South African time), with a manual-run option in
+Actions. It has no push or pull-request triggers and should not be a required
+PR check. Scheduled runs analyze the default branch.
+
+When switching from GitHub's CodeQL Default setup, merge this workflow first,
+then disable Default setup under Settings > Advanced Security > CodeQL analysis.
+Default setup otherwise continues its own push and PR scans. After switching,
+manually run `CodeQL weekly` once to verify analysis and result uploads.
