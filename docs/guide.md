@@ -30,6 +30,10 @@ See the [README](../README.md) for installation and first use.
 Printable keys enter text while an input has focus. Inputs support readline
 shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
 
+Dragging preview or details text copies the selected text. Navigation before a
+new drag targets the newly selected series. Resizing, moving the reading area,
+or opening Help clears unfinished selections.
+
 Ranges use the provider's episode order and can include decimal specials. Use
 `1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru
 validates the whole range before starting a queue. A queue keeps its original
@@ -49,16 +53,68 @@ miru --download frieren -e 1-3 --download-dir ./downloads
 miru --history
 ```
 
+Choose at most one operation: `--continue`, `--history`, `--import-history`,
+`--list`, `--resolve`, `--play`, or `--download`. Conflicting operations, such as
+`--play --history`, produce a usage error before network requests, media launches,
+imports or state changes. Without an operation flag, Miru opens the TUI;
+`--continue` opens its history view.
+
+Modifier flags remain accepted with every operation for compatibility; each
+operation uses only applicable settings. `--exact` controls searches, and `-S`
+and `-e` select direct resolve/play/download results. Language options apply to
+resolution, playback, downloads and the TUI; quality options apply to playback,
+downloads and the TUI. Player options apply to playback, `--download-dir` to
+downloads, and appearance options to the TUI. `--sub` and `--dub` remain mutually
+exclusive. State, provider and cache options remain available in every mode.
+
 `--list` and `--history` output JSON arrays; `--resolve` outputs one JSON object
 per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
 `--quality` override saved preferences. Select VLC with `--player vlc`, or
 supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
 to pass additional player options.
 
+A closed stdout pipe ends the command quietly with exit status 0 and skips any
+remaining episode work. Other stdout write failures are reported on stderr and
+return a nonzero exit status. Completed imports and downloads remain saved when
+their output consumer closes early.
+
+Player argument style is inferred from the executable's exact basename:
+`vlc` and `cvlc` use VLC options; every other name uses mpv options. Parent
+directories and symlink targets do not affect this choice. For wrappers or
+aliases, override it explicitly, for example
+`--player '/path/to/my wrapper' --player-backend vlc` or `--player-backend mpv`.
+Executable paths and extra arguments are passed literally, without a shell.
+
+`--resolve` keeps the existing top-level `variants`, `referer`, `subtitle`, and
+`audio` fields. The top-level `audio` remains a URL or null and describes the
+best video variant for compatibility. Each variant now also includes `audio`:
+either null for no declared group, or an object with `group` and `url`. A null
+`url` means that rendition's audio is included in the video. Scripts choosing
+a particular quality should use that variant's audio rather than the top-level
+compatibility field.
+
+`variants` contains video candidates: recognized audio-only entries in a mixed
+master are excluded from quality selection and stream export. A master with
+only such audio entries reports an unsupported source. Missing resolution or
+unrecognized codec metadata alone does not exclude a variant; `height: 0`
+continues to mean unknown video resolution. Direct media playlists remain
+supported.
+
 Downloads are saved as Matroska files with the selected video, separate audio
 when available, and the default or English subtitle track when available.
+Playback and downloads use audio from the selected video's
+[HLS rendition group](https://www.rfc-editor.org/rfc/rfc8216#section-4.3.4.2).
+The group's default rendition is preferred, then its first `AUTOSELECT=YES`
+rendition, then its first available rendition. Equal priorities retain playlist
+order. A variant without a separate audio rendition uses its embedded audio.
 Existing files are never overwritten; failed or cancelled downloads do not
 leave a completed file or mark episodes as watched.
+
+Ordinary filenames keep their existing format. When a long title needs
+shortening, the name keeps the episode number and SUB/DUB label, plus a stable
+tag to distinguish series with the same prefix. Only the series title is
+shortened, at a UTF-8 boundary, to keep the filename stem within 180 bytes.
+Any remaining collision reports an error and leaves the existing file intact.
 
 ## Images and appearance
 
@@ -86,7 +142,7 @@ Use `i` for full details when the terminal is too small for a preview.
 | Download folder preference | `$XDG_CONFIG_HOME/miru/config.json` |
 | Downloaded episodes | `<system Downloads>/miru/` |
 | History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
-| Last player and download errors | `$XDG_STATE_HOME/miru/player.log` and `download.log` |
+| Player and download diagnostics | `$XDG_STATE_HOME/miru/logs/player-*.log` and `download-*.log` |
 | Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
 
 When XDG variables are unset, state defaults to `~/.local/state` and cache to
@@ -94,6 +150,22 @@ When XDG variables are unset, state defaults to `~/.local/state` and cache to
 after two seconds instead of blocking exit indefinitely. Pending preference
 changes are coalesced; queued history changes are flushed on shutdown. An invalid
 history file is reported and left intact.
+
+History reads and saves are limited to 32 MiB; ani-cli import sources are limited
+to 8 MiB and the download-location config to 64 KiB. Unsupported file types and
+files over those limits are rejected without replacing existing history. Reads
+follow symlinks to regular files. Saving replaces the configured `library.json`
+path atomically, leaving an original symlink target unchanged. Startup and offline
+commands retain normal signal termination until Miru starts work that needs
+coordinated shutdown.
+
+History entries are retained until explicitly removed. Importing history and
+recording new playback do not prune older entries.
+
+Each media job gets its own diagnostic log, and failures report that exact path.
+Cleanup runs when jobs start and finish, keeping the 32 most recently modified
+completed logs across playback and downloads. Logs for active jobs are
+always preserved, including those belonging to another Miru instance.
 
 ### Download location
 
@@ -180,11 +252,34 @@ checks redirects, and rejects local or reserved destinations, including DNS answ
 An explicitly configured local provider permits requests to that provider's host,
 so local fixtures and self-hosted compatible providers continue to work.
 
-ffmpeg and mpv receive a network protocol allowlist and a 20-second network I/O
-timeout. Encrypted HLS and separate audio/subtitles remain supported. These tools
-fetch nested playlist resources themselves; Miru's destination checks apply to
-URLs it resolves, not every request made inside an external player. VLC retains
-its own transport settings. This policy is not an operating-system sandbox.
+Provider HTML is parsed in short-lived workers, with at most two active at once.
+Each page is limited to 4 MiB and 20,000 markup delimiters; each worker has a
+two-second deadline, a CPU limit and a 256 MiB address-space limit. Oversized,
+overly complex or slow pages produce an error. Cancelling a request kills its
+worker, so quitting does not wait for a busy HTML parser. These workers do not
+require bubblewrap.
+
+Playback and downloads require Linux and bubblewrap (`bwrap`). Each job runs in
+its own network and PID namespaces, with a temporary HTTP/HTTPS proxy as its
+only route to remote media. The proxy applies destination checks to every new
+connection, including nested playlists, segments, encryption keys, subtitles and
+redirect targets. It connects to the checked DNS answers without resolving the
+host again. HTTPS uses CONNECT; certificate validation remains the player's or
+ffmpeg's responsibility. The provider HTTP client separately rejects HTTPS
+downgrades in its redirects.
+
+ffmpeg and mpv also retain their protocol allowlist and 20-second network I/O
+timeout. Encrypted HLS and separate audio/subtitles remain supported. VLC and
+mpv-compatible custom players use the same proxy; a player that ignores it has
+no direct access to the host network. Ambient proxy and `NO_PROXY` settings are
+replaced for media jobs, so upstream corporate proxies and host TCP-based player
+control are not supported by this boundary. Filesystem access and Unix sockets
+for local display/audio remain available. The temporary proxy is removed when
+the job ends, and there is no unprotected fallback if isolation fails.
+
+Search, history, imports and JSON exports do not need bubblewrap. URLs exported
+by `--resolve` are ordinary source URLs; consumers launching their own tools
+must apply their own policy.
 
 ## Development
 
@@ -198,17 +293,32 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 cargo build --release --locked
+python3 tests/cli_smoke.py target/release/miru
+python3 tests/output_smoke.py target/release/miru
+python3 tests/storage_smoke.py target/release/miru
 python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
+python3 tests/network_smoke.py target/release/miru
+python3 tests/parser_smoke.py target/release/miru
+python3 tests/jobs_smoke.py target/release/miru
 python3 tests/terminal_smoke.py target/release/miru
 python3 tests/navigation_smoke.py target/release/miru
 python3 tests/theme_smoke.py target/release/miru
 ```
 
 The smoke tests use isolated temporary state and local provider fixtures. The
-media and navigation checks need ffmpeg; the media check also needs mpv and
-ffprobe. The terminal checks use a pseudo-terminal and do not replace visual
-testing in every terminal.
+media, network and navigation checks need ffmpeg and bubblewrap. The media and
+network checks also need mpv, with ffprobe for the media check and OpenSSL for
+the network check's temporary TLS fixture. The job checks need bubblewrap and
+use Python player/ffmpeg wrappers and Linux process identities to verify
+descendant termination and reaping. The terminal checks use a pseudo-terminal
+and do not replace visual testing in every terminal.
+
+Run just the optional HLS audio-default checks with
+`python3 tests/smoke.py target/release/miru --audio-fallback-only`. The fixture
+verifies the expected audio in downloads and mpv playback with `DEFAULT=YES`,
+`DEFAULT=NO`, and the attribute omitted. It also checks default/autoselect
+priority and stable selection among equally ranked renditions.
 
 ### CodeQL schedule
 

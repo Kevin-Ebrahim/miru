@@ -7,6 +7,7 @@ use crate::{
     artwork::Artwork,
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
+    player::Player,
     provider::Provider,
     state::{
         Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
@@ -39,8 +40,7 @@ enum Message {
 }
 
 pub struct Options {
-    pub player: String,
-    pub player_args: Vec<String>,
+    pub player: Player,
     pub cache: PathBuf,
     pub state_dir: PathBuf,
     pub images: bool,
@@ -97,7 +97,6 @@ impl App {
             provider.clone(),
             jobs::Options {
                 player: options.player.clone(),
-                player_args: options.player_args.clone(),
                 state_dir: options.state_dir.clone(),
                 download_dir: options.download_dir.clone(),
                 history: writer.sender(),
@@ -790,6 +789,7 @@ impl App {
 
     fn open_help(&mut self) {
         self.state.help = true;
+        self.state.view.text_selection = None;
         self.state.view.help_scroll = 0;
         self.state.help_filtering = false;
         self.state.help_query.set(String::new());
@@ -1286,8 +1286,9 @@ impl App {
         let mut dirty = true;
         let mut art_revision = 0;
         let mut mouse_capture = false;
+        let mut pending_mouse = None;
         let [mut interrupt, mut terminate, mut hangup] = signals;
-        while !self.quit {
+        while !self.quit && !crate::terminal::is_disconnected() {
             dirty |= self.prepare_synopsis();
             if self.synopsis_due.is_some_and(|at| Instant::now() >= at) {
                 self.load_synopsis(false);
@@ -1297,8 +1298,16 @@ impl App {
                 self.search();
                 dirty = true;
             }
-            while crossterm::event::poll(Duration::ZERO)? {
-                let event = crossterm::event::read()?;
+            // The Unix tty reader needs a positive timeout to drain buffered input.
+            let mut view_dirty = dirty;
+            loop {
+                let event = match pending_mouse.take() {
+                    Some(event) => Event::Mouse(event),
+                    None if crossterm::event::poll(Duration::from_millis(1))? => {
+                        crossterm::event::read()?
+                    }
+                    None => break,
+                };
                 if matches!(
                     event,
                     Event::Mouse(MouseEvent {
@@ -1308,11 +1317,21 @@ impl App {
                 ) {
                     continue;
                 }
+                // Mouse hit-testing needs the frame produced by all preceding input.
+                if view_dirty && let Event::Mouse(event) = event {
+                    pending_mouse = Some(event);
+                    break;
+                }
                 dirty = true;
+                view_dirty |= !matches!(event, Event::Mouse(_));
                 match event {
                     Event::Key(key) => self.key(key),
                     Event::Paste(text) => self.paste(&text),
                     Event::Mouse(event) => {
+                        view_dirty |= matches!(
+                            event.kind,
+                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                        );
                         if let Some(text) = self.mouse(event) {
                             execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))?;
                         }
@@ -1364,6 +1383,8 @@ impl App {
                 dirty = false;
             }
             tokio::select! {
+                // Resume deferred input immediately while still polling jobs and shutdown.
+                _ = std::future::ready(()), if pending_mouse.is_some() => {},
                 _ = theme_tick.tick() => {
                     let palette = theme.load(self.state.colorless).await;
                     if palette != self.state.palette {
@@ -1431,8 +1452,7 @@ mod tests {
             state,
             Provider::new("http://127.0.0.1:9").unwrap(),
             Options {
-                player: "does-not-exist".into(),
-                player_args: vec![],
+                player: Player::new("does-not-exist", vec![], None),
                 cache: dir.join("cache"),
                 state_dir: dir.into(),
                 images: false,
@@ -2072,8 +2092,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,
@@ -2134,8 +2153,7 @@ mod tests {
             .collect();
         state.episodes.range.set("1-2".into());
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,
@@ -2169,8 +2187,7 @@ mod tests {
         state.accept_search(0, Ok(vec![anime("first-1", "First series")]));
         state.focus = Focus::List;
         let options = Options {
-            player: "does-not-exist".into(),
-            player_args: vec![],
+            player: Player::new("does-not-exist", vec![], None),
             cache: dir.path().join("cache"),
             state_dir: dir.path().into(),
             images: false,

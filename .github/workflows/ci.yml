@@ -37,7 +37,7 @@ jobs:
       - name: Install media test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg mpv
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv bubblewrap openssl
 
       - name: Show tool versions
         run: |
@@ -46,6 +46,7 @@ jobs:
           ffmpeg -version
           ffprobe -version
           mpv --version
+          bwrap --version
 
       - name: Check formatting
         run: cargo fmt --check
@@ -61,6 +62,24 @@ jobs:
 
       - name: Check history migration and CLI compatibility
         run: python3 tests/rename_smoke.py target/release/miru
+
+      - name: Check operation conflicts and side effects
+        run: python3 tests/cli_smoke.py target/release/miru
+
+      - name: Check closed output pipes and write failures
+        run: python3 tests/output_smoke.py target/release/miru
+
+      - name: Check storage boundaries and offline termination
+        run: python3 tests/storage_smoke.py target/release/miru
+
+      - name: Check media destination enforcement
+        run: python3 tests/network_smoke.py target/release/miru
+
+      - name: Check bounded provider parsing
+        run: python3 tests/parser_smoke.py target/release/miru
+
+      - name: Check owned processes and isolated logs
+        run: python3 tests/jobs_smoke.py target/release/miru
 
       - name: Check playback and downloads
         run: python3 tests/smoke.py target/release/miru

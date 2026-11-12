@@ -1,9 +1,8 @@
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -13,7 +12,7 @@ struct Config {
 
 impl Config {
     fn load(path: &Path) -> Result<Self> {
-        let bytes = match fs::read(path) {
+        let bytes = match crate::persistence::read_regular(path, MAX_CONFIG_BYTES) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::default());
@@ -74,6 +73,7 @@ pub fn download_dir(override_dir: Option<&Path>) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn optional_config_and_saved_absolute_download_folder() {

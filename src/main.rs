@@ -7,6 +7,7 @@ mod input;
 mod jobs;
 mod model;
 mod network;
+mod output;
 mod palette;
 mod persistence;
 mod player;
@@ -19,7 +20,7 @@ mod ui;
 mod view;
 
 use anyhow::{Context, Result, ensure};
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 use model::{Mode, normalized};
 use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
 use std::{
@@ -41,7 +42,22 @@ enum Images {
 #[command(
     version,
     about = "A terminal-native anime browser",
-    after_help = "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\nThe shell ani-cli installation and history are left untouched."
+    group(ArgGroup::new("operation")
+        .args(["resume", "history", "import_history", "download", "list", "resolve", "play"])
+        .multiple(false)),
+    after_help = concat!(
+        "Operations are mutually exclusive: --continue, --history, --import-history,\n",
+        "--list, --resolve, --play and --download. With none, open the TUI.\n",
+        "--continue opens TUI history. Conflicts are rejected before any work starts.\n\n",
+        "Modifiers remain accepted with every operation; only applicable options take effect.\n",
+        "--exact controls searches; -S and -e select direct resolve/play/download results.\n",
+        "--sub/--dub choose resolve/play/download and TUI language; they conflict.\n",
+        "--quality sets playback/download quality and the TUI's initial quality.\n",
+        "Player options apply to playback; --download-dir applies to downloads.\n",
+        "Appearance options apply to the TUI. State/provider/cache options remain available.\n\n",
+        "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\n",
+        "The shell ani-cli installation and history are left untouched."
+    )
 )]
 struct Cli {
     /// Title to search for
@@ -60,7 +76,7 @@ struct Cli {
     #[arg(long)]
     import_history: Option<PathBuf>,
     /// Download directly with ffmpeg instead of opening the TUI
-    #[arg(short = 'd', long, conflicts_with_all = ["play", "list", "resolve"])]
+    #[arg(short = 'd', long)]
     download: bool,
     /// Override the download folder for this run without changing the saved default
     #[arg(long)]
@@ -72,6 +88,9 @@ struct Cli {
     /// Executable accepting mpv options (or VLC)
     #[arg(long, default_value = "mpv")]
     player: String,
+    /// Override argument style; inferred from the executable basename when omitted
+    #[arg(long, value_enum)]
+    player_backend: Option<player::Backend>,
     /// Additional player argument; repeat as needed (use = for leading --)
     #[arg(long)]
     player_arg: Vec<String>,
@@ -88,10 +107,10 @@ struct Cli {
     #[arg(long)]
     list: bool,
     /// Resolve stream metadata as JSON without launching a player
-    #[arg(long, conflicts_with = "list")]
+    #[arg(long)]
     resolve: bool,
     /// Play directly, without opening the TUI
-    #[arg(long, conflicts_with_all = ["list", "resolve"])]
+    #[arg(long)]
     play: bool,
     #[arg(short = 'S', long, default_value_t = 1)]
     select_nth: usize,
@@ -145,10 +164,20 @@ fn directory(env: &str, fallback: &str, name: &str) -> PathBuf {
         .join(name)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    if provider::run_parser_helper()? {
+        return Ok(());
+    }
+    let result = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run());
+    output::handle_closed_pipe(result)
+}
+
+async fn run() -> Result<()> {
+    network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
-    let signals = jobs::shutdown_signals()?;
     let provider = provider::Provider::new(&cli.provider)?;
     let query = cli.query.join(" ");
     let state_dir = cli
@@ -161,27 +190,30 @@ async fn main() -> Result<()> {
         store.migrate_from(&persistence::Store::new(&old_dir))?;
     }
     if let Some(path) = &cli.import_history {
-        let text = tokio::fs::read_to_string(path)
-            .await
-            .context("Could not read ani-cli history")?;
-        let entries = persistence::import_legacy(&text);
+        let entries = persistence::import_file(path)?;
         ensure!(
             !entries.is_empty(),
             "No compatible entries found in {}",
             path.display()
         );
         let library = store.update(persistence::Change::Import(entries))?;
-        println!(
+        output::line(format_args!(
             "History now contains {} entries. Source file unchanged.",
             library.entries.len()
-        );
+        ))?;
         return Ok(());
     }
     let library = store.load()?;
     if cli.history {
-        println!("{}", serde_json::to_string_pretty(&library.entries)?);
+        output::line(format_args!(
+            "{}",
+            serde_json::to_string_pretty(&library.entries)?
+        ))?;
         return Ok(());
     }
+    let download_dir = config::download_dir(cli.download_dir.as_deref())?;
+    // Keep normal signal termination during startup and offline storage operations.
+    let signals = jobs::shutdown_signals()?;
     let mode = if cli.dub {
         Mode::Dub
     } else if cli.sub {
@@ -193,7 +225,6 @@ async fn main() -> Result<()> {
         .quality
         .clone()
         .unwrap_or_else(|| library.quality.clone());
-    let download_dir = config::download_dir(cli.download_dir.as_deref())?;
     if cli.list || cli.resolve || cli.play || cli.download {
         if cli.play || cli.download {
             tokio::fs::create_dir_all(&state_dir).await?;
@@ -202,8 +233,11 @@ async fn main() -> Result<()> {
         let mut runner = jobs::Jobs::new(
             provider.clone(),
             jobs::Options {
-                player: cli.player.clone(),
-                player_args: cli.player_arg.clone(),
+                player: player::Player::new(
+                    cli.player.clone(),
+                    cli.player_arg.clone(),
+                    cli.player_backend,
+                ),
                 state_dir: state_dir.clone(),
                 download_dir: download_dir.clone(),
                 history: writer.sender(),
@@ -267,8 +301,7 @@ async fn main() -> Result<()> {
         state.status = "Enter opens episodes with the next episode selected.".into();
     }
     let options = app::Options {
-        player: cli.player,
-        player_args: cli.player_arg,
+        player: player::Player::new(cli.player, cli.player_arg, cli.player_backend),
         cache: cli
             .cache_dir
             .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "miru/covers")),
@@ -300,7 +333,7 @@ async fn run_cli(
         results.retain(|a| normalized(&a.title) == normalized(&query));
     }
     if cli.list {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        output::line(format_args!("{}", serde_json::to_string_pretty(&results)?))?;
         return Ok(());
     }
     let anime = cli
@@ -312,10 +345,10 @@ async fn run_cli(
     let indices = model::episode_range(&cli.episode, &episodes)?;
     for (id, i) in indices.into_iter().enumerate() {
         if cli.resolve {
-            println!(
+            output::line(format_args!(
                 "{}",
                 serde_json::to_string(&provider.resolve(&episodes[i], mode).await?)?
-            );
+            ))?;
             continue;
         }
         let title = if cli.download {
@@ -353,7 +386,7 @@ async fn run_cli(
                 jobs::Update::Progress(text) => eprintln!("{text}"),
                 jobs::Update::Finished(result) => {
                     if let jobs::Output::Download(path) = result? {
-                        println!("Saved {}", path.display());
+                        output::line(format_args!("Saved {}", path.display()))?;
                     }
                     break;
                 }
@@ -362,4 +395,113 @@ async fn run_cli(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    const OPERATIONS: &[&[&str]] = &[
+        &["--play"],
+        &["--history"],
+        &["--list"],
+        &["--resolve"],
+        &["--download"],
+        &["--import-history", "source"],
+        &["--continue"],
+    ];
+
+    fn parse(arguments: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        Cli::try_parse_from(
+            [
+                "miru",
+                "--theme",
+                "terminal",
+                "--provider",
+                "http://127.0.0.1:9",
+            ]
+            .into_iter()
+            .chain(arguments.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn every_operation_pair_conflicts_in_both_orders() {
+        for (index, left) in OPERATIONS.iter().enumerate() {
+            for right in &OPERATIONS[index + 1..] {
+                for (first, second) in [(left, right), (right, left)] {
+                    let mut arguments = first.to_vec();
+                    arguments.extend_from_slice(second);
+                    arguments.push("Probe");
+                    let error = parse(&arguments).err().unwrap_or_else(|| {
+                        panic!("Conflicting operations were accepted: {arguments:?}")
+                    });
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::ArgumentConflict,
+                        "{arguments:?}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_operation_and_single_operations_keep_existing_modifiers() {
+        for operation in std::iter::once(&[][..]).chain(OPERATIONS.iter().copied()) {
+            let mut arguments = operation.to_vec();
+            arguments.extend_from_slice(&[
+                "--sub",
+                "--quality",
+                "720p",
+                "--exact",
+                "--player",
+                "/path/to/player",
+                "--player-backend",
+                "mpv",
+                "--player-arg=--no-config",
+                "--images",
+                "off",
+                "--ascii",
+                "--no-animation",
+                "--download-dir",
+                "downloads",
+                "--cache-dir",
+                "cache",
+                "--state-dir",
+                "state",
+                "-S",
+                "2",
+                "-e",
+                "0--1",
+                "Probe",
+            ]);
+            assert!(
+                parse(&arguments).is_ok(),
+                "Valid modifiers were rejected: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn aliases_and_language_conflicts_keep_the_same_validation() {
+        for arguments in [
+            &["-c", "--history"][..],
+            &["-d", "--history"],
+            &["-cd"],
+            &["--play", "-c"],
+            &["-c", "--import-history", "source"],
+            &["--sub", "--dub"],
+        ] {
+            let error = parse(arguments)
+                .err()
+                .unwrap_or_else(|| panic!("Conflicting arguments were accepted: {arguments:?}"));
+            assert_eq!(
+                error.kind(),
+                ErrorKind::ArgumentConflict,
+                "{arguments:?}: {error}"
+            );
+        }
+    }
 }
