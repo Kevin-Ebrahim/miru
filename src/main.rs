@@ -19,7 +19,7 @@ mod ui;
 mod view;
 
 use anyhow::{Context, Result, ensure};
-use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, ValueEnum, parser::ValueSource};
 use model::{Mode, normalized};
 use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
 use std::{
@@ -41,7 +41,22 @@ enum Images {
 #[command(
     version,
     about = "A terminal-native anime browser",
-    after_help = "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\nThe shell ani-cli installation and history are left untouched."
+    group(ArgGroup::new("operation")
+        .args(["resume", "history", "import_history", "download", "list", "resolve", "play"])
+        .multiple(false)),
+    after_help = concat!(
+        "Operations are mutually exclusive: --continue, --history, --import-history,\n",
+        "--list, --resolve, --play and --download. With none, open the TUI.\n",
+        "--continue opens TUI history. Conflicts are rejected before any work starts.\n\n",
+        "Modifiers remain accepted with every operation; only applicable options take effect.\n",
+        "--exact controls searches; -S and -e select direct resolve/play/download results.\n",
+        "--sub/--dub choose resolve/play/download and TUI language; they conflict.\n",
+        "--quality sets playback/download quality and the TUI's initial quality.\n",
+        "Player options apply to playback; --download-dir applies to downloads.\n",
+        "Appearance options apply to the TUI. State/provider/cache options remain available.\n\n",
+        "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\n",
+        "The shell ani-cli installation and history are left untouched."
+    )
 )]
 struct Cli {
     /// Title to search for
@@ -60,7 +75,7 @@ struct Cli {
     #[arg(long)]
     import_history: Option<PathBuf>,
     /// Download directly with ffmpeg instead of opening the TUI
-    #[arg(short = 'd', long, conflicts_with_all = ["play", "list", "resolve"])]
+    #[arg(short = 'd', long)]
     download: bool,
     #[arg(long, default_value = ".")]
     download_dir: PathBuf,
@@ -90,10 +105,10 @@ struct Cli {
     #[arg(long)]
     list: bool,
     /// Resolve stream metadata as JSON without launching a player
-    #[arg(long, conflicts_with = "list")]
+    #[arg(long)]
     resolve: bool,
     /// Play directly, without opening the TUI
-    #[arg(long, conflicts_with_all = ["list", "resolve"])]
+    #[arg(long)]
     play: bool,
     #[arg(short = 'S', long, default_value_t = 1)]
     select_nth: usize,
@@ -377,4 +392,113 @@ async fn run_cli(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    const OPERATIONS: &[&[&str]] = &[
+        &["--play"],
+        &["--history"],
+        &["--list"],
+        &["--resolve"],
+        &["--download"],
+        &["--import-history", "source"],
+        &["--continue"],
+    ];
+
+    fn parse(arguments: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        Cli::try_parse_from(
+            [
+                "miru",
+                "--theme",
+                "terminal",
+                "--provider",
+                "http://127.0.0.1:9",
+            ]
+            .into_iter()
+            .chain(arguments.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn every_operation_pair_conflicts_in_both_orders() {
+        for (index, left) in OPERATIONS.iter().enumerate() {
+            for right in &OPERATIONS[index + 1..] {
+                for (first, second) in [(left, right), (right, left)] {
+                    let mut arguments = first.to_vec();
+                    arguments.extend_from_slice(second);
+                    arguments.push("Probe");
+                    let error = parse(&arguments).err().unwrap_or_else(|| {
+                        panic!("Conflicting operations were accepted: {arguments:?}")
+                    });
+                    assert_eq!(
+                        error.kind(),
+                        ErrorKind::ArgumentConflict,
+                        "{arguments:?}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_operation_and_single_operations_keep_existing_modifiers() {
+        for operation in std::iter::once(&[][..]).chain(OPERATIONS.iter().copied()) {
+            let mut arguments = operation.to_vec();
+            arguments.extend_from_slice(&[
+                "--sub",
+                "--quality",
+                "720p",
+                "--exact",
+                "--player",
+                "/path/to/player",
+                "--player-backend",
+                "mpv",
+                "--player-arg=--no-config",
+                "--images",
+                "off",
+                "--ascii",
+                "--no-animation",
+                "--download-dir",
+                "downloads",
+                "--cache-dir",
+                "cache",
+                "--state-dir",
+                "state",
+                "-S",
+                "2",
+                "-e",
+                "0--1",
+                "Probe",
+            ]);
+            assert!(
+                parse(&arguments).is_ok(),
+                "Valid modifiers were rejected: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn aliases_and_language_conflicts_keep_the_same_validation() {
+        for arguments in [
+            &["-c", "--history"][..],
+            &["-d", "--history"],
+            &["-cd"],
+            &["--play", "-c"],
+            &["-c", "--import-history", "source"],
+            &["--sub", "--dub"],
+        ] {
+            let error = parse(arguments)
+                .err()
+                .unwrap_or_else(|| panic!("Conflicting arguments were accepted: {arguments:?}"));
+            assert_eq!(
+                error.kind(),
+                ErrorKind::ArgumentConflict,
+                "{arguments:?}: {error}"
+            );
+        }
+    }
 }

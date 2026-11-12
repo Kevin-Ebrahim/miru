@@ -49,6 +49,20 @@ miru --download frieren -e 1-3 --download-dir ./downloads
 miru --history
 ```
 
+Choose at most one operation: `--continue`, `--history`, `--import-history`,
+`--list`, `--resolve`, `--play`, or `--download`. Conflicting operations, such as
+`--play --history`, produce a usage error before network requests, media launches,
+imports or state changes. Without an operation flag, Miru opens the TUI;
+`--continue` opens its history view.
+
+Modifier flags remain accepted with every operation for compatibility; each
+operation uses only applicable settings. `--exact` controls searches, and `-S`
+and `-e` select direct resolve/play/download results. Language options apply to
+resolution, playback, downloads and the TUI; quality options apply to playback,
+downloads and the TUI. Player options apply to playback, `--download-dir` to
+downloads, and appearance options to the TUI. `--sub` and `--dub` remain mutually
+exclusive. State, provider and cache options remain available in every mode.
+
 `--list` and `--history` output JSON arrays; `--resolve` outputs one JSON object
 per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
 `--quality` override saved preferences. Select VLC with `--player vlc`, or
