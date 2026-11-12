@@ -55,6 +55,11 @@ per episode. `-S` selects a one-based search result. `--sub`, `--dub`, and
 supply an mpv-compatible executable path. Repeat `--player-arg=--option=value`
 to pass additional player options.
 
+A closed stdout pipe ends the command quietly with exit status 0 and skips any
+remaining episode work. Other stdout write failures are reported on stderr and
+return a nonzero exit status. Completed imports and downloads remain saved when
+their output consumer closes early.
+
 Player argument style is inferred from the executable's exact basename:
 `vlc` and `cvlc` use VLC options; every other name uses mpv options. Parent
 directories and symlink targets do not affect this choice. For wrappers or

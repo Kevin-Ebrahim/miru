@@ -1,3 +1,4 @@
 /target/
 /artifacts/
 *.part
+__pycache__/

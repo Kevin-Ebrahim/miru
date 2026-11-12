@@ -6,6 +6,7 @@ mod input;
 mod jobs;
 mod model;
 mod network;
+mod output;
 mod palette;
 mod persistence;
 mod player;
@@ -150,10 +151,11 @@ fn main() -> Result<()> {
     if provider::run_parser_helper()? {
         return Ok(());
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run())
+        .block_on(run());
+    output::handle_closed_pipe(result)
 }
 
 async fn run() -> Result<()> {
@@ -178,15 +180,18 @@ async fn run() -> Result<()> {
             path.display()
         );
         let library = store.update(persistence::Change::Import(entries))?;
-        println!(
+        output::line(format_args!(
             "History now contains {} entries. Source file unchanged.",
             library.entries.len()
-        );
+        ))?;
         return Ok(());
     }
     let library = store.load()?;
     if cli.history {
-        println!("{}", serde_json::to_string_pretty(&library.entries)?);
+        output::line(format_args!(
+            "{}",
+            serde_json::to_string_pretty(&library.entries)?
+        ))?;
         return Ok(());
     }
     // Keep normal signal termination during startup and offline storage operations.
@@ -310,7 +315,7 @@ async fn run_cli(
         results.retain(|a| normalized(&a.title) == normalized(&query));
     }
     if cli.list {
-        println!("{}", serde_json::to_string_pretty(&results)?);
+        output::line(format_args!("{}", serde_json::to_string_pretty(&results)?))?;
         return Ok(());
     }
     let anime = cli
@@ -322,10 +327,10 @@ async fn run_cli(
     let indices = model::episode_range(&cli.episode, &episodes)?;
     for (id, i) in indices.into_iter().enumerate() {
         if cli.resolve {
-            println!(
+            output::line(format_args!(
                 "{}",
                 serde_json::to_string(&provider.resolve(&episodes[i], mode).await?)?
-            );
+            ))?;
             continue;
         }
         let title = if cli.download {
@@ -363,7 +368,7 @@ async fn run_cli(
                 jobs::Update::Progress(text) => eprintln!("{text}"),
                 jobs::Update::Finished(result) => {
                     if let jobs::Output::Download(path) = result? {
-                        println!("Saved {}", path.display());
+                        output::line(format_args!("Saved {}", path.display()))?;
                     }
                     break;
                 }
