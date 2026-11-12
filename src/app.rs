@@ -752,6 +752,7 @@ impl App {
 
     fn open_help(&mut self) {
         self.state.help = true;
+        self.state.view.text_selection = None;
         self.state.view.help_scroll = 0;
         self.state.help_filtering = false;
         self.state.help_query.set(String::new());
@@ -1248,6 +1249,7 @@ impl App {
         let mut dirty = true;
         let mut art_revision = 0;
         let mut mouse_capture = false;
+        let mut pending_mouse = None;
         let [mut interrupt, mut terminate, mut hangup] = signals;
         while !self.quit && !crate::terminal::is_disconnected() {
             dirty |= self.prepare_synopsis();
@@ -1260,8 +1262,15 @@ impl App {
                 dirty = true;
             }
             // The Unix tty reader needs a positive timeout to drain buffered input.
-            while crossterm::event::poll(Duration::from_millis(1))? {
-                let event = crossterm::event::read()?;
+            let mut view_dirty = dirty;
+            loop {
+                let event = match pending_mouse.take() {
+                    Some(event) => Event::Mouse(event),
+                    None if crossterm::event::poll(Duration::from_millis(1))? => {
+                        crossterm::event::read()?
+                    }
+                    None => break,
+                };
                 if matches!(
                     event,
                     Event::Mouse(MouseEvent {
@@ -1271,11 +1280,21 @@ impl App {
                 ) {
                     continue;
                 }
+                // Mouse hit-testing needs the frame produced by all preceding input.
+                if view_dirty && let Event::Mouse(event) = event {
+                    pending_mouse = Some(event);
+                    break;
+                }
                 dirty = true;
+                view_dirty |= !matches!(event, Event::Mouse(_));
                 match event {
                     Event::Key(key) => self.key(key),
                     Event::Paste(text) => self.paste(&text),
                     Event::Mouse(event) => {
+                        view_dirty |= matches!(
+                            event.kind,
+                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                        );
                         if let Some(text) = self.mouse(event) {
                             execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))?;
                         }
@@ -1327,6 +1346,8 @@ impl App {
                 dirty = false;
             }
             tokio::select! {
+                // Resume deferred input immediately while still polling jobs and shutdown.
+                _ = std::future::ready(()), if pending_mouse.is_some() => {},
                 _ = theme_tick.tick() => {
                     let palette = theme.load(self.state.colorless).await;
                     if palette != self.state.palette {

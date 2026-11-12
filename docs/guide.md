@@ -30,6 +30,10 @@ See the [README](../README.md) for installation and first use.
 Printable keys enter text while an input has focus. Inputs support readline
 shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
 
+Dragging preview or details text copies the selected text. Navigation before a
+new drag targets the newly selected series. Resizing, moving the reading area,
+or opening Help clears unfinished selections.
+
 Ranges use the provider's episode order and can include decimal specials. Use
 `1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru
 validates the whole range before starting a queue. A queue keeps its original

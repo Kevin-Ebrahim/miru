@@ -1347,6 +1347,14 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         state.view.text_selection = None;
         state.view.preview_scroll = 0;
     }
+    if state
+        .view
+        .text_view
+        .as_ref()
+        .is_some_and(|view| view.area.x != metadata.x || view.area.y != metadata.y)
+    {
+        state.view.text_selection = None;
+    }
     let max_scroll = details
         .len()
         .saturating_sub(metadata.height as usize)
@@ -2889,6 +2897,45 @@ mod tests {
             Some(' ')
         );
         assert_eq!(state.view.details_scroll, 0);
+    }
+
+    #[test]
+    fn text_selection_resets_when_the_reading_area_moves_without_rewrapping() {
+        let mut state = State::new(
+            "series".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.accept_search(
+            0,
+            Ok(vec![Anime {
+                id: "1".into(),
+                title: "A series title".into(),
+                description: "A short synopsis.".into(),
+                ..Default::default()
+            }]),
+        );
+        state.details = true;
+        render_text(&mut state, 120, 40);
+        let area = state.view.text_view.as_ref().unwrap().area;
+        let lines = state.view.text_view.as_ref().unwrap().lines.clone();
+        state.view.text_selection = Some(crate::view::TextSelection {
+            anchor: crate::view::TextPosition { line: 0, column: 0 },
+            end: crate::view::TextPosition { line: 0, column: 4 },
+            dragging: true,
+        });
+        render_text(&mut state, 140, 40);
+        let view = state.view.text_view.as_ref().unwrap();
+        assert_eq!(view.area.width, area.width);
+        assert_eq!(view.lines, lines);
+        assert_ne!(view.area.x, area.x);
+        assert!(
+            state.view.text_selection.is_none(),
+            "Moving the reading area kept an old drag alive"
+        );
     }
 
     #[test]

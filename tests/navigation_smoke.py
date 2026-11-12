@@ -177,12 +177,19 @@ while not (root / token).exists():
                 logs = "\n".join(log.read_text() for log in (root / "logs").glob("download-*.log"))
                 raise AssertionError("Timed out waiting for TUI action: " + (logs or "no download log"))
 
-        def copied_text(keys=b"y"):
+        def clipboard_texts(keys):
             output.clear()
             send(keys)
             payloads = re.findall(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)", output)
-            assert payloads, "Copy should emit a clipboard payload"
-            return base64.b64decode(payloads[-1]).decode()
+            return [base64.b64decode(payload).decode() for payload in payloads]
+
+        def copied_text(keys=b"y"):
+            texts = clipboard_texts(keys)
+            assert texts, "Copy should emit a clipboard payload"
+            return texts[-1]
+
+        def pointer(button, column, row, release=False):
+            return f"\x1b[<{button};{column};{row}{'m' if release else 'M'}".encode()
 
         def launches():
             path = root / "launches"
@@ -207,6 +214,34 @@ while not (root / token).exists():
             assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
             copied = copied_text(b"yk")
             assert "Second Series" in copied and "Original Series" not in copied, "Queued copy+navigation must copy before moving"
+            down = pointer(0, 66, 7)
+            up = pointer(0, 115, 7, release=True)
+            drag = down + pointer(32, 115, 7) + up
+            assert copied_text(drag) == "Original Series", "Mouse control must select the visible title"
+            copied = copied_text(b"j" + drag)
+            assert copied == "Second Series", f"Queued navigation+mouse-copy used stale panel text: {copied!r}"
+            assert clipboard_texts(drag + b"k" + drag) == ["Second Series", "Original Series"], "Mouse-copy/navigation must retain input order"
+            assert copied_text(pointer(65, 1, 7) + drag) == "Second Series", "Mouse-wheel navigation+drag used stale panel text"
+            send(b"k")
+            details_drag = pointer(0, 42, 4) + pointer(32, 110, 4) + pointer(0, 110, 4, release=True)
+            assert copied_text(b"i" + details_drag) == "Original Series", "Opening details must refresh mouse geometry"
+            assert copied_text(b"h" + drag) == "Original Series", "Returning to preview must refresh mouse geometry"
+            send(down)
+            assert not clipboard_texts(b"i" + pointer(0, 110, 4, release=True)), "Details switch completed an old preview drag"
+            send(b"\x1b")
+            assert not clipboard_texts(b"\x1bOP" + drag), "Help copied its hidden preview"
+            assert copied_text(b"\x1bOP" + drag) == "Original Series", "Closing Help must restore fresh mouse geometry"
+            send(down)
+            assert not clipboard_texts(b"\x1bOP\x1bOP" + up), "Help transitions kept an unfinished drag alive"
+            send(down)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 640, 480))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
+            assert not clipboard_texts(up), "Resize completed a drag from the old geometry"
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
+            assert copied_text(drag) == "Original Series", "Resized preview did not restore mouse selection"
             send(b"i")
             copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
@@ -289,7 +324,7 @@ while not (root / token).exists():
             assert (root / "downloads" / "Original Series _ Episode 1 SUB.mkv").stat().st_mtime_ns == saved.st_mtime_ns
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
+            print("PASS: keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()
