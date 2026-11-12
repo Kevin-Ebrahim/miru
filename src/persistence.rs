@@ -6,10 +6,65 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
-    io::Write,
+    io::{self, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const MAX_HISTORY_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
+
+fn size_limit_error(limit: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("File exceeds the {limit}-byte limit"),
+    )
+}
+
+fn read_regular(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected a regular file",
+        ));
+    }
+    if metadata.len() > limit {
+        return Err(size_limit_error(limit));
+    }
+    let mut bytes = Vec::new();
+    // Limit the read too: the opened file can grow after its metadata was checked.
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(size_limit_error(limit));
+    }
+    Ok(bytes)
+}
+
+struct HistoryWriter<'a> {
+    file: &'a mut File,
+    remaining: u64,
+}
+
+impl Write for HistoryWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() as u64 > self.remaining {
+            return Err(size_limit_error(MAX_HISTORY_BYTES));
+        }
+        let written = self.file.write(bytes)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
@@ -66,7 +121,7 @@ impl Store {
         }
     }
     pub fn load(&self) -> Result<Library> {
-        let bytes = match fs::read(&self.path) {
+        let bytes = match read_regular(&self.path, MAX_HISTORY_BYTES) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Library::default()),
             Err(e) => {
@@ -120,7 +175,7 @@ impl Store {
         if self.path.try_exists()? {
             return Ok(());
         }
-        let bytes = match fs::read(&old.path) {
+        let bytes = match read_regular(&old.path, MAX_HISTORY_BYTES) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
@@ -193,14 +248,29 @@ impl Store {
             }
         }
         let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-        serde_json::to_writer_pretty(&mut temp, &library)?;
-        temp.write_all(b"\n")?;
+        {
+            let mut writer = HistoryWriter {
+                file: temp.as_file_mut(),
+                remaining: MAX_HISTORY_BYTES,
+            };
+            serde_json::to_writer_pretty(&mut writer, &library)
+                .context("Could not save history; the existing file was left unchanged")?;
+            writer.write_all(b"\n")?;
+        }
         temp.as_file().sync_all()?;
         temp.persist(&self.path)
             .context("Could not atomically save history")?;
         File::open(dir)?.sync_all()?;
         Ok(library)
     }
+}
+
+pub fn import_file(path: &Path) -> Result<Vec<Entry>> {
+    let bytes = read_regular(path, MAX_IMPORT_BYTES)
+        .with_context(|| format!("Could not read ani-cli history {}", path.display()))?;
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("Invalid UTF-8 in ani-cli history {}", path.display()))?;
+    Ok(import_legacy(text))
 }
 
 pub fn import_legacy(text: &str) -> Vec<Entry> {
@@ -235,6 +305,136 @@ pub fn next_episode(entry: &Entry, episodes: &[Episode]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn regular_symlinks_support_reading_migration_and_atomic_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.json");
+        let bytes = br#"{"version":1,"mode":"dub","quality":"720p","entries":[]}"#;
+        fs::write(&original, bytes).unwrap();
+        let store = Store::new(dir.path());
+        symlink(&original, &store.path).unwrap();
+        let library = store.load().unwrap();
+        assert_eq!(library.version, 2);
+        assert_eq!(library.mode, Mode::Dub);
+        assert_eq!(library.quality, "720p");
+        assert!(store.path.is_symlink());
+        let migrated = Store::new(&dir.path().join("migrated"));
+        migrated.migrate_from(&store).unwrap();
+        assert_eq!(fs::read(&migrated.path).unwrap(), bytes);
+        store
+            .update(Change::Settings {
+                mode: Mode::Sub,
+                quality: "best".into(),
+            })
+            .unwrap();
+        assert!(!store.path.is_symlink());
+        assert_eq!(store.load().unwrap().mode, Mode::Sub);
+        assert_eq!(fs::read(original).unwrap(), bytes);
+    }
+
+    #[test]
+    fn import_sources_may_be_regular_file_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("ani-hsts");
+        let bytes = "2\tshow-1\t日本語\n";
+        fs::write(&original, bytes).unwrap();
+        let link = dir.path().join("source");
+        symlink(&original, &link).unwrap();
+        let entries = import_file(&link).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].episode, "2");
+        assert_eq!(entries[0].anime.title, "日本語");
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(original).unwrap(), bytes);
+    }
+
+    #[test]
+    fn oversized_history_is_not_read_or_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        File::create(&store.path)
+            .unwrap()
+            .set_len(MAX_HISTORY_BYTES + 1)
+            .unwrap();
+        let before = fs::metadata(&store.path).unwrap();
+        assert!(format!("{:#}", store.load().unwrap_err()).contains("limit"));
+        let error = store
+            .update(Change::Settings {
+                mode: Mode::Sub,
+                quality: "best".into(),
+            })
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("limit"));
+        let after = fs::metadata(&store.path).unwrap();
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+    }
+
+    #[test]
+    fn an_oversized_save_preserves_the_existing_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store
+            .update(Change::Settings {
+                mode: Mode::Dub,
+                quality: "720p".into(),
+            })
+            .unwrap();
+        let bytes = fs::read(&store.path).unwrap();
+        let inode = fs::metadata(&store.path).unwrap().ino();
+        let error = store
+            .update(Change::Record {
+                anime: Anime {
+                    title: "x".repeat(MAX_HISTORY_BYTES as usize),
+                    ..Default::default()
+                },
+                episode: "1".into(),
+                mode: Mode::Sub,
+            })
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("limit"));
+        assert_eq!(fs::metadata(&store.path).unwrap().ino(), inode);
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        assert!(fs::read_dir(dir.path()).unwrap().all(|entry| {
+            matches!(
+                entry.unwrap().file_name().to_str(),
+                Some("library.json" | "library.lock")
+            )
+        }));
+    }
+
+    #[test]
+    fn invalid_and_oversized_imports_leave_the_source_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("ani-hsts");
+        File::create(&source)
+            .unwrap()
+            .set_len(MAX_IMPORT_BYTES + 1)
+            .unwrap();
+        assert!(format!("{:#}", import_file(&source).unwrap_err()).contains("limit"));
+        assert_eq!(fs::metadata(&source).unwrap().len(), MAX_IMPORT_BYTES + 1);
+        fs::write(&source, [0xff]).unwrap();
+        let error = import_file(&source).unwrap_err();
+        assert!(format!("{error:#}").contains("UTF-8"));
+        assert_eq!(fs::read(source).unwrap(), [0xff]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_regular_files_metadata_cannot_bypass_the_read_budget() {
+        let path = Path::new("/proc/self/cmdline");
+        assert_eq!(fs::metadata(path).unwrap().len(), 0);
+        assert!(
+            read_regular(path, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("limit")
+        );
+    }
+
     #[test]
     fn independent_writers_do_not_lose_history() {
         let dir = tempfile::tempdir().unwrap();

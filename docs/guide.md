@@ -126,6 +126,13 @@ after two seconds instead of blocking exit indefinitely. Pending preference
 changes are coalesced; queued history changes are flushed on shutdown. An invalid
 history file is reported and left intact.
 
+History reads and saves are limited to 32 MiB; ani-cli import sources are limited
+to 8 MiB. Unsupported file types and files over those limits are rejected without
+replacing existing history. Reads follow symlinks to regular files. Saving replaces
+the configured `library.json` path atomically, leaving an original symlink target
+unchanged. Startup and offline commands retain normal signal termination until
+Miru starts work that needs coordinated shutdown.
+
 History entries are retained until explicitly removed. Importing history and
 recording new playback do not prune older entries.
 

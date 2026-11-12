@@ -159,7 +159,6 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
-    let signals = jobs::shutdown_signals()?;
     let provider = provider::Provider::new(&cli.provider)?;
     let query = cli.query.join(" ");
     let state_dir = cli
@@ -172,10 +171,7 @@ async fn run() -> Result<()> {
         store.migrate_from(&persistence::Store::new(&old_dir))?;
     }
     if let Some(path) = &cli.import_history {
-        let text = tokio::fs::read_to_string(path)
-            .await
-            .context("Could not read ani-cli history")?;
-        let entries = persistence::import_legacy(&text);
+        let entries = persistence::import_file(path)?;
         ensure!(
             !entries.is_empty(),
             "No compatible entries found in {}",
@@ -193,6 +189,8 @@ async fn run() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&library.entries)?);
         return Ok(());
     }
+    // Keep normal signal termination during startup and offline storage operations.
+    let signals = jobs::shutdown_signals()?;
     let mode = if cli.dub {
         Mode::Dub
     } else if cli.sub {
