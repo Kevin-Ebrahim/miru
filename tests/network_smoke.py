@@ -172,8 +172,9 @@ def main():
                 controls = ("allowed", "allowed-https", "allowed-https-segments") if operation == "--play" else ("allowed", "allowed-https")
                 for case in controls:
                     allowed = invoke(operation, root / f"{case}-{operation[2:]}")
-                    log = root / "state" / ("download.log" if operation == "--download" else "player.log")
-                    assert allowed.returncode == 0, allowed.stderr + (log.read_text() if log.exists() else "")
+                    prefix = "download" if operation == "--download" else "player"
+                    assert allowed.returncode == 0, allowed.stderr + "\n".join(
+                        log.read_text() for log in (root / "state/logs").glob(f"{prefix}-*.log"))
                     print(f"PASS: {operation} keeps {case} media working", flush=True)
                 for case in ("direct", "segment", "key", "playlist-redirect", "segment-redirect", "nested-playlist", "https-segment", "https-key"):
                     private_requests.clear()

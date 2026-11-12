@@ -1,4 +1,5 @@
 use crate::{
+    jobs::Log,
     model::Stream,
     network::{Session, Tool},
 };
@@ -94,10 +95,10 @@ pub async fn launch(
     media: &Session,
     quality: &str,
     title: &str,
-    log: &Path,
+    log: &Log,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Child>> {
-    let output = std::fs::File::create(log).context("Could not create player log")?;
+    let output = log.writer()?;
     let executable = &player.executable;
     let mut child = media.command(executable, Tool::Player)?
         .args(player.args(media.stream(), quality, title))
@@ -112,7 +113,7 @@ pub async fn launch(
     if !media
         .wait_started(&mut child, cancel)
         .await
-        .with_context(|| format!("Could not start {executable}; see {}", log.display()))?
+        .with_context(|| format!("Could not start {executable}; see {}", log.path().display()))?
     {
         return Ok(None);
     }

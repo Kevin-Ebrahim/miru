@@ -1,4 +1,5 @@
 use crate::{
+    jobs::Log,
     model::{Anime, Episode, Mode},
     network::{Session, Tool},
 };
@@ -88,7 +89,7 @@ pub async fn download(
     quality: &str,
     name: Name<'_>,
     dir: &Path,
-    log: &Path,
+    log: &Log,
     progress: mpsc::UnboundedSender<String>,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<PathBuf>> {
@@ -157,7 +158,7 @@ pub async fn download(
     }
     cmd.args(["-c:v", "copy", "-c:a", "copy", "-f", "matroska"])
         .arg(temporary.path());
-    let error_log = std::fs::File::create(log)?;
+    let error_log = log.writer()?;
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -170,7 +171,7 @@ pub async fn download(
     if !media
         .wait_started(&mut child, cancel)
         .await
-        .with_context(|| format!("Could not start ffmpeg; see {}", log.display()))?
+        .with_context(|| format!("Could not start ffmpeg; see {}", log.path().display()))?
     {
         return Ok(None);
     }
@@ -202,7 +203,7 @@ pub async fn download(
     ensure!(
         status.success(),
         "Download failed ({status}). See {}",
-        log.display()
+        log.path().display()
     );
     temporary.as_file().sync_all()?;
     temporary

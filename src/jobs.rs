@@ -1,3 +1,6 @@
+mod log;
+pub use log::Log;
+
 use crate::{
     download,
     model::{Anime, Episode, Mode},
@@ -164,13 +167,7 @@ async fn run(
         update: Update::Resolved(quality_note),
     });
     let media = crate::network::Session::new(stream, provider.http())?;
-    let log = options
-        .state_dir
-        .join(if request.kind == JobKind::Download {
-            "download.log"
-        } else {
-            "player.log"
-        });
+    let log = Log::new(&options.state_dir, request.kind)?;
     if request.kind == JobKind::Download {
         let _ = notify.send(Event {
             id: request.id,
@@ -231,7 +228,7 @@ async fn run(
     anyhow::ensure!(
         status.success(),
         "Player exited with {status}. See {}",
-        log.display()
+        log.path().display()
     );
     Ok(Some(Output::Playback))
 }

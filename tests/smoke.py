@@ -15,6 +15,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import signal
 import shutil
 import subprocess
@@ -27,6 +28,12 @@ import wave
 
 def run(argv, **kwargs):
     return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=40, **kwargs)
+
+
+def error_log(stderr):
+    match = re.search(r"[Ss]ee ([^\r\n]+)", stderr)
+    assert match, f"Failure omitted the diagnostic path: {stderr}"
+    return pathlib.Path(match[1])
 
 
 def snapshot(path):
@@ -94,10 +101,10 @@ def check_optional_audio_default(common, root):
         master.write_text(original)
 
 
-def download_video(common, root, destination, quality, size):
+def download_video(common, destination, quality, size):
     downloaded = subprocess.run(common + ["--download", "Smoke", "--quality", quality, "--download-dir", str(destination)],
                                 capture_output=True, text=True, timeout=40)
-    assert downloaded.returncode == 0, f"{quality}: {downloaded.stderr}\n{(root / 'state/download.log').read_text()}"
+    assert downloaded.returncode == 0, f"{quality}: {downloaded.stderr}\n{error_log(downloaded.stderr).read_text()}"
     media = next(destination.glob("*.mkv"))
     info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media)]).stdout)
     video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
@@ -187,8 +194,8 @@ def main():
             invalid = subprocess.run(common + ["--play", "Smoke", "-e", "2", "--player-arg=--no-config",
                                                "--player-arg=--miru-review-invalid-option"],
                                      capture_output=True, text=True, timeout=10)
-            log = root / "state/player.log"
-            assert invalid.returncode != 0 and str(log) in invalid.stderr, invalid
+            assert invalid.returncode != 0, invalid
+            log = error_log(invalid.stderr)
             assert "Error parsing option miru-review-invalid-option" in log.read_text(), "Missing mpv startup diagnostic"
             assert not invalid.stdout and "Error parsing option" not in invalid.stderr, "Player diagnostics leaked into CLI output"
             for path, backend in (("vlc-backup with spaces/mpv", None), ("wrapper names/my-vlc-wrapper", None),
@@ -201,7 +208,7 @@ def main():
                 if backend:
                     arguments += ["--player-backend", backend]
                 played = subprocess.run(arguments, capture_output=True, text=True, timeout=40, cwd=root)
-                assert played.returncode == 0, f"{played.stderr}\n{(root / 'state/player.log').read_text()}"
+                assert played.returncode == 0, f"{played.stderr}\n{error_log(played.stderr).read_text()}"
                 assert not (root / "marker").exists(), "Player path was evaluated by a shell"
             wrapper_dir = root / "custom vlc wrappers with spaces"
             wrapper_dir.mkdir()
@@ -289,7 +296,7 @@ def main():
             for quality, tone, size in (("best", 440, (128, 96)), ("worst", 880, (64, 48)),
                                         ("96p", 440, (128, 96)), ("48p", 880, (64, 48))):
                 destination = root / f"grouped-{quality}"
-                media = download_video(common, root, destination, quality, size)
+                media = download_video(common, destination, quality, size)
                 decoded = root / f"download-{quality}.wav"
                 run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(media),
                      "-vn", "-ac", "1", "-ar", "8000", "-c:a", "pcm_s16le", str(decoded)])
@@ -310,7 +317,7 @@ def main():
                 master.write_text(page)
                 exported = json.loads(run(common + ["--resolve", "Smoke"]).stdout)
                 assert len(exported["variants"]) == 1 and exported["variants"][0]["height"] == 0, exported
-                download_video(common, root, root / f"unknown-{label}", "worst", (128, 96))
+                download_video(common, root / f"unknown-{label}", "worst", (128, 96))
             before_rejected = run(common + ["--history"]).stdout
             master.write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=65000,CODECS="mp4a.40.2"\naudio.m3u8\n')
             unsupported_dir = root / "audio-only"
@@ -338,7 +345,7 @@ def main():
             playlist.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n" + (root / "video0.ts").as_uri() + "\n#EXT-X-ENDLIST\n")
             denied = subprocess.run(common + ["--download", "Smoke", "--download-dir", str(root / "denied")], capture_output=True, text=True, timeout=10)
             assert denied.returncode != 0, "Remote HLS was allowed to read a local file"
-            assert "not on whitelist" in (root / "state/download.log").read_text()
+            assert "not on whitelist" in error_log(denied.stderr).read_text()
             assert not list((root / "denied").iterdir()), "Rejected HLS left partial media"
             playlist.write_bytes(original_playlist)
             slow.set()

@@ -117,7 +117,7 @@ Use `i` for full details when the terminal is too small for a preview.
 | Data | Default location |
 | --- | --- |
 | History, language and quality preferences | `$XDG_STATE_HOME/miru/library.json` |
-| Last player and download errors | `$XDG_STATE_HOME/miru/player.log` and `download.log` |
+| Player and download diagnostics | `$XDG_STATE_HOME/miru/logs/player-*.log` and `download-*.log` |
 | Cover cache | `$XDG_CACHE_HOME/miru/covers/` |
 
 When XDG variables are unset, state defaults to `~/.local/state` and cache to
@@ -128,6 +128,11 @@ history file is reported and left intact.
 
 History entries are retained until explicitly removed. Importing history and
 recording new playback do not prune older entries.
+
+Each media job gets its own diagnostic log, and failures report that exact path.
+Cleanup runs when jobs start and finish, keeping the 32 most recently modified
+completed logs across playback and downloads. Logs for active jobs are
+always preserved, including those belonging to another Miru instance.
 
 | Environment variable | Command-line equivalent | Purpose |
 | --- | --- | --- |

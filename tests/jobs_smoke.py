@@ -12,6 +12,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import resource
 import select
 import signal
@@ -116,12 +117,13 @@ else:
     (root / ("leaf-" + token)).touch()
     time.sleep(120)
 ''')
-    wrapper = f'#!{sys.executable}\n' + '''import json, pathlib, subprocess, sys, time, uuid
+    wrapper = f'#!{sys.executable}\n' + '''import json, os, pathlib, subprocess, sys, time, uuid
 if "--sentinel" in sys.argv:
     time.sleep(120)
     sys.exit(0)
 root = pathlib.Path(__file__).parent.parent
 token = uuid.uuid4().hex
+print("MIRU_JOB_START " + token, file=sys.stderr, flush=True)
 child = subprocess.Popen([sys.executable, str(root / "tools/descendant.py"), "child", str(root), token], start_new_session=True)
 while not (root / ("child-" + token)).exists():
     time.sleep(0.01)
@@ -133,11 +135,13 @@ else:
         stream.write("MIRU_PLAYER_" + label + "_BEGIN\\n" + "x" * (256 * 1024) + "\\nMIRU_PLAYER_" + label + "_END\\n")
         stream.flush()
 with (root / "launches").open("a") as log:
-    log.write(json.dumps({"token": token, "args": sys.argv[1:]}) + "\\n")
+    log.write(json.dumps({"token": token, "args": sys.argv[1:], "log": os.readlink("/proc/self/fd/2")}) + "\\n")
 while True:
     if (root / ("finish-" + token)).exists():
+        print("MIRU_JOB_END " + token, file=sys.stderr, flush=True)
         sys.exit(0)
     if (root / ("fail-" + token)).exists():
+        print("MIRU_JOB_END " + token, file=sys.stderr, flush=True)
         sys.exit(2)
     time.sleep(0.01)
 '''
@@ -149,7 +153,7 @@ while True:
 
 
 class Run:
-    def __init__(self, binary, base, root, interactive, download, controlling_terminal=True):
+    def __init__(self, binary, base, root, interactive, download, controlling_terminal=True, state_dir=None):
         self.root = root
         self.interactive = interactive
         self.master = self.slave = None
@@ -158,8 +162,8 @@ class Run:
         self.owned = {}
         self.tools = make_tools(root)
         environment = dict(os.environ, PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
-        state = root / "state"
-        state.mkdir()
+        state = state_dir if state_dir is not None else root / "state"
+        state.mkdir(exist_ok=True)
         command = [str(binary), "--provider", base, "--state-dir", str(state),
                    "--cache-dir", str(root / "cache"), "--download-dir", str(root / "downloads"),
                    "--player", str(self.tools / "player")]
@@ -216,7 +220,7 @@ class Run:
     def job(self, number, download):
         wait_for(lambda: len(self.launches()) >= number, self.pump, "Wrapper did not report its descendants ready")
         if not download:
-            log = (self.root / "state/player.log").read_bytes()
+            log = pathlib.Path(self.launches()[number - 1]["log"]).read_bytes()
             for label in (b"STDOUT", b"STDERR"):
                 expected = (b"MIRU_PLAYER_" + label + b"_BEGIN\n" + b"x" * (256 * 1024) +
                             b"\nMIRU_PLAYER_" + label + b"_END\n")
@@ -286,7 +290,62 @@ class Run:
 CASES = ("play-term", "play-int", "play-hup", "download-term", "download-int", "download-hup",
          "play-finish", "play-error", "tui-stop", "tui-download-stop", "tui-replace", "tui-ctrl-c",
          "tui-term", "tui-hup", "tui-terminal-close", "tui-download-terminal-close",
-         "tui-terminal-close-no-hup", "tui-download-terminal-close-no-hup")
+         "tui-terminal-close-no-hup", "tui-download-terminal-close-no-hup",
+         "play-concurrent-logs", "download-concurrent-logs")
+
+
+def check_concurrent_logs(binary, base, download):
+    with tempfile.TemporaryDirectory(prefix="miru-concurrent-logs-") as temporary:
+        root = pathlib.Path(temporary)
+        runs = []
+        launched = []
+        try:
+            for name in ("first", "second"):
+                directory = root / name
+                directory.mkdir()
+                run = Run(binary, base, directory, False, download, state_dir=root / "state")
+                runs.append(run)
+                _, job = run.job(1, download)
+                launched.append(job)
+                if name == "first":
+                    active_log = pathlib.Path(job["log"])
+                    os.utime(active_log, (1, 1))
+                    for index in range(40):
+                        archived = active_log.with_name(f"player-archived-{index:03}.log")
+                        archived.write_text("Archived diagnostic fixture\n")
+                        os.utime(archived, (index + 2, index + 2))
+            # Finish the newer process first while the original job still owns its writer.
+            logs = []
+            for run, job in reversed(list(zip(runs, launched))):
+                (run.root / ("fail-" + job["token"])).touch()
+                run.exited(1)
+                run.gone(run.owned)
+                match = re.search(rb"[Ss]ee ([^\r\n]+)", run.output)
+                assert match, f"Failure omitted the diagnostic path: {run.output!r}"
+                path = pathlib.Path(os.fsdecode(match[1]))
+                assert path == pathlib.Path(job["log"]), "Reported path does not match the job's writer"
+                logs.append((path, job["token"]))
+            assert logs[0][0] != logs[1][0], "Concurrent jobs reported the same log path"
+            saved = {path: path.read_bytes() for path, _ in logs}
+            directory = root / "later"
+            directory.mkdir()
+            later = Run(binary, base, directory, False, download, state_dir=root / "state")
+            runs.append(later)
+            _, job = later.job(1, download)
+            assert all(path.read_bytes() == content for path, content in saved.items()), "Starting another job changed a reported log"
+            (later.root / ("fail-" + job["token"])).touch()
+            later.exited(1)
+            later.gone(later.owned)
+            retained = list(logs[0][0].parent.glob("*.log"))
+            assert len(retained) <= 32, f"Finished log retention is not bounded: {len(retained)} retained"
+            for path, token in logs:
+                contents = path.read_text()
+                assert f"MIRU_JOB_START {token}\n" in contents and f"MIRU_JOB_END {token}\n" in contents, contents[-1000:]
+                assert all(other == token or other not in contents for _, other in logs), "Diagnostics mixed jobs"
+            print(f"PASS: {'download' if download else 'play'} concurrent failures retain separate complete logs", flush=True)
+        finally:
+            for run in reversed(runs):
+                run.close()
 
 
 def check(binary, base, case):
@@ -346,7 +405,11 @@ def main():
     thread.start()
     try:
         for case in (options.case,) if options.case else CASES:
-            check(options.binary.resolve(), f"http://127.0.0.1:{server.server_port}/", case)
+            base = f"http://127.0.0.1:{server.server_port}/"
+            if case.endswith("concurrent-logs"):
+                check_concurrent_logs(options.binary.resolve(), base, case.startswith("download"))
+            else:
+                check(options.binary.resolve(), base, case)
     finally:
         server.shutdown()
         server.server_close()

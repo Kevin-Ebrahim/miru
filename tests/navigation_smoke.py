@@ -173,8 +173,9 @@ while not (root / token).exists():
             deadline = time.monotonic() + 5
             while not predicate() and time.monotonic() < deadline:
                 pump()
-            log = root / "download.log"
-            assert predicate(), "Timed out waiting for TUI action: " + (log.read_text() if log.exists() else "no download log")
+            if not predicate():
+                logs = "\n".join(log.read_text() for log in (root / "logs").glob("download-*.log"))
+                raise AssertionError("Timed out waiting for TUI action: " + (logs or "no download log"))
 
         def copied_text(keys=b"y"):
             output.clear()
