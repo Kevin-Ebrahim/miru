@@ -916,7 +916,7 @@ impl App {
         true
     }
 
-    fn key(&mut self, mut key: KeyEvent) {
+    fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -936,33 +936,7 @@ impl App {
         }
 
         if self.state.help && self.state.help_filtering {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
-                KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.state.help_filtering = false
-                }
-                KeyCode::Down | KeyCode::PageDown => {
-                    self.state.help_filtering = false;
-                    self.state.view.help_scroll = self
-                        .state
-                        .view
-                        .help_scroll
-                        .saturating_add(if key.code == KeyCode::Down { 1 } else { 10 });
-                }
-                KeyCode::Up | KeyCode::PageUp => {
-                    self.state.help_filtering = false;
-                    self.state.view.help_scroll = self
-                        .state
-                        .view
-                        .help_scroll
-                        .saturating_sub(if key.code == KeyCode::Up { 1 } else { 10 });
-                }
-                _ => {
-                    if self.state.help_query.edit(key) {
-                        self.state.view.help_scroll = 0;
-                    }
-                }
-            }
+            self.help_filter_key(key);
             return;
         }
 
@@ -974,26 +948,7 @@ impl App {
             return;
         }
 
-        // Modified navigation must not fall through to playback/download shortcuts.
         let editing = !self.state.help && !self.state.details && self.state.focus != Focus::List;
-        if editing && key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
-        }
-
-        if !editing && key.modifiers == KeyModifiers::CONTROL {
-            key.code = match key.code {
-                KeyCode::Char('n') => KeyCode::Down,
-                KeyCode::Char('p') => KeyCode::Up,
-                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
-                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
-                _ => return,
-            };
-            key.modifiers = KeyModifiers::NONE;
-        }
 
         if key.modifiers == KeyModifiers::ALT {
             match key.code {
@@ -1016,6 +971,66 @@ impl App {
             }
         }
 
+        let Some(key) = self.normalize_key(key, editing) else {
+            return;
+        };
+
+        if self.state.help {
+            self.help_key(key);
+            return;
+        }
+
+        if key.code == KeyCode::F(5) {
+            self.retry();
+            return;
+        }
+
+        if key.code == KeyCode::F(6) {
+            self.retry_activity();
+            return;
+        }
+
+        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
+            self.state.mode.toggle();
+            self.settings();
+            self.state.message("", false);
+            return;
+        }
+
+        if self.state.details {
+            self.details_key(key);
+            return;
+        }
+
+        match self.state.focus {
+            Focus::Range => self.range_key(key),
+            Focus::Search if self.state.screen == Screen::History => self.history_filter_key(key),
+            Focus::Search => self.search_key(key),
+            Focus::List | Focus::Audio | Focus::Quality => self.list_key(key),
+        }
+    }
+
+    fn normalize_key(&self, mut key: KeyEvent, editing: bool) -> Option<KeyEvent> {
+        // Modified navigation must not fall through to playback/download shortcuts.
+        if editing && key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                _ => {}
+            }
+        }
+
+        if !editing && key.modifiers == KeyModifiers::CONTROL {
+            key.code = match key.code {
+                KeyCode::Char('n') => KeyCode::Down,
+                KeyCode::Char('p') => KeyCode::Up,
+                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
+                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
+                _ => return None,
+            };
+            key.modifiers = KeyModifiers::NONE;
+        }
+
         if !editing
             && key.modifiers.intersects(
                 KeyModifiers::CONTROL
@@ -1025,7 +1040,7 @@ impl App {
                     | KeyModifiers::META,
             )
         {
-            return;
+            return None;
         }
 
         if key.modifiers == KeyModifiers::SHIFT
@@ -1052,136 +1067,144 @@ impl App {
             };
         }
 
-        if self.state.help {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
-                KeyCode::Char('q') => self.state.help = false,
-                KeyCode::Char('/') => {
-                    self.state.help_filtering = true;
-                    self.state.help_query.cursor = self.state.help_query.text.len();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(1)
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(1)
-                }
-                KeyCode::PageDown => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(10)
-                }
-                KeyCode::PageUp => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
-                _ => {}
+        Some(key)
+    }
+
+    fn help_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
+            KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.help_filtering = false
             }
-            return;
-        }
-
-        if key.code == KeyCode::F(5) {
-            self.retry();
-            return;
-        }
-
-        if key.code == KeyCode::F(6) {
-            self.retry_activity();
-            return;
-        }
-
-        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
-            self.state.mode.toggle();
-            self.settings();
-            self.state.message("", false);
-            return;
-        }
-
-        if self.state.details {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_add(1)
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_sub(1)
-                }
-                KeyCode::PageDown => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_add(10)
-                }
-                KeyCode::PageUp => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_sub(10)
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
-                KeyCode::Char('q') => self.state.details = false,
-                KeyCode::Char('x') => self.stop(),
-                KeyCode::Char('y') => self.copy_requested = true,
-                _ => {}
+            KeyCode::Down | KeyCode::PageDown => {
+                self.state.help_filtering = false;
+                self.state.view.help_scroll = self
+                    .state
+                    .view
+                    .help_scroll
+                    .saturating_add(if key.code == KeyCode::Down { 1 } else { 10 });
             }
-            return;
+            KeyCode::Up | KeyCode::PageUp => {
+                self.state.help_filtering = false;
+                self.state.view.help_scroll = self
+                    .state
+                    .view
+                    .help_scroll
+                    .saturating_sub(if key.code == KeyCode::Up { 1 } else { 10 });
+            }
+            _ => {
+                if self.state.help_query.edit(key) {
+                    self.state.view.help_scroll = 0;
+                }
+            }
         }
+    }
 
-        if self.state.focus == Focus::Range {
-            match key.code {
-                KeyCode::Esc => self.state.focus = Focus::List,
-                KeyCode::Enter => {
-                    match crate::model::episode_range(
-                        &self.state.episodes.range.text,
-                        &self.state.episodes.items,
-                    ) {
-                        Ok(indices) => {
-                            self.state.episodes.marked = indices.into_iter().collect();
-                            self.state.focus = Focus::List;
-                            self.state.message("", false);
-                        }
-                        Err(err) => self.state.message(err.to_string(), true),
+    fn help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
+            KeyCode::Char('q') => self.state.help = false,
+            KeyCode::Char('/') => {
+                self.state.help_filtering = true;
+                self.state.help_query.cursor = self.state.help_query.text.len();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
+    fn details_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(10)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
+            KeyCode::Char('q') => self.state.details = false,
+            KeyCode::Char('x') => self.stop(),
+            KeyCode::Char('y') => self.copy_requested = true,
+            _ => {}
+        }
+    }
+
+    fn range_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.state.focus = Focus::List,
+            KeyCode::Enter => {
+                match crate::model::episode_range(
+                    &self.state.episodes.range.text,
+                    &self.state.episodes.items,
+                ) {
+                    Ok(indices) => {
+                        self.state.episodes.marked = indices.into_iter().collect();
+                        self.state.focus = Focus::List;
+                        self.state.message("", false);
                     }
-                }
-                _ => {
-                    self.state.episodes.range.edit(key);
+                    Err(err) => self.state.message(err.to_string(), true),
                 }
             }
-            return;
+            _ => {
+                self.state.episodes.range.edit(key);
+            }
         }
+    }
 
-        if self.state.focus == Focus::Search && self.state.screen == Screen::History {
-            match key.code {
-                KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
-                    self.state.focus = Focus::List
-                }
-                _ => {
-                    if self.state.history.query.edit(key) {
-                        self.state.history_filter_changed();
-                    }
+    fn history_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
+                self.state.focus = Focus::List
+            }
+            _ => {
+                if self.state.history.query.edit(key) {
+                    self.state.history_filter_changed();
                 }
             }
-            return;
         }
+    }
 
-        if self.state.focus == Focus::Search {
-            match key.code {
-                KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
-                    if self.search_due.is_some() {
-                        self.search();
-                    }
-                    self.state.focus = Focus::List;
+    fn search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
+                if self.search_due.is_some() {
+                    self.search();
                 }
-                KeyCode::Esc => self.state.focus = Focus::List,
-                _ => {
-                    if self.state.search.query.edit(key) {
-                        self.state.invalidate_search();
-                        abort(&mut self.search_task);
-                        self.search_due = Some(Instant::now() + Duration::from_millis(300));
-                    }
+                self.state.focus = Focus::List;
+            }
+            KeyCode::Esc => self.state.focus = Focus::List,
+            _ => {
+                if self.state.search.query.edit(key) {
+                    self.state.invalidate_search();
+                    abort(&mut self.search_task);
+                    self.search_due = Some(Instant::now() + Duration::from_millis(300));
                 }
             }
-            return;
         }
+    }
 
+    fn list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') if self.state.view.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
@@ -1436,10 +1459,22 @@ impl App {
                         }
                     }
                 }
-                Some(event) = self.jobs.recv() => { self.job_message(event); dirty = true; },
-                Some(result) = self.library_rx.recv() => { self.message(Message::Library(result)); dirty = true; },
-                Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
-                Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
+                Some(event) = self.jobs.recv() => {
+                    self.job_message(event);
+                    dirty = true;
+                }
+                Some(result) = self.library_rx.recv() => {
+                    self.message(Message::Library(result));
+                    dirty = true;
+                }
+                Some(message) = self.rx.recv() => {
+                    self.message(message);
+                    dirty = true;
+                }
+                Some(message) = art_rx.recv() => {
+                    art.accept(message);
+                    dirty = true;
+                }
                 _ = terminate.recv() => self.quit = true,
                 _ = hangup.recv() => self.quit = true,
                 _ = interrupt.recv() => self.quit = true,

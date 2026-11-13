@@ -137,10 +137,16 @@ pub async fn download(
 
     let status = tokio::select! {
         biased;
-        _ = cancel => { child.kill().await?; return Ok(None); },
+        _ = cancel => {
+            child.kill().await?;
+            return Ok(None);
+        },
         result = transfer => match result {
             Ok(status) => status,
-            Err(error) => { let _ = child.kill().await; return Err(error.into()); }
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error.into());
+            }
         },
     };
 

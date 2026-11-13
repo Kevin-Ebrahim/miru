@@ -59,19 +59,21 @@ impl<T> TitleList<T> {
         }
 
         let normalized = (self.normalize)(query);
-        let all =
+        let include_all_titles =
             !exact && accepted_query.is_some_and(|source| (self.normalize)(source) == normalized);
         let indices: Arc<[usize]> = self
             .titles
             .iter()
             .enumerate()
-            .filter_map(|(i, title)| {
-                (all || if exact {
-                    *title == normalized
-                } else {
-                    title.contains(&normalized)
-                })
-                .then_some(i)
+            .filter_map(|(index, title)| {
+                let matches_query = include_all_titles
+                    || if exact {
+                        *title == normalized
+                    } else {
+                        title.contains(&normalized)
+                    };
+
+                matches_query.then_some(index)
             })
             .collect();
 

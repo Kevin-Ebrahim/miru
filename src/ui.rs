@@ -159,16 +159,8 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         ),
         Constraint::Length(activity_height(state)),
         Constraint::Length(gap),
-        // Preview rendering updates text_view later; reserve its hint now so a resize
-        // cannot clip the primary-action row on the first frame.
-        Constraint::Length(
-            key_hints(
-                state,
-                area.width as usize,
-                (state.details || state.selected_anime().is_some()).then_some("Drag Select"),
-            )
-            .len() as u16,
-        ),
+        // Reserve footer rows before preview rendering updates text_view.
+        Constraint::Length(key_hints(state, area.width as usize, false).len() as u16),
     ])
     .areas(area);
 
@@ -377,18 +369,10 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
 
     render_activity(frame, state, activity);
 
-    let hints = key_hints(
-        state,
-        area.width as usize,
-        (state.details || state.view.text_view.is_some()).then_some(
-            if state.view.text_selection.is_some() && (state.details || state.focus == Focus::List)
-            {
-                "y Copy"
-            } else {
-                "Drag Select"
-            },
-        ),
-    );
+    let copy_available = (state.details || state.view.text_view.is_some())
+        && state.view.text_selection.is_some()
+        && (state.details || state.focus == Focus::List);
+    let hints = key_hints(state, area.width as usize, copy_available);
     let hint_rows = hints.len() as u16;
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().bold()),
@@ -846,7 +830,25 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
-fn fit_hints(hints: &[String], width: usize, state: &State) -> Line<'static> {
+struct KeyHint {
+    key: &'static str,
+    label: String,
+}
+
+impl KeyHint {
+    fn new(key: &'static str, label: impl Into<String>) -> Self {
+        Self {
+            key,
+            label: label.into(),
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.key.width() + 1 + self.label.width()
+    }
+}
+
+fn fit_hints(hints: &[KeyHint], width: usize, state: &State) -> Line<'static> {
     let gap = if width < 72 { "  " } else { "   " };
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
@@ -856,205 +858,228 @@ fn fit_hints(hints: &[String], width: usize, state: &State) -> Line<'static> {
         if used + separator.len() + hint.width() > width {
             continue;
         }
+
         used += separator.len() + hint.width();
         spans.push(Span::raw(separator));
-        let (key, label) = hint.split_once(' ').unwrap_or((hint.as_str(), ""));
-        spans.extend(shortcut(state, key, label).spans);
+        spans.extend(shortcut(state, hint.key, &hint.label).spans);
     }
 
     Line::from(spans)
 }
 
-fn key_hints(state: &State, width: usize, selection_hint: Option<&str>) -> Vec<Line<'static>> {
-    let compact = width < 72;
-    let mut primary: Vec<String> = if state.details {
-        vec!["Esc Back".into(), "Up/Down Scroll".into()]
-    } else if state.focus == Focus::Search {
-        if state.screen == Screen::History {
-            vec![]
-        } else {
-            vec!["Alt+e Exact".into()]
-        }
-    } else if state.focus == Focus::Range {
-        vec!["Enter Mark range".into(), "Esc Cancel".into()]
-    } else if state.request_blocks_list() {
-        vec!["F5 Retry".into(), "/ Search".into(), "Esc Back".into()]
-    } else if state.screen == Screen::Episodes && state.episodes.items.is_empty() {
-        let mut hints = vec!["Esc Back".into(), "i Details".into()];
-        if !state.loading {
-            hints.push("F5 Retry".into());
-        }
-        hints
-    } else if state.screen == Screen::Episodes {
-        let count = state.episodes.marked.len();
-        let suffix = if count > 0 {
-            format!(" {count}")
-        } else {
-            String::new()
-        };
-        vec![
-            "Space Mark".into(),
-            ": Range".into(),
-            format!("d Download{suffix}"),
-            "i Details".into(),
-        ]
-    } else {
-        let mut hints = vec![
-            if state.screen == Screen::Search {
-                "/ Edit"
-            } else {
-                "/ Search"
-            }
-            .into(),
-            "i Details".into(),
+fn primary_hints(state: &State) -> Vec<KeyHint> {
+    if state.details {
+        return vec![
+            KeyHint::new("Esc", "Back"),
+            KeyHint::new("Up/Down", "Scroll"),
         ];
-        if state.selected_anime().is_none() {
-            hints = vec![
-                if state.screen == Screen::Search {
-                    "/ Edit"
-                } else {
-                    "/ Search"
-                }
-                .into(),
-            ];
-        }
-        if state.screen == Screen::History && !state.history.entries().is_empty() {
-            hints.push("Delete Remove".into());
-        }
-        hints
-    };
-
-    if state.screen == Screen::History {
-        primary.retain(|hint| hint != "/ Search");
     }
 
-    let mut global: Vec<String> = vec!["F1 Help".into()];
-    if let Some(activity) = visible_activity(state) {
-        global.insert(
-            0,
-            if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
-                "x Dismiss"
-            } else {
-                "x Stop"
+    if state.focus == Focus::Search {
+        return if state.screen == Screen::History {
+            vec![]
+        } else {
+            vec![KeyHint::new("Alt+e", "Exact")]
+        };
+    }
+
+    if state.focus == Focus::Range {
+        return vec![
+            KeyHint::new("Enter", "Mark range"),
+            KeyHint::new("Esc", "Cancel"),
+        ];
+    }
+
+    if state.request_blocks_list() {
+        return vec![
+            KeyHint::new("F5", "Retry"),
+            KeyHint::new("/", "Search"),
+            KeyHint::new("Esc", "Back"),
+        ];
+    }
+
+    if state.screen == Screen::Episodes {
+        if state.episodes.items.is_empty() {
+            let mut hints = vec![KeyHint::new("Esc", "Back"), KeyHint::new("i", "Details")];
+            if !state.loading {
+                hints.push(KeyHint::new("F5", "Retry"));
             }
-            .into(),
-        );
+
+            return hints;
+        }
+
+        let count = state.episodes.marked.len();
+        let download = if count > 0 {
+            format!("Download {count}")
+        } else {
+            "Download".into()
+        };
+        return vec![
+            KeyHint::new("Space", "Mark"),
+            KeyHint::new(":", "Range"),
+            KeyHint::new("d", download),
+            KeyHint::new("i", "Details"),
+        ];
+    }
+
+    let search = if state.screen == Screen::Search {
+        "Edit"
+    } else {
+        "Search"
+    };
+    let mut hints = vec![KeyHint::new("/", search)];
+    if state.selected_anime().is_some() {
+        hints.push(KeyHint::new("i", "Details"));
+    }
+    if state.screen == Screen::History && !state.history.entries().is_empty() {
+        hints.push(KeyHint::new("Delete", "Remove"));
+    }
+
+    hints
+}
+
+fn global_hints(state: &State, compact: bool, copy_available: bool) -> Vec<KeyHint> {
+    let mut hints = vec![KeyHint::new("F1", "Help")];
+    if let Some(activity) = visible_activity(state) {
+        let action = if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
+            "Dismiss"
+        } else {
+            "Stop"
+        };
+        hints.insert(0, KeyHint::new("x", action));
     }
 
     // Printable shortcuts are text while editing.
     if matches!(state.focus, Focus::Search | Focus::Range) {
-        global = vec!["F1 Help".into()];
+        hints = vec![KeyHint::new("F1", "Help")];
         if state.request_error.is_some() && !state.details {
-            global.insert(0, "F5 Retry".into());
+            hints.insert(0, KeyHint::new("F5", "Retry"));
         }
     } else if !state.details {
-        global.extend(["s SUB/DUB".into(), "Q Quality".into()]);
+        hints.extend([KeyHint::new("s", "SUB/DUB"), KeyHint::new("Q", "Quality")]);
     }
 
-    if state.activity.as_ref().is_some_and(|a| a.retryable()) {
-        global.insert(
-            0,
-            if compact {
-                "F6 Retry"
-            } else {
-                "F6 Retry remaining"
-            }
-            .into(),
-        );
+    if state.activity.as_ref().is_some_and(Activity::retryable) {
+        let action = if compact { "Retry" } else { "Retry remaining" };
+        hints.insert(0, KeyHint::new("F6", action));
     }
 
-    if let Some(hint) = selection_hint.filter(|hint| *hint != "Drag Select") {
-        global.push(hint.into());
+    if copy_available {
+        hints.push(KeyHint::new("y", "Copy"));
+    }
+
+    hints
+}
+
+fn wide_key_hints(
+    state: &State,
+    width: usize,
+    mut primary: Vec<KeyHint>,
+    mut global: Vec<KeyHint>,
+) -> Vec<Line<'static>> {
+    global.retain(|hint| !matches!(hint.key, "s" | "Q"));
+
+    let keep_primary_left = state.screen == Screen::History
+        || primary.first().is_some_and(|hint| {
+            matches!(hint.key, "Alt+e" | "Space")
+                || (hint.key == "/" && state.screen == Screen::Search)
+        });
+    let action = if keep_primary_left {
+        None
+    } else {
+        Some(primary.remove(0))
+    };
+    let mut secondary = primary;
+    secondary.extend(global.into_iter().filter(|hint| hint.key != "F1"));
+
+    let mut right = shortcut(state, "F1", "Help");
+    if let Some(action) = action {
+        right.spans.push(Span::raw("    "));
+        right
+            .spans
+            .extend(shortcut(state, action.key, &action.label).spans);
+    }
+    right.spans.push(Span::raw("  "));
+
+    let secondary_width = 1
+        + secondary.iter().map(KeyHint::width).sum::<usize>()
+        + secondary.len().saturating_sub(1) * 3;
+    let left = fit_hints(&secondary, width, state);
+    if secondary_width + 3 + right.width() <= width {
+        let gap = width - left.width() - right.width();
+        let mut spans = left.spans;
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.extend(right.spans);
+        return vec![Line::from(spans)];
+    }
+
+    let mut lines = Vec::new();
+    let mut row = Vec::new();
+    let mut used = 1;
+    for hint in secondary {
+        let needed = hint.width() + if row.is_empty() { 0 } else { 3 };
+        if used + needed > width && !row.is_empty() {
+            lines.push(fit_hints(&row, width, state));
+            row.clear();
+            used = 1;
+        }
+        used += hint.width() + if row.is_empty() { 0 } else { 3 };
+        row.push(hint);
+    }
+    if !row.is_empty() {
+        lines.push(fit_hints(&row, width, state));
+    }
+    lines.push(right.right_aligned());
+    lines
+}
+
+fn key_hints(state: &State, width: usize, copy_available: bool) -> Vec<Line<'static>> {
+    let compact = width < 72;
+    let mut primary = primary_hints(state);
+    let mut global = global_hints(state, compact, copy_available);
+
+    if state.screen == Screen::History {
+        primary.retain(|hint| hint.key != "/");
     }
 
     if width >= 120 {
-        global.retain(|hint| {
-            !matches!(
-                hint.as_str(),
-                "H Home" | "Alt+h History" | "s SUB/DUB" | "Q Quality"
-            )
-        });
-        let action = if state.screen == Screen::History
-            || matches!(primary[0].as_str(), "Alt+e Exact" | "/ Edit" | "Space Mark")
-        {
-            None
-        } else {
-            Some(primary.remove(0))
-        };
-        let mut secondary = primary;
-        secondary.extend(
-            global
-                .into_iter()
-                .filter(|hint| !matches!(hint.as_str(), "F1 Help" | "Ctrl+C Quit")),
-        );
-        let mut right = shortcut(state, "F1", "Help");
-        if let Some(action) = action {
-            right.spans.push(Span::raw("    "));
-            let (key, label) = action.split_once(' ').unwrap_or((&action, ""));
-            right.spans.extend(shortcut(state, key, label).spans);
-        }
-        right.spans.push(Span::raw("  "));
-        let secondary_width = 1
-            + secondary.iter().map(|hint| hint.width()).sum::<usize>()
-            + secondary.len().saturating_sub(1) * 3;
-        let left = fit_hints(&secondary, width, state);
-        if secondary_width + 3 + right.width() <= width {
-            let gap = width - left.width() - right.width();
-            let mut spans = left.spans;
-            spans.push(Span::raw(" ".repeat(gap)));
-            spans.extend(right.spans);
-            return vec![Line::from(spans)];
-        }
-        let mut lines = Vec::new();
-        let mut row = Vec::new();
-        let mut used = 1;
-        for hint in secondary {
-            let needed = hint.width() + if row.is_empty() { 0 } else { 3 };
-            if used + needed > width && !row.is_empty() {
-                lines.push(fit_hints(&row, width, state));
-                row.clear();
-                used = 1;
-            }
-            used += hint.width() + if row.is_empty() { 0 } else { 3 };
-            row.push(hint);
-        }
-        if !row.is_empty() {
-            lines.push(fit_hints(&row, width, state));
-        }
-        lines.push(right.right_aligned());
-        return lines;
+        return wide_key_hints(state, width, primary, global);
     }
 
     if compact && (state.details || state.focus == Focus::List) {
-        global.retain(|hint| hint != "F1 Help");
+        global.retain(|hint| hint.key != "F1");
         global.insert(
-            usize::from(state.activity.as_ref().is_some_and(|a| a.retryable())),
-            "F1 Help".into(),
+            usize::from(state.activity.as_ref().is_some_and(Activity::retryable)),
+            KeyHint::new("F1", "Help"),
         );
     }
 
     if compact && !state.details && state.focus == Focus::List && !state.request_blocks_list() {
         if state.screen == Screen::Episodes && !state.episodes.items.is_empty() {
-            global.retain(|hint| hint != "F1 Help");
+            global.retain(|hint| hint.key != "F1");
             return vec![
-                fit_hints(&["Space Mark".into(), ": Range".into()], width, state),
                 fit_hints(
-                    &["d Download".into(), "i Details".into(), "F1 Help".into()],
+                    &[KeyHint::new("Space", "Mark"), KeyHint::new(":", "Range")],
+                    width,
+                    state,
+                ),
+                fit_hints(
+                    &[
+                        KeyHint::new("d", "Download"),
+                        KeyHint::new("i", "Details"),
+                        KeyHint::new("F1", "Help"),
+                    ],
                     width,
                     state,
                 ),
                 fit_hints(&global, width, state),
             ];
         }
+
         if state.screen == Screen::Search && state.selected_anime().is_some() {
-            let search = if state.screen == Screen::Search {
-                "/ Edit"
-            } else {
-                "/ Search"
-            };
-            primary.retain(|hint| hint != search);
-            let after_help = global.iter().position(|hint| hint == "F1 Help").unwrap() + 1;
-            global.insert(after_help, search.into());
+            primary.retain(|hint| hint.key != "/");
+            let after_help = global.iter().position(|hint| hint.key == "F1").unwrap() + 1;
+            global.insert(after_help, KeyHint::new("/", "Edit"));
         }
     }
 

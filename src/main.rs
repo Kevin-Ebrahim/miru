@@ -219,8 +219,16 @@ async fn main() -> Result<()> {
         let [mut interrupt, mut terminate, mut hangup] = signals;
         let result = tokio::select! {
             result = run_cli(&cli, &provider, mode, &quality, &mut runner) => result,
-            _ = async { tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {}, _ = hangup.recv() => {} } } => {
-                if cli.download { eprintln!("Download cancelled."); }
+            _ = async {
+                tokio::select! {
+                    _ = interrupt.recv() => {},
+                    _ = terminate.recv() => {},
+                    _ = hangup.recv() => {},
+                }
+            } => {
+                if cli.download {
+                    eprintln!("Download cancelled.");
+                }
                 Ok(())
             }
         };

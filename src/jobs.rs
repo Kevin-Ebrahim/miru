@@ -199,7 +199,12 @@ async fn run(
         let result = loop {
             tokio::select! {
                 result = &mut download => break result?,
-                Some(text) = updates.recv() => { let _ = notify.send(Event { id: request.id, update: Update::Progress(text) }); }
+                Some(text) = updates.recv() => {
+                    let _ = notify.send(Event {
+                        id: request.id,
+                        update: Update::Progress(text),
+                    });
+                }
             }
         };
         return Ok(result.map(Output::Download));
@@ -245,7 +250,10 @@ async fn wait_child(
 ) -> Result<Option<ExitStatus>> {
     tokio::select! {
         biased;
-        _ = cancel => { child.kill().await?; Ok(None) },
+        _ = cancel => {
+            child.kill().await?;
+            Ok(None)
+        },
         result = child.wait() => Ok(Some(result?)),
     }
 }
