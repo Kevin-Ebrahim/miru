@@ -30,9 +30,11 @@ impl Theme {
             if line.starts_with('[') {
                 break;
             }
+
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
+
             let value = value.trim();
             let Some(quote @ ('\'' | '"')) = value.chars().next() else {
                 continue;
@@ -43,18 +45,21 @@ impl Theme {
             if !tail.trim().is_empty() && !tail.trim().starts_with('#') {
                 continue;
             }
+
             let Some(hex) = hex.strip_prefix('#') else {
                 continue;
             };
             if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
                 continue;
             }
+
             let value = u32::from_str_radix(hex, 16).ok()?;
             colors.insert(
                 key.trim(),
                 ((value >> 16) as u8, (value >> 8) as u8, value as u8),
             );
         }
+
         let accent = *colors.get("accent")?;
         Some(Self {
             background: *colors.get("background")?,
@@ -95,6 +100,7 @@ impl ThemeSource {
                 ),
             ]
         };
+
         Self { paths }
     }
 
@@ -103,6 +109,7 @@ impl ThemeSource {
             let Ok(file) = tokio::fs::File::open(path).await else {
                 continue;
             };
+
             let mut source = String::new();
             if file.take(32_769).read_to_string(&mut source).await.is_ok()
                 && source.len() <= 32_768
@@ -111,6 +118,7 @@ impl ThemeSource {
                 return crate::palette::Palette::themed(&theme, colorless);
             }
         }
+
         crate::palette::Palette::terminal(colorless)
     }
 }

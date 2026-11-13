@@ -130,16 +130,20 @@ impl App {
     fn search(&mut self) {
         self.search_due = None;
         abort(&mut self.search_task);
+
         if self.state.search.query.text.trim().is_empty() {
             return;
         }
+
         self.state.loading = true;
         self.state.request_error = None;
         self.state.message("", false);
+
         let generation = self.state.search_generation;
         let query = self.state.search.query.text.clone();
         let provider = self.provider.clone();
         let tx = self.tx.clone();
+
         self.search_task = Some(tokio::spawn(async move {
             let result = provider.search(&query).await;
             let _ = tx.send(Message::Search(generation, result));
@@ -175,6 +179,7 @@ impl App {
                 ),
             });
         }
+
         self.show(screen);
     }
 
@@ -188,11 +193,13 @@ impl App {
             self.state.activity = None;
             self.activity_due = None;
         }
+
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
         self.state.search_generation += 1;
         self.state.episode_generation += 1;
+
         self.state.screen = screen;
         self.state.focus = if screen == Screen::Home {
             Focus::Search
@@ -203,6 +210,7 @@ impl App {
         self.state.loading = false;
         self.state.request_error = None;
         self.state.message("", false);
+
         if screen == Screen::Search
             && !self.state.search.query.text.trim().is_empty()
             && self.state.search.results_query != self.state.search.query.text
@@ -234,6 +242,7 @@ impl App {
                 Screen::Episodes
             }
         };
+
         self.show(screen);
     }
 
@@ -312,6 +321,7 @@ impl App {
         };
         abort(&mut self.episode_task);
         self.state.episode_generation += 1;
+
         self.state.loading = true;
         self.state.request_error = None;
         self.state.message("", false);
@@ -389,6 +399,7 @@ impl App {
 
     fn retry(&mut self) {
         self.state.art_revision += 1;
+
         if self.state.details {
             self.load_synopsis(true);
             return;
@@ -435,6 +446,7 @@ impl App {
         else {
             return;
         };
+
         self.stop();
         self.state.activity = Some(Activity {
             anime,
@@ -460,6 +472,7 @@ impl App {
             self.state.message("No more episodes.", false);
             return;
         }
+
         self.state.episodes.selected = index;
         self.start([index].into(), false);
     }
@@ -469,16 +482,19 @@ impl App {
         let Some(activity) = self.state.activity.as_mut() else {
             return;
         };
+
         let episode = activity.episodes[index].clone();
         activity.index = index;
         activity.phase = JobPhase::Resolving;
         activity.message.clear();
         activity.quality_note.clear();
+
         self.job += 1;
         let mut title = format!("{} / Episode {}", activity.anime.title, episode.number);
         if activity.kind == JobKind::Download {
             title.push_str(&format!(" {}", activity.mode.as_str().to_uppercase()));
         }
+
         self.jobs.start(jobs::Request {
             id: self.job,
             episode,
@@ -570,6 +586,7 @@ impl App {
                             .items
                             .get(self.state.episodes.selected)
                             .map(Episode::source_id);
+
                         self.state.episodes.items = episodes;
                         self.state.episodes.marked = self
                             .state
@@ -589,6 +606,7 @@ impl App {
                                     .position(|e| e.source_id() == id)
                             })
                             .unwrap_or(0);
+
                         self.state.request_error = None;
                         self.state.message("", false);
                         self.select_continuation();
@@ -605,6 +623,7 @@ impl App {
                         .state
                         .selected_history()
                         .map(|e| (e.anime.source_id(), e.mode));
+
                     self.state.history.replace_entries(library.entries);
                     self.state.history.selected = key
                         .and_then(|(id, mode)| {
@@ -681,6 +700,7 @@ impl App {
         if !self.state.details && self.state.view.text_view.is_none() {
             return None;
         }
+
         match event.kind {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = event.kind == MouseEventKind::ScrollDown;
@@ -752,6 +772,7 @@ impl App {
         {
             return;
         }
+
         let input = if self.state.help {
             &mut self.state.help_query
         } else if self.state.focus == Focus::Range {
@@ -761,6 +782,7 @@ impl App {
         } else {
             &mut self.state.search.query
         };
+
         let mut changed = false;
         for c in text.chars().take(512) {
             let c = if c.is_whitespace() {
@@ -772,15 +794,18 @@ impl App {
             };
             changed |= input.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
+
         if self.state.help {
             if changed {
                 self.state.view.help_scroll = 0;
             }
             return;
         }
+
         if changed && self.state.screen == Screen::History {
             self.state.history_filter_changed();
         }
+
         if changed && self.state.focus == Focus::Search && self.state.screen == Screen::Search {
             self.state.invalidate_search();
             abort(&mut self.search_task);
@@ -802,6 +827,7 @@ impl App {
             .position(|q| *q == self.state.quality)
             .unwrap_or(0);
         let step = if backwards { choices.len() - 1 } else { 1 };
+
         self.state.quality = choices[(index + step) % choices.len()].into();
         self.settings();
         self.state.message(
@@ -819,13 +845,16 @@ impl App {
             self.history();
             return true;
         }
+
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('e') {
             self.state.search.exact = !self.state.search.exact;
             return true;
         }
+
         if key.code == KeyCode::F(5) || key.code == KeyCode::F(6) {
             return false;
         }
+
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -833,6 +862,7 @@ impl App {
                 _ => {}
             }
         }
+
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 let focuses = [Focus::Search, Focus::Audio, Focus::Quality];
@@ -890,10 +920,12 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
         }
+
         if key.code == KeyCode::F(1) {
             if self.state.help {
                 self.state.help = false;
@@ -902,6 +934,7 @@ impl App {
             }
             return;
         }
+
         if self.state.help && self.state.help_filtering {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
@@ -932,6 +965,7 @@ impl App {
             }
             return;
         }
+
         if self.state.screen == Screen::Home
             && !self.state.help
             && !self.state.details
@@ -939,6 +973,7 @@ impl App {
         {
             return;
         }
+
         // Modified navigation must not fall through to playback/download shortcuts.
         let editing = !self.state.help && !self.state.details && self.state.focus != Focus::List;
         if editing && key.modifiers == KeyModifiers::CONTROL {
@@ -948,6 +983,7 @@ impl App {
                 _ => {}
             }
         }
+
         if !editing && key.modifiers == KeyModifiers::CONTROL {
             key.code = match key.code {
                 KeyCode::Char('n') => KeyCode::Down,
@@ -958,6 +994,7 @@ impl App {
             };
             key.modifiers = KeyModifiers::NONE;
         }
+
         if key.modifiers == KeyModifiers::ALT {
             match key.code {
                 KeyCode::Char('h') if !self.state.help => {
@@ -978,6 +1015,7 @@ impl App {
                 _ => {}
             }
         }
+
         if !editing
             && key.modifiers.intersects(
                 KeyModifiers::CONTROL
@@ -989,11 +1027,13 @@ impl App {
         {
             return;
         }
+
         if key.modifiers == KeyModifiers::SHIFT
             && let KeyCode::Char(c) = key.code
         {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }
+
         if !editing
             && !key
                 .modifiers
@@ -1011,6 +1051,7 @@ impl App {
                 _ => key.code,
             };
         }
+
         if self.state.help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
@@ -1037,20 +1078,24 @@ impl App {
             }
             return;
         }
+
         if key.code == KeyCode::F(5) {
             self.retry();
             return;
         }
+
         if key.code == KeyCode::F(6) {
             self.retry_activity();
             return;
         }
+
         if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
             self.state.mode.toggle();
             self.settings();
             self.state.message("", false);
             return;
         }
+
         if self.state.details {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
@@ -1079,6 +1124,7 @@ impl App {
             }
             return;
         }
+
         if self.state.focus == Focus::Range {
             match key.code {
                 KeyCode::Esc => self.state.focus = Focus::List,
@@ -1101,6 +1147,7 @@ impl App {
             }
             return;
         }
+
         if self.state.focus == Focus::Search && self.state.screen == Screen::History {
             match key.code {
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
@@ -1114,6 +1161,7 @@ impl App {
             }
             return;
         }
+
         if self.state.focus == Focus::Search {
             match key.code {
                 KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
@@ -1133,6 +1181,7 @@ impl App {
             }
             return;
         }
+
         match key.code {
             KeyCode::Char('y') if self.state.view.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
@@ -1248,6 +1297,7 @@ impl App {
         theme: crate::theme::ThemeSource,
     ) -> Result<()> {
         let result = self.run_loop(terminal, picker, signals, theme).await;
+
         self.stop();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
@@ -1327,6 +1377,7 @@ impl App {
                     break;
                 }
             }
+
             if dirty {
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -1363,6 +1414,7 @@ impl App {
                 }
                 dirty = false;
             }
+
             tokio::select! {
                 _ = theme_tick.tick() => {
                     let palette = theme.load(self.state.colorless).await;
@@ -1393,6 +1445,7 @@ impl App {
                 _ = interrupt.recv() => self.quit = true,
             }
         }
+
         if mouse_capture {
             execute!(std::io::stdout(), DisableMouseCapture)?;
         }
@@ -1412,6 +1465,7 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn source(id: &str) -> SourceId {
         SourceId {
             provider: Default::default(),
@@ -1426,6 +1480,7 @@ mod tests {
             ..Default::default()
         }
     }
+
     fn test_app(state: State, dir: &std::path::Path) -> App {
         App::new(
             state,
@@ -2067,6 +2122,7 @@ mod tests {
         state.search.exact = true;
         assert!(state.visible().is_empty());
     }
+
     #[tokio::test]
     async fn navigation_discards_stale_episode_playback_and_synopsis_messages() {
         let dir = tempfile::tempdir().unwrap();
@@ -2116,6 +2172,7 @@ mod tests {
         );
         assert!(app.state.synopses.peek(&source("old")).is_none());
     }
+
     #[tokio::test]
     async fn range_entry_marks_actual_episode_order_without_launching() {
         let dir = tempfile::tempdir().unwrap();
@@ -2155,6 +2212,7 @@ mod tests {
         assert_eq!(app.state.focus, Focus::List);
         assert!(app.state.activity.is_none());
     }
+
     #[tokio::test]
     async fn nested_back_restores_the_original_series_search_and_marks() {
         let dir = tempfile::tempdir().unwrap();
@@ -2261,6 +2319,7 @@ mod tests {
         assert!(!state.accept_search(old + 1, Ok(vec![Anime::default()])));
         assert!(state.search.results().is_empty());
     }
+
     #[tokio::test]
     async fn episode_forward_navigation_opens_details_without_starting_playback() {
         let dir = tempfile::tempdir().unwrap();

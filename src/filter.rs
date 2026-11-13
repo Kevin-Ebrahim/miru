@@ -42,12 +42,14 @@ impl<T> TitleList<T> {
             .iter()
             .map(|item| (self.normalize)(title(item)))
             .collect();
+
         self.items = items;
         *self.selection.get_mut() = None;
     }
 
     pub fn visible(&self, query: &str, exact: bool, accepted_query: Option<&str>) -> Arc<[usize]> {
         let mut selection = self.selection.borrow_mut();
+
         if let Some(cached) = selection.as_ref()
             && cached.query == query
             && cached.exact == exact
@@ -55,6 +57,7 @@ impl<T> TitleList<T> {
         {
             return cached.indices.clone();
         }
+
         let normalized = (self.normalize)(query);
         let all =
             !exact && accepted_query.is_some_and(|source| (self.normalize)(source) == normalized);
@@ -71,12 +74,14 @@ impl<T> TitleList<T> {
                 .then_some(i)
             })
             .collect();
+
         *selection = Some(Selection {
             query: query.into(),
             exact,
             accepted_query: accepted_query.map(str::to_owned),
             indices: indices.clone(),
         });
+
         indices
     }
 }

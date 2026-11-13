@@ -39,6 +39,7 @@ impl Writer {
         let task = tokio::spawn(async move {
             loop {
                 wake.notified().await;
+
                 let (changes, closed) = {
                     let mut pending = queue.lock().unwrap();
                     (
@@ -46,6 +47,7 @@ impl Writer {
                         pending.closed,
                     )
                 };
+
                 if !changes.is_empty() {
                     let store = store.clone();
                     let result = tokio::task::spawn_blocking(move || store.update_many(changes))
@@ -53,11 +55,13 @@ impl Writer {
                         .unwrap_or_else(|error| Err(error.into()));
                     let _ = tx.send(result);
                 }
+
                 if closed {
                     break;
                 }
             }
         });
+
         (
             Self {
                 pending,
@@ -89,6 +93,7 @@ impl Writer {
         if let Some(task) = self.task.take() {
             task.await?;
         }
+
         Ok(())
     }
 }
@@ -97,17 +102,21 @@ impl Sender {
     pub fn submit(&self, change: Change) -> Result<()> {
         let mut pending = self.pending.lock().unwrap();
         ensure!(!pending.closed, "History writer has shut down");
+
         if matches!(change, Change::Settings { .. })
             && matches!(pending.changes.back(), Some(Change::Settings { .. }))
         {
             pending.changes.pop_back();
         }
+
         ensure!(
             pending.changes.len() < CAPACITY,
             "History writer is busy; this change was not queued. Retry after it finishes"
         );
+
         pending.changes.push_back(change);
         self.ready.notify_one();
+
         Ok(())
     }
 }
