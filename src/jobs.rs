@@ -68,15 +68,18 @@ impl Jobs {
         let (notify, events) = mpsc::unbounded_channel();
         let worker = tokio::spawn(async move {
             let mut active: Option<(oneshot::Sender<()>, JoinHandle<()>)> = None;
+
             loop {
                 let changed = incoming.changed().await;
                 if let Some((cancel, task)) = active.take() {
                     let _ = cancel.send(());
                     task.await?;
                 }
+
                 if changed.is_err() || incoming.has_changed().is_err() {
                     break;
                 }
+
                 // Read after cleanup: rapid replacements only start the latest request.
                 let request = incoming.borrow_and_update().clone();
                 if let Some(request) = request {
@@ -109,6 +112,7 @@ impl Jobs {
             }
             Ok(())
         });
+
         Self {
             requests: Some(requests),
             events,
@@ -137,6 +141,7 @@ impl Jobs {
         if let Some(worker) = self.worker.take() {
             worker.await??;
         }
+
         Ok(())
     }
 }
@@ -154,16 +159,19 @@ async fn run(
         _ = &mut *cancel => return Ok(None),
         result = provider.resolve(&request.episode, request.mode) => result?,
     };
+
     let (variant, fallback) = stream.select(&request.quality);
     let quality_note = if fallback {
         format!("{}p ({} unavailable)", variant.height, request.quality)
     } else {
         format!("{}p", variant.height)
     };
+
     let _ = notify.send(Event {
         id: request.id,
         update: Update::Resolved(quality_note),
     });
+
     let log = options
         .state_dir
         .join(if request.kind == JobKind::Download {
@@ -171,6 +179,7 @@ async fn run(
         } else {
             "player.log"
         });
+
     if request.kind == JobKind::Download {
         let _ = notify.send(Event {
             id: request.id,
@@ -190,11 +199,17 @@ async fn run(
         let result = loop {
             tokio::select! {
                 result = &mut download => break result?,
-                Some(text) = updates.recv() => { let _ = notify.send(Event { id: request.id, update: Update::Progress(text) }); }
+                Some(text) = updates.recv() => {
+                    let _ = notify.send(Event {
+                        id: request.id,
+                        update: Update::Progress(text),
+                    });
+                }
             }
         };
         return Ok(result.map(Output::Download));
     }
+
     let mut child = player::launch(
         &options.player,
         &options.player_args,
@@ -211,10 +226,12 @@ async fn run(
         child.kill().await?;
         return Err(error);
     }
+
     let _ = notify.send(Event {
         id: request.id,
         update: Update::Started,
     });
+
     let Some(status) = wait_child(&mut child, cancel).await? else {
         return Ok(None);
     };
@@ -223,6 +240,7 @@ async fn run(
         "Player exited with {status}. See {}",
         log.display()
     );
+
     Ok(Some(Output::Playback))
 }
 
@@ -232,7 +250,10 @@ async fn wait_child(
 ) -> Result<Option<ExitStatus>> {
     tokio::select! {
         biased;
-        _ = cancel => { child.kill().await?; Ok(None) },
+        _ = cancel => {
+            child.kill().await?;
+            Ok(None)
+        },
         result = child.wait() => Ok(Some(result?)),
     }
 }

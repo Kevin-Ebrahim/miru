@@ -29,17 +29,20 @@ pub struct TextView {
 impl TextView {
     pub fn position(&self, column: u16, row: u16) -> TextPosition {
         use unicode_width::UnicodeWidthStr;
+
         let line =
             self.offset + usize::from(row.clamp(self.area.y, self.area.bottom() - 1) - self.area.y);
         let requested =
             usize::from(column.saturating_sub(self.area.x)).min(usize::from(self.area.width));
         let mut position = 0;
+
         for grapheme in self.lines[line].graphemes(true) {
             if position + grapheme.width() > requested {
                 break;
             }
             position += grapheme.width();
         }
+
         TextPosition {
             line,
             column: position,
@@ -48,8 +51,10 @@ impl TextView {
 
     pub fn selected_text(&self, selection: TextSelection) -> String {
         use unicode_width::UnicodeWidthStr;
+
         let (start, end) = selection.range();
         let mut selected = Vec::new();
+
         for (i, line) in self
             .lines
             .iter()
@@ -74,6 +79,7 @@ impl TextView {
                 .collect();
             selected.push(text);
         }
+
         selected.join("\n").trim_end().to_owned()
     }
 }

@@ -71,17 +71,20 @@ impl Artwork {
         if key == self.key {
             return;
         }
+
         self.generation += 1;
         self.key = key.clone();
         if let Some(id) = self.active_id.take() {
             self.pending_delete.push(id);
         }
+
         self.protocol = None;
         self.error = None;
         self.clear = true;
         if let Some(task) = self.task.take() {
             task.abort();
         }
+
         let Some((url, size)) = key else { return };
         let generation = self.generation;
         let picker = self.picker.clone();
@@ -95,6 +98,7 @@ impl Artwork {
         let cache = self.cache.clone();
         let decoded = self.decoded.clone();
         let permits = self.permits.clone();
+
         self.task = Some(tokio::spawn(async move {
             // Avoid downloading every item crossed during rapid key repeats.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -146,6 +150,7 @@ impl Artwork {
                     decoded.lock().await.put(url.clone(), img.clone());
                     img
                 };
+
                 let permit = permits.acquire_owned().await?;
                 tokio::task::spawn_blocking(move || {
                     let _permit = permit;
@@ -186,6 +191,7 @@ impl Artwork {
         if message.generation != self.generation {
             return;
         }
+
         match message.result {
             Ok(protocol) => {
                 if matches!(protocol, Protocol::Kitty(_)) {
@@ -283,6 +289,7 @@ fn prune_cache(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn stale_art_and_failures_never_replace_current_cover() {
         let mut art = Artwork::new(Picker::halfblocks(), PathBuf::new(), false);

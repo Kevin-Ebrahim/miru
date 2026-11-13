@@ -43,6 +43,7 @@ impl Policy {
             Some(Host::Domain(host)) => local_name(host),
             None => false,
         };
+
         Self {
             local_provider: local.then(|| base.host_str().unwrap().to_owned()),
         }
@@ -50,15 +51,18 @@ impl Policy {
 
     fn check(&self, url: &Url) -> Result<()> {
         validate_url(url)?;
+
         if url.host_str() == self.local_provider.as_deref() {
             return Ok(());
         }
+
         let allowed = match url.host() {
             Some(Host::Ipv4(ip)) => public_ip(ip.into()),
             Some(Host::Ipv6(ip)) => public_ip(ip.into()),
             Some(Host::Domain(host)) => !local_name(host),
             None => false,
         };
+
         ensure!(
             allowed,
             "Provider URL points to a local or reserved network address"
@@ -68,6 +72,7 @@ impl Policy {
 
     fn redirect(&self, url: &Url, previous: &[Url]) -> Result<()> {
         ensure!(previous.len() < 10, "Too many provider redirects");
+
         ensure!(
             !previous
                 .last()
@@ -105,6 +110,7 @@ fn public_ip(ip: IpAddr) -> bool {
             if let Some(ip) = ip.to_ipv4_mapped() {
                 return public_ip(ip.into());
             }
+
             let segments = ip.segments();
             segments[0] & 0xe000 == 0x2000 && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
         }
@@ -115,6 +121,7 @@ impl Resolve for Policy {
     fn resolve(&self, name: Name) -> Resolving {
         let local = self.local_provider.as_deref() == Some(name.as_str());
         let host = name.as_str().to_owned();
+
         Box::pin(async move {
             let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
             if addresses.is_empty()
@@ -126,6 +133,7 @@ impl Resolve for Policy {
                 )
                 .into());
             }
+
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
     }
@@ -153,6 +161,7 @@ impl Http {
                 },
             ))
             .build()?;
+
         Ok(Self { client, policy })
     }
 
@@ -168,10 +177,12 @@ impl Http {
         if let Some(referer) = referer {
             request = request.header(reqwest::header::REFERER, referer);
         }
+
         let mut response = request
             .send()
             .await
             .context("Connection failed; check your network and retry")?;
+
         let status = response.status();
         if status.as_u16() == 403 {
             bail!(
@@ -179,15 +190,18 @@ impl Http {
                 url.host_str().unwrap_or("Provider")
             );
         }
+
         ensure!(
             status.is_success(),
             "Request failed: HTTP {status} from {}",
             url.host_str().unwrap_or("provider")
         );
+
         ensure!(
             response.content_length().unwrap_or(0) <= limit as u64,
             "Response exceeds size limit"
         );
+
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             ensure!(
@@ -196,6 +210,7 @@ impl Http {
             );
             bytes.extend_from_slice(&chunk);
         }
+
         Ok(bytes)
     }
 }

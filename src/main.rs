@@ -155,11 +155,13 @@ async fn main() -> Result<()> {
         .state_dir
         .clone()
         .unwrap_or_else(|| directory("XDG_STATE_HOME", ".local/state", "miru"));
+
     let store = persistence::Store::new(&state_dir);
     if cli.state_dir.is_none() {
         let old_dir = directory("XDG_STATE_HOME", ".local/state", "ani-watch");
         store.migrate_from(&persistence::Store::new(&old_dir))?;
     }
+
     if let Some(path) = &cli.import_history {
         let text = tokio::fs::read_to_string(path)
             .await
@@ -177,11 +179,13 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+
     let library = store.load()?;
     if cli.history {
         println!("{}", serde_json::to_string_pretty(&library.entries)?);
         return Ok(());
     }
+
     let mode = if cli.dub {
         Mode::Dub
     } else if cli.sub {
@@ -193,7 +197,9 @@ async fn main() -> Result<()> {
         .quality
         .clone()
         .unwrap_or_else(|| library.quality.clone());
+
     let download_dir = config::download_dir(cli.download_dir.as_deref())?;
+
     if cli.list || cli.resolve || cli.play || cli.download {
         if cli.play || cli.download {
             tokio::fs::create_dir_all(&state_dir).await?;
@@ -209,14 +215,24 @@ async fn main() -> Result<()> {
                 history: writer.sender(),
             },
         );
+
         let [mut interrupt, mut terminate, mut hangup] = signals;
         let result = tokio::select! {
             result = run_cli(&cli, &provider, mode, &quality, &mut runner) => result,
-            _ = async { tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {}, _ = hangup.recv() => {} } } => {
-                if cli.download { eprintln!("Download cancelled."); }
+            _ = async {
+                tokio::select! {
+                    _ = interrupt.recv() => {},
+                    _ = terminate.recv() => {},
+                    _ = hangup.recv() => {},
+                }
+            } => {
+                if cli.download {
+                    eprintln!("Download cancelled.");
+                }
                 Ok(())
             }
         };
+
         let stopped = runner.shutdown().await;
         let saved = writer.shutdown().await;
         stopped?;
@@ -226,13 +242,16 @@ async fn main() -> Result<()> {
         }
         return result;
     }
+
     ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         "The TUI needs an interactive terminal. Use --list or --resolve for JSON output"
     );
+
     tokio::fs::create_dir_all(&state_dir)
         .await
         .context("Could not create Miru state directory")?;
+
     let (_guard, mut terminal) = terminal::init()?;
     let colorless = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let images_enabled = !matches!(cli.images, Images::Off) && !colorless;

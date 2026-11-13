@@ -22,6 +22,7 @@ impl Config {
                 return Err(error).with_context(|| format!("Could not read {}", path.display()));
             }
         };
+
         serde_json::from_slice(&bytes)
             .with_context(|| format!("Invalid config in {}", path.display()))
     }
@@ -30,6 +31,7 @@ impl Config {
         let Some(path) = &self.download_dir else {
             return Ok(None);
         };
+
         let path = if let Ok(relative) = path.strip_prefix("~") {
             dirs::home_dir()
                 .context("Could not find the home directory to expand download_dir")?
@@ -37,10 +39,12 @@ impl Config {
         } else {
             path.clone()
         };
+
         ensure!(
             path.is_absolute(),
             "download_dir must be an absolute path or start with ~/"
         );
+
         Ok(Some(path))
     }
 }
@@ -53,21 +57,25 @@ pub fn download_dir(override_dir: Option<&Path>) -> Result<PathBuf> {
         );
         return Ok(path.to_path_buf());
     }
+
     let config_path = dirs::config_dir()
         .context(
             "Could not find the config directory; use --download-dir to choose a download folder",
         )?
         .join("miru/config.json");
+
     if let Some(path) = Config::load(&config_path)?
         .saved_download_dir()
         .with_context(|| format!("Invalid download_dir in {}", config_path.display()))?
     {
         return Ok(path);
     }
+
     let downloads = dirs::download_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
         .filter(|path| path.is_absolute())
         .context("Could not find the Downloads directory; use --download-dir to choose a folder")?;
+
     Ok(downloads.join("miru"))
 }
 

@@ -20,6 +20,7 @@ pub fn filename(title: &str) -> String {
             (*bytes <= 180).then_some(c)
         })
         .collect();
+
     let name = name.trim_matches(['.', ' ']);
     if name.is_empty() {
         "episode".into()
@@ -42,16 +43,19 @@ pub async fn download(
     tokio::fs::create_dir_all(dir)
         .await
         .context("Could not create download directory")?;
+
     let destination = dir.join(format!("{}.mkv", filename(title)));
     ensure!(
         !destination.exists(),
         "File already exists: {}. Choose another download directory or remove it explicitly",
         destination.display()
     );
+
     let temporary = tempfile::Builder::new()
         .prefix(".miru-")
         .suffix(".part")
         .tempfile_in(dir)?;
+
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-nostdin",
@@ -71,6 +75,7 @@ pub async fn download(
         "-i",
         &stream.select(quality).0.url,
     ]);
+
     let mut input = 1;
     let audio_index = stream.audio.as_ref().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
@@ -91,6 +96,7 @@ pub async fn download(
         cmd.args(["-referer", &stream.referer, "-i", url]);
         input
     });
+
     cmd.args([
         "-map",
         "0:v:0",
@@ -102,6 +108,7 @@ pub async fn download(
     }
     cmd.args(["-c:v", "copy", "-c:a", "copy", "-f", "matroska"])
         .arg(temporary.path());
+
     let error_log = std::fs::File::create(log)?;
     let mut child = cmd
         .stdin(Stdio::null())
@@ -110,6 +117,7 @@ pub async fn download(
         .kill_on_drop(true)
         .spawn()
         .context("Could not launch ffmpeg. Install ffmpeg to download episodes")?;
+
     let stdout = child
         .stdout
         .take()
@@ -126,29 +134,40 @@ pub async fn download(
         }
         child.wait().await
     };
+
     let status = tokio::select! {
         biased;
-        _ = cancel => { child.kill().await?; return Ok(None); },
+        _ = cancel => {
+            child.kill().await?;
+            return Ok(None);
+        },
         result = transfer => match result {
             Ok(status) => status,
-            Err(error) => { let _ = child.kill().await; return Err(error.into()); }
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error.into());
+            }
         },
     };
+
     ensure!(
         status.success(),
         "Download failed ({status}). See {}",
         log.display()
     );
+
     temporary.as_file().sync_all()?;
     temporary
         .persist_noclobber(&destination)
         .context("Could not save download; destination may already exist")?;
+
     Ok(Some(destination))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn filenames_cannot_escape_download_directory() {
         for title in ["../../hello", "a/b\\c", "\x1b[31mTitle", "..."] {

@@ -13,6 +13,7 @@ impl Default for ProviderId {
 
 impl TryFrom<String> for ProviderId {
     type Error = anyhow::Error;
+
     fn try_from(value: String) -> Result<Self> {
         ensure!(
             !value.is_empty()
@@ -22,6 +23,7 @@ impl TryFrom<String> for ProviderId {
                     || b".-".contains(&byte)),
             "Invalid provider identity"
         );
+
         Ok(Self(value))
     }
 }
@@ -31,6 +33,7 @@ impl From<ProviderId> for String {
         provider.0
     }
 }
+
 impl std::fmt::Display for ProviderId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
@@ -72,6 +75,7 @@ impl Anime {
             id: self.id.clone(),
         }
     }
+
     pub fn same_source(&self, other: &Self) -> bool {
         self.provider == other.provider && self.id == other.id
     }
@@ -84,6 +88,7 @@ impl Episode {
             id: self.id.clone(),
         }
     }
+
     pub fn same_source(&self, other: &Self) -> bool {
         self.provider == other.provider && self.id == other.id
     }
@@ -104,6 +109,7 @@ impl Mode {
             Self::Dub => "dub",
         }
     }
+
     pub fn toggle(&mut self) {
         *self = match self {
             Self::Sub => Self::Dub,
@@ -129,6 +135,7 @@ pub struct Stream {
 impl Stream {
     pub fn select(&self, quality: &str) -> (&Variant, bool) {
         let best = &self.variants[0]; // provider guarantees at least one, sorted descending
+
         match quality {
             "best" => (best, false),
             "worst" => (self.variants.last().unwrap_or(best), false),
@@ -165,6 +172,7 @@ pub fn episode_range(input: &str, episodes: &[Episode]) -> Result<Vec<usize>> {
     if episodes.is_empty() {
         bail!("No episodes available");
     }
+
     let locate = |value: &str| -> Result<usize> {
         match value {
             "0" => Ok(0),
@@ -175,10 +183,12 @@ pub fn episode_range(input: &str, episodes: &[Episode]) -> Result<Vec<usize>> {
                 .ok_or_else(|| anyhow::anyhow!("Episode {value} is not available")),
         }
     };
+
     let input = input.trim();
     if input == "-1" {
         return Ok(vec![episodes.len() - 1]);
     }
+
     let parts: Vec<_> = input
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|p| !p.is_empty())
@@ -186,6 +196,7 @@ pub fn episode_range(input: &str, episodes: &[Episode]) -> Result<Vec<usize>> {
     if parts.is_empty() {
         bail!("Enter an episode or range, for example 1-3");
     }
+
     let mut indices = Vec::new();
     for part in parts {
         if let Some((a, b)) = part.split_once('-').filter(|(a, _)| !a.is_empty()) {
@@ -198,14 +209,17 @@ pub fn episode_range(input: &str, episodes: &[Episode]) -> Result<Vec<usize>> {
             indices.push(locate(part)?);
         }
     }
+
     indices.sort_unstable();
     indices.dedup();
+
     Ok(indices)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn episodes() -> Vec<Episode> {
         ["1", "1.5", "2", "3"]
             .iter()
@@ -217,6 +231,7 @@ mod tests {
             })
             .collect()
     }
+
     #[test]
     fn ranges_follow_provider_order() {
         assert_eq!(episode_range("1-2", &episodes()).unwrap(), [0, 1, 2]);
@@ -224,12 +239,14 @@ mod tests {
         assert_eq!(episode_range("-1", &episodes()).unwrap(), [3]);
         assert_eq!(episode_range("3, 1.5 3", &episodes()).unwrap(), [1, 3]);
     }
+
     #[test]
     fn invalid_ranges_do_not_partially_play() {
         for input in ["3-1", "5", "", "1-", "1,99"] {
             assert!(episode_range(input, &episodes()).is_err());
         }
     }
+
     #[test]
     fn normalization_and_control_characters() {
         assert_eq!(normalized("  FRIEREN\t Beyond  "), "frieren beyond");
