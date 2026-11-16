@@ -84,6 +84,9 @@ directories and symlink targets do not affect this choice. For wrappers or
 aliases, override it explicitly, for example
 `--player '/path/to/my wrapper' --player-backend vlc` or `--player-backend mpv`.
 Executable paths and extra arguments are passed literally, without a shell.
+VLC always starts a separate instance, overriding single-instance preferences
+and player arguments so playback stays under Miru's network policy and
+cancellation.
 
 `--resolve` keeps the existing top-level `variants`, `referer`, `subtitle`, and
 `audio` fields. The top-level `audio` remains a URL or null and describes the
@@ -285,8 +288,8 @@ must apply their own policy.
 
 GitHub Actions runs the checks below for pull requests to `main`, pushes to
 `main`, and manual runs. The `Build and test` job uses Ubuntu 26.04 with Rust
-stable, FFmpeg 8 and mpv. Select `Build and test` as a required status check in
-the `main` ruleset after its first successful run.
+stable, FFmpeg 8, mpv and VLC. Select `Build and test` as a required status check
+in the `main` ruleset after its first successful run.
 
 ```sh
 cargo fmt --check
@@ -299,6 +302,7 @@ python3 tests/storage_smoke.py target/release/miru
 python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
 python3 tests/network_smoke.py target/release/miru
+python3 tests/vlc_smoke.py target/release/miru
 python3 tests/parser_smoke.py target/release/miru
 python3 tests/jobs_smoke.py target/release/miru
 python3 tests/terminal_smoke.py target/release/miru
@@ -309,8 +313,11 @@ python3 tests/theme_smoke.py target/release/miru
 The smoke tests use isolated temporary state and local provider fixtures. The
 media, network and navigation checks need ffmpeg and bubblewrap. The media and
 network checks also need mpv, with ffprobe for the media check and OpenSSL for
-the network check's temporary TLS fixture. The job checks need bubblewrap and
-use Python player/ffmpeg wrappers and Linux process identities to verify
+the network check's temporary TLS fixture. The VLC check needs ffmpeg, bubblewrap,
+VLC, `dbus-daemon` and `dbus-send`; it verifies private-request blocking and
+player ownership with an existing VLC on a disposable D-Bus session.
+The job checks need bubblewrap and use Python player/ffmpeg wrappers and Linux
+process identities to verify
 descendant termination and reaping. The terminal checks use a pseudo-terminal
 and do not replace visual testing in every terminal.
 

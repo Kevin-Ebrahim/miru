@@ -37,7 +37,7 @@ jobs:
       - name: Install media test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg mpv bubblewrap openssl
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc bubblewrap openssl dbus-daemon dbus-bin
 
       - name: Show tool versions
         run: |
@@ -46,6 +46,7 @@ jobs:
           ffmpeg -version
           ffprobe -version
           mpv --version
+          vlc --version
           bwrap --version
 
       - name: Check formatting
@@ -74,6 +75,9 @@ jobs:
 
       - name: Check media destination enforcement
         run: python3 tests/network_smoke.py target/release/miru
+
+      - name: Check VLC single-instance isolation and ownership
+        run: python3 tests/vlc_smoke.py target/release/miru
 
       - name: Check bounded provider parsing
         run: python3 tests/parser_smoke.py target/release/miru

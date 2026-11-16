@@ -48,7 +48,10 @@ impl Player {
         let mut args = self.extra.clone();
         match self.backend {
             Backend::Vlc => {
+                // Delegating to a host VLC would escape network policy and cancellation.
                 args.extend([
+                    "--no-one-instance".into(),
+                    "--no-one-instance-when-started-from-file".into(),
                     "--play-and-exit".into(),
                     format!("--http-referrer={}", stream.referer),
                     format!("--meta-title={title}"),
@@ -162,6 +165,33 @@ mod tests {
             let arguments = Player::new(executable, vec![], None).args(&stream(), "best", "Probe");
             assert!(arguments.contains(&"--play-and-exit".into()));
             assert!(!arguments.contains(&"--input-terminal=no".into()));
+        }
+    }
+
+    #[test]
+    fn vlc_cannot_delegate_playback_even_when_user_arguments_enable_it() {
+        for extra in [
+            vec![],
+            vec![
+                "--one-instance".into(),
+                "--one-instance-when-started-from-file".into(),
+            ],
+        ] {
+            let arguments =
+                Player::new("vlc", extra.clone(), None).args(&stream(), "best", "Owned playback");
+            for flag in [
+                "--no-one-instance",
+                "--no-one-instance-when-started-from-file",
+            ] {
+                let position = arguments
+                    .iter()
+                    .rposition(|argument| argument == flag)
+                    .unwrap_or_else(|| panic!("Missing {flag}: {arguments:?}"));
+                assert!(
+                    position >= extra.len(),
+                    "User arguments can override {flag}"
+                );
+            }
         }
     }
 
