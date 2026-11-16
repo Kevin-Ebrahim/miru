@@ -13,7 +13,7 @@ use std::{
     io::{self, Write},
     num::NonZeroUsize,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
@@ -23,6 +23,55 @@ pub struct ArtResult {
     pub image_id: u32,
 }
 
+const RESIZED_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+type ResizedKey = (String, u32, u32);
+
+struct ResizedCover {
+    source: Weak<DynamicImage>,
+    image: Arc<DynamicImage>,
+}
+
+struct ResizedCache(LruCache<ResizedKey, ResizedCover>);
+
+impl ResizedCache {
+    fn new() -> Self {
+        Self(LruCache::new(NonZeroUsize::new(4).unwrap()))
+    }
+
+    fn get(&mut self, key: &ResizedKey, source: &Arc<DynamicImage>) -> Option<Arc<DynamicImage>> {
+        self.0
+            .get(key)
+            .filter(|entry| entry.source.ptr_eq(&Arc::downgrade(source)))
+            .map(|entry| entry.image.clone())
+    }
+
+    fn insert(&mut self, key: ResizedKey, source: &Arc<DynamicImage>, image: Arc<DynamicImage>) {
+        let bytes = image.as_bytes().len();
+        if bytes > RESIZED_CACHE_BYTES {
+            return;
+        }
+        self.0.pop(&key);
+        while self
+            .0
+            .iter()
+            .map(|(_, entry)| entry.image.as_bytes().len())
+            .sum::<usize>()
+            + bytes
+            > RESIZED_CACHE_BYTES
+        {
+            self.0.pop_lru();
+        }
+        self.0.put(
+            key,
+            ResizedCover {
+                source: Arc::downgrade(source),
+                image,
+            },
+        );
+    }
+}
+
 pub struct Artwork {
     pub picker: Picker,
     pub protocol: Option<Protocol>,
@@ -30,6 +79,7 @@ pub struct Artwork {
     pub generation: u64,
     key: Option<(String, Size)>,
     decoded: Arc<Mutex<LruCache<String, Arc<DynamicImage>>>>,
+    resized: Arc<Mutex<ResizedCache>>,
     permits: Arc<Semaphore>,
     cache: PathBuf,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -48,6 +98,7 @@ impl Artwork {
             generation: 0,
             key: None,
             decoded: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(12).unwrap()))),
+            resized: Arc::new(Mutex::new(ResizedCache::new())),
             permits: Arc::new(Semaphore::new(2)),
             cache,
             task: None,
@@ -98,15 +149,16 @@ impl Artwork {
         let cache = self.cache.clone();
         let decoded = self.decoded.clone();
         let permits = self.permits.clone();
+        let resized_cache = self.resized.clone();
 
         self.task = Some(tokio::spawn(async move {
-            // Avoid downloading every item crossed during rapid key repeats.
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let result = async {
                 let cached = decoded.lock().await.get(&url).cloned();
                 let img = if let Some(img) = cached {
                     img
                 } else {
+                    // Debounce misses while keeping decoded covers responsive.
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     let path = cache.join(format!("{:x}", Sha256::digest(url.as_bytes())));
                     let disk = match tokio::fs::metadata(&path).await {
                         Ok(meta)
@@ -121,9 +173,13 @@ impl Artwork {
                         }
                         _ => None,
                     };
+                    let mut disk_hit = false;
                     let (img, bytes) = if let Some(bytes) = disk {
                         match decode_image(bytes, permits.clone()).await {
-                            Ok(decoded) => decoded,
+                            Ok(decoded) => {
+                                disk_hit = true;
+                                decoded
+                            }
                             Err(_) => {
                                 let _ = tokio::fs::remove_file(&path).await;
                                 let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
@@ -134,19 +190,10 @@ impl Artwork {
                         let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
                         decode_image(bytes, permits.clone()).await?
                     };
-                    if tokio::fs::create_dir_all(&cache).await.is_ok() {
-                        // Atomic cache writes; a failed cache write must never hide an image.
-                        let path_copy = path.clone();
-                        let _ = tokio::task::spawn_blocking(move || -> Result<()> {
-                            let mut temp =
-                                tempfile::NamedTempFile::new_in(path_copy.parent().unwrap())?;
-                            temp.write_all(&bytes)?;
-                            temp.persist(&path_copy)?;
-                            prune_cache(path_copy.parent().unwrap());
-                            Ok(())
-                        })
-                        .await;
-                    }
+                    // Cache maintenance is best effort and must not delay presentation.
+                    tokio::task::spawn_blocking(move || {
+                        let _ = maintain_cache(&path, (!disk_hit).then_some(bytes));
+                    });
                     decoded.lock().await.put(url.clone(), img.clone());
                     img
                 };
@@ -160,9 +207,22 @@ impl Artwork {
                         // Use the library encoder with an owned ID so cleanup only deletes our
                         // image, never graphics belonging to the shell or another pane.
                         let fit = resize.size_for(&img, picker.font_size(), size);
-                        let resized = resize.resize(&img, picker.font_size(), fit, None);
+                        let font = picker.font_size();
+                        let key = (
+                            url,
+                            u32::from(fit.width) * u32::from(font.width),
+                            u32::from(fit.height) * u32::from(font.height),
+                        );
+                        let cached = resized_cache.blocking_lock().get(&key, &img);
+                        let resized = cached.unwrap_or_else(|| {
+                            let resized = Arc::new(resize.resize(&img, font, fit, None));
+                            resized_cache
+                                .blocking_lock()
+                                .insert(key, &img, resized.clone());
+                            resized
+                        });
                         ratatui_image::protocol::kitty::Kitty::new(
-                            resized,
+                            (*resized).clone(),
                             fit,
                             image_id,
                             picker.tmux_detected(),
@@ -256,6 +316,23 @@ async fn decode_image(
     .await?
 }
 
+fn maintain_cache(path: &std::path::Path, bytes: Option<Vec<u8>>) -> Result<()> {
+    if let Some(bytes) = bytes {
+        let dir = path
+            .parent()
+            .context("Cover cache has no parent directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        temp.write_all(&bytes)?;
+        temp.persist(path)?;
+        prune_cache(dir);
+    } else {
+        // Preserve sliding expiry and eviction recency without rewriting cached bytes.
+        std::fs::File::open(path)?.set_modified(std::time::SystemTime::now())?;
+    }
+    Ok(())
+}
+
 fn prune_cache(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -289,6 +366,55 @@ fn prune_cache(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resized_covers_match_source_and_geometry() {
+        let mut cache = ResizedCache::new();
+        let source = Arc::new(DynamicImage::new_rgb8(2, 3));
+        let image = Arc::new(DynamicImage::new_rgb8(4, 6));
+        let key = ("cover".to_owned(), 4, 6);
+        cache.insert(key.clone(), &source, image.clone());
+        assert!(Arc::ptr_eq(&cache.get(&key, &source).unwrap(), &image));
+        assert!(cache.get(&("cover".to_owned(), 8, 12), &source).is_none());
+        let replacement = Arc::new(DynamicImage::new_rgb8(2, 3));
+        assert!(cache.get(&key, &replacement).is_none());
+        drop(source);
+        assert_eq!(cache.0.peek(&key).unwrap().source.strong_count(), 0);
+    }
+
+    #[test]
+    fn resized_cache_evicts_oldest_to_bound_memory() {
+        let mut cache = ResizedCache::new();
+        let source = Arc::new(DynamicImage::new_rgb8(1, 1));
+        let image = Arc::new(DynamicImage::new_rgba8(1024, 2048));
+        for index in 0..3 {
+            cache.insert((index.to_string(), 1024, 2048), &source, image.clone());
+        }
+        assert_eq!(cache.0.len(), 2);
+        assert!(cache.get(&("0".to_owned(), 1024, 2048), &source).is_none());
+        let oversized = Arc::new(DynamicImage::new_rgba8(2048, 2049));
+        cache.insert(("large".to_owned(), 2048, 2049), &source, oversized);
+        assert_eq!(cache.0.len(), 2);
+    }
+
+    #[test]
+    fn disk_hit_refreshes_age_without_replacing_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a".repeat(64));
+        maintain_cache(&path, Some(vec![1, 2, 3])).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH;
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        maintain_cache(&path, None).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.ino(), inode);
+        assert!(metadata.modified().unwrap() > old);
+        assert_eq!(std::fs::read(path).unwrap(), [1, 2, 3]);
+    }
 
     #[test]
     fn stale_art_and_failures_never_replace_current_cover() {
