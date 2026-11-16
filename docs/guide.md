@@ -30,6 +30,14 @@ See the [README](../README.md) for installation and first use.
 Printable keys enter text while an input has focus. Inputs support readline
 shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
 
+Click a list item to select it; double-click to open a series or play an episode,
+using the same action as Enter. The wheel moves one item at a time over a list
+and scrolls text over a synopsis or Help. Click SUB/DUB to switch audio, or the
+quality label to cycle playback quality. Keyboard controls remain available.
+
+Click a cover to view it enlarged. Press Esc or click anywhere to close the viewer
+and return to the same browsing position.
+
 Dragging preview or details text copies the selected text. Navigation before a
 new drag targets the newly selected series. Resizing, moving the reading area,
 or opening Help clears unfinished selections.

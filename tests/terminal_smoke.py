@@ -69,6 +69,7 @@ def check(binary, exit_method, animate=False, locked=False):
                     break
                 pump(0.1)
             assert b"anime" in output, "Miru search did not draw"
+            assert b"\x1b[?1006h" in output, "Mouse capture must be enabled even on Home"
             pump(0.2)
             drawn = len(output)
             if animate:
@@ -134,6 +135,7 @@ def check(binary, exit_method, animate=False, locked=False):
             assert termios.tcgetattr(slave) == before, "Raw terminal attributes were not restored"
             assert b"\x1b[?1049l" in output, "Alternate screen not restored"
             assert b"\x1b[?2004l" in output, "Bracketed paste not disabled"
+            assert b"\x1b[?1006l" in output, "Mouse capture not disabled"
             assert b"cursor position could not" not in output, "Terminal reader conflict regressed"
         finally:
             if process.poll() is None:

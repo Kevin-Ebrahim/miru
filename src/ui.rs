@@ -242,6 +242,9 @@ pub fn cover_area(state: &State, area: Rect) -> Rect {
     if area.width < 32 || area.height < 12 || state.help {
         return Rect::default();
     }
+    if state.cover_view.is_some() {
+        return area.inner(Margin::new(2, 2));
+    }
     preview_regions(state, panels(state, area).1).0
 }
 
@@ -284,6 +287,11 @@ fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
 
 pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
+    state.view.list = None;
+    state.view.cover = None;
+    state.view.help_area = None;
+    state.view.audio_setting = None;
+    state.view.quality_setting = None;
     frame.render_widget(
         Block::default().style(
             Style::default()
@@ -294,7 +302,9 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     );
 
     if area.width < 32 || area.height < 12 {
-        state.view.text_view = None;
+        if state.cover_view.is_none() {
+            state.view.text_view = None;
+        }
         state.view.text_selection = None;
         frame.render_widget(
             Paragraph::new(vec![
@@ -305,6 +315,12 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
             .wrap(Wrap { trim: true }),
             area,
         );
+        return;
+    }
+
+    if state.cover_view.is_some() {
+        state.view.text_selection = None;
+        render_cover_view(frame, state, art, area);
         return;
     }
 
@@ -460,10 +476,11 @@ pub fn home_scene_visible(state: &State, area: Rect) -> bool {
     state.screen == Screen::Home
         && !state.help
         && !state.details
+        && state.cover_view.is_none()
         && crate::sakura::fits(home_sections(state, area)[0])
 }
 
-fn render_home(frame: &mut Frame, state: &State, area: Rect) {
+fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
     let [space, status, activity, _, footer] = home_sections(state, area);
     let width = space.width.saturating_sub(4).min(64);
     let big_logo = !state.ascii && space.width >= 60 && space.height >= 20;
@@ -614,6 +631,13 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             1,
         ),
     );
+    state.view.audio_setting = Some(Rect::new(inner.x, inner.bottom() - 1, 5, 1));
+    state.view.quality_setting = Some(Rect::new(
+        inner.right() - quality_width,
+        inner.bottom() - 1,
+        quality_width,
+        1,
+    ));
     let mut hint = Line::default();
     if matches!(state.focus, Focus::Audio | Focus::Quality) {
         hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
@@ -654,7 +678,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
-fn render_header(frame: &mut Frame, state: &State, header: Rect) {
+fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
     if header.width >= 120 || (state.screen == Screen::Episodes && !state.details) {
         render_wide_header(frame, state, header);
         return;
@@ -671,26 +695,35 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
     };
     let settings = format!("{} / {}", state.mode.as_str().to_uppercase(), state.quality);
     let context = format!("   {location}   {settings}");
-    let heading = vec![Line::from(
-        if " ani / watch".width() + context.width() > usize::from(header.width) {
-            vec![
-                Span::styled(format!(" {location}"), accent(state)),
-                Span::raw(format!("   {settings}")),
-            ]
+    let compact = " ani / watch".width() + context.width() > usize::from(header.width);
+    let settings_x = header.x
+        + if compact {
+            format!(" {location}   ").width() as u16
         } else {
-            vec![
-                Span::styled(" ani / watch", accent(state)),
-                Span::raw(context),
-            ]
-        },
-    )];
+            format!(" ani / watch   {location}   ").width() as u16
+        };
+    state.view.audio_setting = Some(Rect::new(settings_x, header.y, 3, 1).intersection(header));
+    state.view.quality_setting = Some(
+        Rect::new(settings_x + 6, header.y, state.quality.width() as u16, 1).intersection(header),
+    );
+    let heading = vec![Line::from(if compact {
+        vec![
+            Span::styled(format!(" {location}"), accent(state)),
+            Span::raw(format!("   {settings}")),
+        ]
+    } else {
+        vec![
+            Span::styled(" ani / watch", accent(state)),
+            Span::raw(context),
+        ]
+    })];
     frame.render_widget(
         Paragraph::new(heading).style(Style::default().bold()),
         header,
     );
 }
 
-fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
+fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     let bar = Style::default().fg(palette(state).text).bold();
     frame.render_widget(Block::default().style(bar), area);
     let shortcuts = state.focus == Focus::List && !state.details;
@@ -766,6 +799,12 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     .areas(Rect::new(area.x, area.y, area.width, 1));
     frame.render_widget(Paragraph::new(navigation), left);
     frame.render_widget(Paragraph::new(settings), right);
+    let audio_width = if shortcuts { 5 } else { 3 };
+    let quality_width = state.quality.width() as u16 + if shortcuts { 2 } else { 0 };
+    state.view.audio_setting =
+        Some(Rect::new(right.x, right.y, audio_width, 1).intersection(right));
+    state.view.quality_setting =
+        Some(Rect::new(right.x + audio_width + 3, right.y, quality_width, 1).intersection(right));
     if inline_search(state, area.width) {
         let label = if state.search.exact { "[EXACT] " } else { "" };
         let field = Rect::new(middle.x, middle.y, middle.width.saturating_sub(2), 1);
@@ -1353,6 +1392,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .collect(),
     };
 
+    let heights: Vec<_> = items.iter().map(ListItem::height).collect();
     let list = List::new(items)
         .highlight_symbol(if state.screen == Screen::Episodes {
             ""
@@ -1367,6 +1407,72 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     *selection.offset_mut() = state.view.list_offsets[state.screen as usize];
     frame.render_stateful_widget(list, inner, &mut selection);
     state.view.list_offsets[state.screen as usize] = selection.offset();
+    let mut y = inner.y;
+    let mut rows = Vec::new();
+    for (index, height) in heights.into_iter().enumerate().skip(selection.offset()) {
+        let height = height as u16;
+        if height > inner.bottom().saturating_sub(y) {
+            break;
+        }
+        rows.push((Rect::new(inner.x, y, inner.width, height), index));
+        y += height;
+    }
+    state.view.list = Some(crate::view::ListView { area: inner, rows });
+}
+
+fn render_cover_image(frame: &mut Frame, art: &Artwork, area: Rect) -> Option<Rect> {
+    let protocol = art.protocol.as_ref()?;
+    let size = protocol.size();
+    if size.width > area.width || size.height > area.height {
+        return None;
+    }
+    let image = Rect::new(
+        area.x + (area.width - size.width) / 2,
+        area.y + (area.height - size.height) / 2,
+        size.width,
+        size.height,
+    );
+    frame.render_widget(Image::new(protocol), image);
+    Some(image)
+}
+
+fn render_cover_view(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
+    let anime = state.cover_view.as_ref().expect("cover viewer is open");
+    frame.render_widget(
+        Paragraph::new(ellipsize(
+            &anime.title,
+            area.width.saturating_sub(8) as usize,
+            state,
+        ))
+        .style(accent(state)),
+        Rect::new(area.x + 2, area.y, area.width.saturating_sub(8), 1),
+    );
+    frame.render_widget(
+        Paragraph::new("[x]").style(accent(state)),
+        Rect::new(area.right() - 4, area.y, 3, 1),
+    );
+    let cover = cover_area(state, area);
+    if art.protocol.is_some() {
+        render_cover_image(frame, art, cover);
+    } else {
+        empty_message(
+            frame,
+            state,
+            cover,
+            if art.error.is_some() {
+                "Cover unavailable / F5 Retry"
+            } else {
+                "Loading cover..."
+            },
+            "",
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("Esc / click to close")
+            .centered()
+            .style(muted(state)),
+        Rect::new(area.x, area.bottom() - 1, area.width, 1),
+    );
 }
 
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
@@ -1398,19 +1504,8 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         return;
     };
 
-    if let Some(protocol) = &art.protocol {
-        let size = protocol.size();
-        if size.width <= cover.width && size.height <= cover.height {
-            frame.render_widget(
-                Image::new(protocol),
-                Rect::new(
-                    cover.x + (cover.width - size.width) / 2,
-                    cover.y + (cover.height - size.height) / 2,
-                    size.width,
-                    size.height,
-                ),
-            );
-        }
+    let cover_hit = if art.protocol.is_some() {
+        render_cover_image(frame, art, cover)
     } else if cover.height > 0 {
         let label = if !art.enabled {
             "Covers disabled"
@@ -1422,7 +1517,10 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             "No cover"
         };
         empty_message(frame, state, cover, label, "");
-    }
+        None
+    } else {
+        None
+    };
 
     let compact_details = state.details && metadata.height < 10;
     let mut details = Vec::new();
@@ -1516,6 +1614,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         );
     }
 
+    state.view.cover = cover_hit;
     let text_lines: Vec<_> = details.iter().map(ToString::to_string).collect();
     if state
         .view
@@ -1914,6 +2013,9 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Esc / h / Left", "Back (Esc leaves text input)"),
             ("Alt+e", "Toggle exact search"),
             ("Delete", "Remove highlighted history entry"),
+            ("Click cover", "Enlarge cover; Esc / click closes"),
+            ("Click / double-click", "Select item / open or play"),
+            ("Mouse wheel", "Move list selection / scroll text"),
             ("Drag in text / y", "Select and copy / copy panel text"),
         ],
     ),
@@ -2033,6 +2135,10 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 }
 
 fn render_help(frame: &mut Frame, state: &mut State) {
+    state.view.list = None;
+    state.view.cover = None;
+    state.view.audio_setting = None;
+    state.view.quality_setting = None;
     let area = frame.area();
     let base = Style::default()
         .fg(palette(state).text)
@@ -2062,6 +2168,7 @@ fn render_help(frame: &mut Frame, state: &mut State) {
         Constraint::Length(1),
     ])
     .areas(inner);
+    state.view.help_area = Some(body);
     frame.render_widget(
         Paragraph::new("Keybindings").style(Style::default().bold()),
         header,
@@ -2203,6 +2310,55 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn setting_hit_areas_match_visible_labels_across_layouts() {
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::History,
+            Screen::Episodes,
+        ] {
+            for width in [32, 40, 80, 120] {
+                for focus in [Focus::Search, Focus::List] {
+                    for details in [false, true] {
+                        let mut state = State::new(
+                            String::new(),
+                            Mode::Sub,
+                            "best".into(),
+                            false,
+                            false,
+                            false,
+                        );
+                        state.screen = screen;
+                        state.focus = focus;
+                        state.details = details;
+                        for quality in ["best", "1080p"] {
+                            state.quality = quality.into();
+                            let text = render_text(&mut state, width, 24);
+                            for (area, label) in [
+                                (state.view.audio_setting.unwrap(), "sub"),
+                                (state.view.quality_setting.unwrap(), quality),
+                            ] {
+                                let visible: String = text
+                                    .lines()
+                                    .nth(area.y as usize)
+                                    .unwrap()
+                                    .chars()
+                                    .skip(area.x as usize)
+                                    .take(area.width as usize)
+                                    .collect();
+                                assert!(
+                                    visible.to_lowercase().contains(label),
+                                    "{screen:?}/{focus:?}/{details}/{width}: {visible:?} should contain {label}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
