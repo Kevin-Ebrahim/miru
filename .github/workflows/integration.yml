@@ -1,0 +1,60 @@
+name: Integration tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  integration:
+    name: Offline smoke tests
+    # FFmpeg 8 supports the HLS input options used by the download smoke tests.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc bubblewrap openssl dbus-daemon dbus-bin
+
+      - name: Show tool versions
+        run: |
+          rustc --version
+          ffmpeg -version
+          mpv --version
+          vlc --version
+          bwrap --version
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Run smoke tests
+        run: |
+          status=0
+          for suite in tests/*smoke.py; do
+            echo "::group::${suite}"
+            if ! python3 "$suite" target/release/miru; then
+              echo "::error::${suite} failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"

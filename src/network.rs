@@ -1,7 +1,14 @@
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 use url::{Host, Url};
+
+mod media;
+pub use media::{Session, Tool, run_helper};
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 pub const MEDIA_PROTOCOLS: &str = "http,https,tcp,tls,crypto,httpproxy,data";
@@ -76,6 +83,24 @@ impl Policy {
         );
         self.check(url)
     }
+
+    async fn addresses(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        let local = self.local_provider.as_deref() == Some(host);
+        let name = host
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(host);
+        let addresses: Vec<_> = tokio::net::lookup_host((name, port)).await?.collect();
+        if addresses.is_empty()
+            || (!local && addresses.iter().any(|address| !public_ip(address.ip())))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Provider DNS resolved to a local or reserved network address",
+            ));
+        }
+        Ok(addresses)
+    }
 }
 
 fn local_name(host: &str) -> bool {
@@ -113,19 +138,10 @@ fn public_ip(ip: IpAddr) -> bool {
 
 impl Resolve for Policy {
     fn resolve(&self, name: Name) -> Resolving {
-        let local = self.local_provider.as_deref() == Some(name.as_str());
+        let policy = self.clone();
         let host = name.as_str().to_owned();
         Box::pin(async move {
-            let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            if addresses.is_empty()
-                || (!local && addresses.iter().any(|address| !public_ip(address.ip())))
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "Provider DNS resolved to a local or reserved network address",
-                )
-                .into());
-            }
+            let addresses = policy.addresses(&host, 0).await?;
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
     }

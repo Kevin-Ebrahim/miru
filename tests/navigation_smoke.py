@@ -114,13 +114,17 @@ def main():
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        player = root / "player"
+        # An mpv-compatible wrapper named vlc requires the override to reach queued TUI jobs.
+        player = root / "vlc"
         player.write_text('''#!/usr/bin/env python3
-import json, os, pathlib, sys, time
+import fcntl, json, pathlib, sys, time, uuid
 root = pathlib.Path(__file__).parent
+token = uuid.uuid4().hex
+live = (root / (token + ".lock")).open("w")
+fcntl.flock(live, fcntl.LOCK_EX)
 with (root / "launches").open("a") as log:
-    log.write(json.dumps({"pid": os.getpid(), "args": sys.argv[1:]}) + "\\n")
-while not (root / str(os.getpid())).exists():
+    log.write(json.dumps({"token": token, "args": sys.argv[1:]}) + "\\n")
+while not (root / token).exists():
     time.sleep(0.03)
 ''')
         player.chmod(0o755)
@@ -143,7 +147,7 @@ while not (root / str(os.getpid())).exists():
         saved_config = config.read_bytes()
         process = subprocess.Popen([
             str(binary), "--images", "off", "--no-animation", "--state-dir", str(root),
-            "--cache-dir", str(root / "cache"), "--player", str(player),
+            "--cache-dir", str(root / "cache"), "--player", str(player), "--player-backend", "mpv",
             "--provider", f"http://127.0.0.1:{server.server_port}/",
         ], env={**os.environ, "XDG_CONFIG_HOME": str(config_home)},
             stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
@@ -174,26 +178,36 @@ while not (root / str(os.getpid())).exists():
             deadline = time.monotonic() + 5
             while not predicate() and time.monotonic() < deadline:
                 pump()
-            log = root / "download.log"
-            assert predicate(), "Timed out waiting for TUI action: " + (log.read_text() if log.exists() else "no download log")
+            if not predicate():
+                logs = "\n".join(log.read_text() for log in (root / "logs").glob("download-*.log"))
+                raise AssertionError("Timed out waiting for TUI action: " + (logs or "no download log"))
 
-        def copied_text(keys=b"y"):
+        def clipboard_texts(keys):
             output.clear()
             send(keys)
             payloads = re.findall(rb"\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)(?:\x07|\x1b\\)", output)
-            assert payloads, "Copy should emit a clipboard payload"
-            return base64.b64decode(payloads[-1]).decode()
+            return [base64.b64decode(payload).decode() for payload in payloads]
+
+        def copied_text(keys=b"y"):
+            texts = clipboard_texts(keys)
+            assert texts, "Copy should emit a clipboard payload"
+            return texts[-1]
+
+        def pointer(button, column, row, release=False):
+            return f"\x1b[<{button};{column};{row}{'m' if release else 'M'}".encode()
 
         def launches():
             path = root / "launches"
             return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-        def alive(pid):
-            try:
-                os.kill(pid, 0)
-                return True
-            except ProcessLookupError:
-                return False
+        def alive(token):
+            # File locks identify the live wrapper across the media PID namespace.
+            with (root / (token + ".lock")).open("a") as live:
+                try:
+                    fcntl.flock(live, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return False
+                except BlockingIOError:
+                    return True
 
         try:
             pump(0.5)
@@ -205,6 +219,34 @@ while not (root / str(os.getpid())).exists():
             assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
             copied = copied_text(b"yk")
             assert "Second Series" in copied and "Original Series" not in copied, "Queued copy+navigation must copy before moving"
+            down = pointer(0, 66, 7)
+            up = pointer(0, 115, 7, release=True)
+            drag = down + pointer(32, 115, 7) + up
+            assert copied_text(drag) == "Original Series", "Mouse control must select the visible title"
+            copied = copied_text(b"j" + drag)
+            assert copied == "Second Series", f"Queued navigation+mouse-copy used stale panel text: {copied!r}"
+            assert clipboard_texts(drag + b"k" + drag) == ["Second Series", "Original Series"], "Mouse-copy/navigation must retain input order"
+            assert copied_text(pointer(65, 1, 7) + drag) == "Second Series", "Mouse-wheel navigation+drag used stale panel text"
+            send(b"k")
+            details_drag = pointer(0, 42, 4) + pointer(32, 110, 4) + pointer(0, 110, 4, release=True)
+            assert copied_text(b"i" + details_drag) == "Original Series", "Opening details must refresh mouse geometry"
+            assert copied_text(b"h" + drag) == "Original Series", "Returning to preview must refresh mouse geometry"
+            send(down)
+            assert not clipboard_texts(b"i" + pointer(0, 110, 4, release=True)), "Details switch completed an old preview drag"
+            send(b"\x1b")
+            assert not clipboard_texts(b"\x1bOP" + drag), "Help copied its hidden preview"
+            assert copied_text(b"\x1bOP" + drag) == "Original Series", "Closing Help must restore fresh mouse geometry"
+            send(down)
+            assert not clipboard_texts(b"\x1bOP\x1bOP" + up), "Help transitions kept an unfinished drag alive"
+            send(down)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 640, 480))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
+            assert not clipboard_texts(up), "Resize completed a drag from the old geometry"
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
+            assert copied_text(drag) == "Original Series", "Resized preview did not restore mouse selection"
             send(b"i")
             copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
@@ -232,16 +274,16 @@ while not (root / str(os.getpid())).exists():
             first = launches()[0]
             assert "--force-media-title=Original Series / Episode 1" in first["args"], first
             send(b"H\x1bh/\x1b\x1b")  # Home, history, search, and back must leave the player alive.
-            assert alive(first["pid"]), "Browsing stopped the player"
+            assert alive(first["token"]), "Browsing stopped the player"
             send(b"DQ")  # New defaults cannot mutate the active queue.
-            (root / str(first["pid"])).touch()
+            (root / first["token"]).touch()
             wait_for(lambda: len(launches()) == 2)
             second = launches()[1]
             assert "--force-media-title=Original Series / Episode 2" in second["args"], second
             assert any("episodeId=12" in url for url in requests), requests
             assert not any("episodeId=2" in url for url in requests), requests
             send(b"x")
-            wait_for(lambda: not alive(second["pid"]))
+            wait_for(lambda: not alive(second["token"]))
             history = json.loads((root / "library.json").read_text())["entries"]
             assert history[0]["anime"]["id"] == "original-1" and history[0]["episode"] == "2", history
             assert history[0]["mode"] == "sub", history
@@ -288,7 +330,7 @@ while not (root / str(os.getpid())).exists():
             assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
+            print("PASS: keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()
