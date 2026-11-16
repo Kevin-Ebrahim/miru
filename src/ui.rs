@@ -830,14 +830,57 @@ fn render_input(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HintAction {
+    Back,
+    Scroll,
+    ExactSearch,
+    MarkRange,
+    Cancel,
+    RetryRequest,
+    Search,
+    MarkEpisode,
+    EnterRange,
+    Download,
+    Details,
+    RemoveHistory,
+    Help,
+    ActivityControl,
+    Audio,
+    Quality,
+    RetryActivity,
+    Copy,
+}
+
 struct KeyHint {
+    action: HintAction,
     key: &'static str,
     label: String,
 }
 
 impl KeyHint {
-    fn new(key: &'static str, label: impl Into<String>) -> Self {
+    fn new(action: HintAction, label: impl Into<String>) -> Self {
+        let key = match action {
+            HintAction::Back | HintAction::Cancel => "Esc",
+            HintAction::Scroll => "Up/Down",
+            HintAction::ExactSearch => "Alt+e",
+            HintAction::MarkRange => "Enter",
+            HintAction::RetryRequest => "F5",
+            HintAction::Search => "/",
+            HintAction::MarkEpisode => "Space",
+            HintAction::EnterRange => ":",
+            HintAction::Download => "d",
+            HintAction::Details => "i",
+            HintAction::RemoveHistory => "Delete",
+            HintAction::Help => "F1",
+            HintAction::ActivityControl => "x",
+            HintAction::Audio => "s",
+            HintAction::Quality => "Q",
+            HintAction::RetryActivity => "F6",
+            HintAction::Copy => "y",
+        };
         Self {
+            action,
             key,
             label: label.into(),
         }
@@ -867,11 +910,11 @@ fn fit_hints(hints: &[KeyHint], width: usize, state: &State) -> Line<'static> {
     Line::from(spans)
 }
 
-fn primary_hints(state: &State) -> Vec<KeyHint> {
+fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
     if state.details {
         return vec![
-            KeyHint::new("Esc", "Back"),
-            KeyHint::new("Up/Down", "Scroll"),
+            KeyHint::new(HintAction::Back, "Back"),
+            KeyHint::new(HintAction::Scroll, "Scroll"),
         ];
     }
 
@@ -879,46 +922,50 @@ fn primary_hints(state: &State) -> Vec<KeyHint> {
         return if state.screen == Screen::History {
             vec![]
         } else {
-            vec![KeyHint::new("Alt+e", "Exact")]
+            vec![KeyHint::new(HintAction::ExactSearch, "Exact")]
         };
     }
 
     if state.focus == Focus::Range {
         return vec![
-            KeyHint::new("Enter", "Mark range"),
-            KeyHint::new("Esc", "Cancel"),
+            KeyHint::new(HintAction::MarkRange, "Mark range"),
+            KeyHint::new(HintAction::Cancel, "Cancel"),
         ];
     }
 
     if state.request_blocks_list() {
-        return vec![
-            KeyHint::new("F5", "Retry"),
-            KeyHint::new("/", "Search"),
-            KeyHint::new("Esc", "Back"),
-        ];
+        let mut hints = vec![KeyHint::new(HintAction::RetryRequest, "Retry")];
+        if state.screen != Screen::History {
+            hints.push(KeyHint::new(HintAction::Search, "Search"));
+        }
+        hints.push(KeyHint::new(HintAction::Back, "Back"));
+        return hints;
     }
 
     if state.screen == Screen::Episodes {
         if state.episodes.items.is_empty() {
-            let mut hints = vec![KeyHint::new("Esc", "Back"), KeyHint::new("i", "Details")];
+            let mut hints = vec![
+                KeyHint::new(HintAction::Back, "Back"),
+                KeyHint::new(HintAction::Details, "Details"),
+            ];
             if !state.loading {
-                hints.push(KeyHint::new("F5", "Retry"));
+                hints.push(KeyHint::new(HintAction::RetryRequest, "Retry"));
             }
 
             return hints;
         }
 
         let count = state.episodes.marked.len();
-        let download = if count > 0 {
+        let download = if count > 0 && (!compact || state.focus != Focus::List) {
             format!("Download {count}")
         } else {
             "Download".into()
         };
         return vec![
-            KeyHint::new("Space", "Mark"),
-            KeyHint::new(":", "Range"),
-            KeyHint::new("d", download),
-            KeyHint::new("i", "Details"),
+            KeyHint::new(HintAction::MarkEpisode, "Mark"),
+            KeyHint::new(HintAction::EnterRange, "Range"),
+            KeyHint::new(HintAction::Download, download),
+            KeyHint::new(HintAction::Details, "Details"),
         ];
     }
 
@@ -927,45 +974,51 @@ fn primary_hints(state: &State) -> Vec<KeyHint> {
     } else {
         "Search"
     };
-    let mut hints = vec![KeyHint::new("/", search)];
+    let mut hints = vec![];
+    if state.screen != Screen::History {
+        hints.push(KeyHint::new(HintAction::Search, search));
+    }
     if state.selected_anime().is_some() {
-        hints.push(KeyHint::new("i", "Details"));
+        hints.push(KeyHint::new(HintAction::Details, "Details"));
     }
     if state.screen == Screen::History && !state.history.entries().is_empty() {
-        hints.push(KeyHint::new("Delete", "Remove"));
+        hints.push(KeyHint::new(HintAction::RemoveHistory, "Remove"));
     }
 
     hints
 }
 
 fn global_hints(state: &State, compact: bool, copy_available: bool) -> Vec<KeyHint> {
-    let mut hints = vec![KeyHint::new("F1", "Help")];
+    let mut hints = vec![KeyHint::new(HintAction::Help, "Help")];
     if let Some(activity) = visible_activity(state) {
         let action = if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
             "Dismiss"
         } else {
             "Stop"
         };
-        hints.insert(0, KeyHint::new("x", action));
+        hints.insert(0, KeyHint::new(HintAction::ActivityControl, action));
     }
 
     // Printable shortcuts are text while editing.
     if matches!(state.focus, Focus::Search | Focus::Range) {
-        hints = vec![KeyHint::new("F1", "Help")];
+        hints = vec![KeyHint::new(HintAction::Help, "Help")];
         if state.request_error.is_some() && !state.details {
-            hints.insert(0, KeyHint::new("F5", "Retry"));
+            hints.insert(0, KeyHint::new(HintAction::RetryRequest, "Retry"));
         }
     } else if !state.details {
-        hints.extend([KeyHint::new("s", "SUB/DUB"), KeyHint::new("Q", "Quality")]);
+        hints.extend([
+            KeyHint::new(HintAction::Audio, "SUB/DUB"),
+            KeyHint::new(HintAction::Quality, "Quality"),
+        ]);
     }
 
     if state.activity.as_ref().is_some_and(Activity::retryable) {
         let action = if compact { "Retry" } else { "Retry remaining" };
-        hints.insert(0, KeyHint::new("F6", action));
+        hints.insert(0, KeyHint::new(HintAction::RetryActivity, action));
     }
 
     if copy_available {
-        hints.push(KeyHint::new("y", "Copy"));
+        hints.push(KeyHint::new(HintAction::Copy, "Copy"));
     }
 
     hints
@@ -977,12 +1030,20 @@ fn wide_key_hints(
     mut primary: Vec<KeyHint>,
     mut global: Vec<KeyHint>,
 ) -> Vec<Line<'static>> {
-    global.retain(|hint| !matches!(hint.key, "s" | "Q"));
+    global.retain(|hint| !matches!(hint.action, HintAction::Audio | HintAction::Quality));
+
+    let help_index = global
+        .iter()
+        .position(|hint| hint.action == HintAction::Help)
+        .unwrap();
+    let help = global.remove(help_index);
 
     let keep_primary_left = state.screen == Screen::History
         || primary.first().is_some_and(|hint| {
-            matches!(hint.key, "Alt+e" | "Space")
-                || (hint.key == "/" && state.screen == Screen::Search)
+            matches!(
+                hint.action,
+                HintAction::ExactSearch | HintAction::MarkEpisode
+            ) || (hint.action == HintAction::Search && state.screen == Screen::Search)
         });
     let action = if keep_primary_left {
         None
@@ -990,9 +1051,9 @@ fn wide_key_hints(
         Some(primary.remove(0))
     };
     let mut secondary = primary;
-    secondary.extend(global.into_iter().filter(|hint| hint.key != "F1"));
+    secondary.extend(global);
 
-    let mut right = shortcut(state, "F1", "Help");
+    let mut right = shortcut(state, help.key, &help.label);
     if let Some(action) = action {
         right.spans.push(Span::raw("    "));
         right
@@ -1035,51 +1096,69 @@ fn wide_key_hints(
 
 fn key_hints(state: &State, width: usize, copy_available: bool) -> Vec<Line<'static>> {
     let compact = width < 72;
-    let mut primary = primary_hints(state);
-    let mut global = global_hints(state, compact, copy_available);
+    let primary = primary_hints(state, compact);
+    let global = global_hints(state, compact, copy_available);
+    layout_key_hints(state, width, primary, global)
+}
 
-    if state.screen == Screen::History {
-        primary.retain(|hint| hint.key != "/");
-    }
-
+fn layout_key_hints(
+    state: &State,
+    width: usize,
+    mut primary: Vec<KeyHint>,
+    mut global: Vec<KeyHint>,
+) -> Vec<Line<'static>> {
     if width >= 120 {
         return wide_key_hints(state, width, primary, global);
     }
 
+    let compact = width < 72;
+    let help_index = global
+        .iter()
+        .position(|hint| hint.action == HintAction::Help)
+        .unwrap();
     if compact && (state.details || state.focus == Focus::List) {
-        global.retain(|hint| hint.key != "F1");
-        global.insert(
-            usize::from(state.activity.as_ref().is_some_and(Activity::retryable)),
-            KeyHint::new("F1", "Help"),
+        let help = global.remove(help_index);
+        let after_retry = usize::from(
+            global
+                .first()
+                .is_some_and(|hint| hint.action == HintAction::RetryActivity),
         );
+        global.insert(after_retry, help);
     }
 
     if compact && !state.details && state.focus == Focus::List && !state.request_blocks_list() {
         if state.screen == Screen::Episodes && !state.episodes.items.is_empty() {
-            global.retain(|hint| hint.key != "F1");
+            let help_index = global
+                .iter()
+                .position(|hint| hint.action == HintAction::Help)
+                .unwrap();
+            let help = global.remove(help_index);
+            let (marking, mut actions): (Vec<_>, Vec<_>) = primary.into_iter().partition(|hint| {
+                matches!(
+                    hint.action,
+                    HintAction::MarkEpisode | HintAction::EnterRange
+                )
+            });
+            actions.push(help);
             return vec![
-                fit_hints(
-                    &[KeyHint::new("Space", "Mark"), KeyHint::new(":", "Range")],
-                    width,
-                    state,
-                ),
-                fit_hints(
-                    &[
-                        KeyHint::new("d", "Download"),
-                        KeyHint::new("i", "Details"),
-                        KeyHint::new("F1", "Help"),
-                    ],
-                    width,
-                    state,
-                ),
+                fit_hints(&marking, width, state),
+                fit_hints(&actions, width, state),
                 fit_hints(&global, width, state),
             ];
         }
 
         if state.screen == Screen::Search && state.selected_anime().is_some() {
-            primary.retain(|hint| hint.key != "/");
-            let after_help = global.iter().position(|hint| hint.key == "F1").unwrap() + 1;
-            global.insert(after_help, KeyHint::new("/", "Edit"));
+            let search_index = primary
+                .iter()
+                .position(|hint| hint.action == HintAction::Search)
+                .unwrap();
+            let search = primary.remove(search_index);
+            let after_help = global
+                .iter()
+                .position(|hint| hint.action == HintAction::Help)
+                .unwrap()
+                + 1;
+            global.insert(after_help, search);
         }
     }
 
@@ -2801,6 +2880,104 @@ mod tests {
                 let mut results = state.search.results().to_vec();
                 results[1].title = format!("{title} Season 2");
                 state.search.replace_results(results);
+            }
+        }
+    }
+
+    #[test]
+    fn footer_placement_is_independent_of_displayed_keys() {
+        let replacement_keys = ["", "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg"];
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::Episodes,
+            Screen::History,
+        ] {
+            for focus in [
+                Focus::Search,
+                Focus::List,
+                Focus::Range,
+                Focus::Audio,
+                Focus::Quality,
+            ] {
+                for flags in 0..8 {
+                    let mut state =
+                        State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+                    let anime = Anime {
+                        id: "series".into(),
+                        title: "Series".into(),
+                        ..Default::default()
+                    };
+                    state.episodes.anime = Some(anime.clone());
+                    if flags & 4 != 0 {
+                        state.search.replace_results(vec![anime.clone()]);
+                        state
+                            .history
+                            .replace_entries(vec![crate::persistence::Entry {
+                                anime: anime.clone(),
+                                episode: "1".into(),
+                                mode: Mode::Sub,
+                                watched_at: 1,
+                            }]);
+                        state.episodes.items = vec![Episode {
+                            provider: Default::default(),
+                            id: "1".into(),
+                            number: "1".into(),
+                            title: "Opening".into(),
+                        }];
+                        state.episodes.marked.insert(0);
+                    }
+                    state.screen = screen;
+                    state.focus = focus;
+                    state.details = flags & 1 != 0;
+                    state.request_error = (flags & 2 != 0).then(|| "Offline".into());
+                    state.activity = Some(Activity {
+                        anime,
+                        episodes: state.episodes.items.clone(),
+                        index: 0,
+                        remaining: Default::default(),
+                        mode: Mode::Sub,
+                        quality: "best".into(),
+                        quality_note: String::new(),
+                        kind: JobKind::Download,
+                        phase: JobPhase::Failed,
+                        message: "Offline".into(),
+                    });
+
+                    for copy in [false, true] {
+                        for width in [32, 40, 71, 72, 119, 120, 160] {
+                            let mut primary = primary_hints(&state, width < 72);
+                            let mut global = global_hints(&state, width < 72, copy);
+                            let mut expected = key_hints(&state, width, copy);
+                            for line in &mut expected {
+                                for span in &mut line.spans {
+                                    if let Some(hint) = primary
+                                        .iter()
+                                        .chain(&global)
+                                        .find(|hint| hint.key == span.content)
+                                    {
+                                        span.content = replacement_keys[hint.key.width()].into();
+                                    }
+                                }
+                            }
+                            for hint in primary.iter_mut().chain(&mut global) {
+                                hint.key = replacement_keys[hint.key.width()];
+                            }
+                            let actual = layout_key_hints(&state, width, primary, global);
+                            let text_and_alignment = |lines: Vec<Line<'static>>| {
+                                lines
+                                    .into_iter()
+                                    .map(|line| (line.alignment, line.to_string()))
+                                    .collect::<Vec<_>>()
+                            };
+                            assert_eq!(
+                                text_and_alignment(actual),
+                                text_and_alignment(expected),
+                                "{screen:?}/{focus:?}/{flags}/{copy}/{width}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
