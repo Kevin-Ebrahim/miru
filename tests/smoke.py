@@ -41,6 +41,43 @@ def snapshot(path):
     return hashlib.sha256(path.read_bytes()).digest(), metadata.st_ino, metadata.st_mtime_ns
 
 
+def check_player_configuration(common, root, media_requests):
+    config = root / "isolated-config/mpv/mpv.conf"
+    config.parent.mkdir(parents=True)
+    config.write_text("http-proxy=http://127.0.0.1:1\n")
+    media_requests.clear()
+    try:
+        played = subprocess.run(common + ["--play", "Smoke", "-e", "2",
+                                "--player-arg=--vo=null", "--player-arg=--ao=null"],
+                                capture_output=True, text=True, timeout=40)
+        assert played.returncode == 0, (
+            f"Saved mpv proxy broke protected playback: {played.stderr}\n"
+            f"{error_log(played.stderr).read_text()}")
+        assert media_requests, "Playback succeeded without requesting media"
+    finally:
+        config.unlink()
+    print("PASS: protected mpv playback overrides the saved proxy configuration", flush=True)
+
+    tools = root / "player-path"
+    tools.mkdir()
+    player = tools / "proxy"
+    marker = tools / "launched.json"
+    player.write_text(f'#!{sys.executable}\nimport json, pathlib, sys\n'
+                      f'pathlib.Path({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n')
+    player.chmod(0o700)
+    environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"])
+    for executable in (str(player), "proxy"):
+        for backend in ("mpv", "vlc"):
+            marker.unlink(missing_ok=True)
+            run(common + ["--play", "Smoke", "-e", "2", "--player", executable,
+                          "--player-backend", backend], env=environment)
+            assert marker.is_file(), f"Configured {backend} player {executable!r} was not launched"
+            arguments = json.loads(marker.read_text())
+            expected = "--play-and-exit" if backend == "vlc" else "--input-terminal=no"
+            assert expected in arguments, arguments
+    print("PASS: custom player named proxy launches by absolute path and PATH for both backends", flush=True)
+
+
 def assert_tone(path, expected):
     """Distinguish the fixture's two tones after real decoding/muxing/playback."""
     with wave.open(str(path), "rb") as recording:
@@ -199,6 +236,7 @@ def main():
         release_segment = threading.Event()
         series = {"id": "smoke-1", "title": "Smoke & Test"}
         dub_available = threading.Event()
+        media_requests = []
 
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_):
@@ -206,6 +244,8 @@ def main():
 
             def do_GET(self):
                 path = urllib.parse.urlparse(self.path).path
+                if path.endswith(".ts"):
+                    media_requests.append(path)
                 if path.endswith(".ts") and slow.is_set():
                     segment_requested.set()
                     release_segment.wait(timeout=10)
@@ -240,6 +280,8 @@ def main():
         thread.start()
         common = [str(binary), "--provider", f"http://127.0.0.1:{server.server_port}/", "--state-dir", str(root / "state")]
         try:
+            if not options.audio_fallback_only:
+                check_player_configuration(common, root, media_requests)
             check_optional_audio_default(common, root)
             if options.audio_fallback_only:
                 return

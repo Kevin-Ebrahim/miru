@@ -103,7 +103,7 @@ pub async fn launch(
 ) -> Result<Option<Child>> {
     let output = log.writer()?;
     let executable = &player.executable;
-    let mut child = media.command(executable, Tool::Player)?
+    let mut child = media.command(executable, Tool::Player(player.backend))?
         .args(player.args(media.stream(), quality, title))
         .stdin(Stdio::null())
         .stdout(output.try_clone().context("Could not capture player stdout")?)

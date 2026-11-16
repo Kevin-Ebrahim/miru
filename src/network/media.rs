@@ -1,10 +1,10 @@
 use super::{Http, Policy, http_url};
-use crate::model::Stream;
+use crate::{model::Stream, player::Backend};
 use anyhow::{Context, Result, ensure};
 use std::{
-    ffi::OsStr,
+    ffi::{CString, OsStr},
     os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
@@ -26,7 +26,7 @@ const CONNECTION_LIMIT: usize = 64;
 type Denial = Arc<Mutex<Option<String>>>;
 
 pub enum Tool {
-    Player,
+    Player(Backend),
     Download,
 }
 
@@ -106,7 +106,8 @@ impl Session {
             .arg(HELPER)
             .arg(self.directory.path().join("proxy.sock"))
             .arg(match tool {
-                Tool::Player => "player",
+                Tool::Player(Backend::Mpv) => "mpv",
+                Tool::Player(Backend::Vlc) => "vlc",
                 Tool::Download => "download",
             })
             .arg(program);
@@ -302,6 +303,24 @@ async fn serve(client: UnixStream, policy: Policy, denial: Denial) {
     }
 }
 
+fn resolve_executable(program: &OsStr, path: &OsStr) -> Result<PathBuf> {
+    if program.as_encoded_bytes().contains(&b'/') {
+        return Ok(std::path::absolute(program)?);
+    }
+    for directory in std::env::split_paths(path) {
+        let candidate = directory.join(program);
+        let name = CString::new(candidate.as_os_str().as_encoded_bytes())?;
+        if candidate.is_file()
+            && unsafe {
+                libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS)
+            } == 0
+        {
+            return Ok(std::path::absolute(candidate)?);
+        }
+    }
+    anyhow::bail!("Could not find media executable {program:?} on PATH")
+}
+
 /// Run only as bubblewrap's internal worker, before ordinary CLI initialization.
 pub async fn run_helper() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
@@ -311,10 +330,16 @@ pub async fn run_helper() -> Result<()> {
     let socket = arguments.next().context("Missing media proxy socket")?;
     let tool = arguments.next().context("Missing media tool kind")?;
     let program = arguments.next().context("Missing media executable")?;
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+    // Resolve against the inherited PATH before adding VLC's proxy helper.
+    let program = resolve_executable(&program, &path)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let proxy = format!("http://{}", listener.local_addr()?);
     let mut command = Command::new(program);
-    if tool == "player" {
+    if tool == "mpv" {
+        // A saved mpv.conf proxy overrides the environment without this option.
+        command.arg(format!("--http-proxy={proxy}"));
+    } else if tool == "vlc" {
         // VLC queries the `proxy` executable even when http_proxy is set.
         // Give it this session's route without consulting desktop/PAC settings.
         let directory = Path::new(&socket)
@@ -323,7 +348,6 @@ pub async fn run_helper() -> Result<()> {
         let helper = directory.join("proxy");
         std::fs::write(&helper, "#!/bin/sh\nprintf '%s\\n' \"$http_proxy\"\n")?;
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
-        let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
         let paths = std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&path));
         command.env("PATH", std::env::join_paths(paths)?);
     } else {
