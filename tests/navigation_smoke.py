@@ -226,8 +226,12 @@ while not (root / token).exists():
             copied = copied_text(b"j" + drag)
             assert copied == "Second Series", f"Queued navigation+mouse-copy used stale panel text: {copied!r}"
             assert clipboard_texts(drag + b"k" + drag) == ["Second Series", "Original Series"], "Mouse-copy/navigation must retain input order"
-            assert copied_text(pointer(65, 1, 7) + drag) == "Second Series", "Mouse-wheel navigation+drag used stale panel text"
+            assert copied_text(pointer(65, 3, 7) + drag) == "Second Series", "Mouse-wheel navigation+drag used stale panel text"
             send(b"k")
+            click_second = pointer(0, 3, 10) + pointer(0, 3, 10, release=True)
+            click_first = pointer(0, 3, 7) + pointer(0, 3, 7, release=True)
+            assert copied_text(click_second + drag) == "Second Series", "Click must refresh synopsis before a queued drag"
+            assert copied_text(click_first + drag) == "Original Series", "Click must select the rendered history row"
             details_drag = pointer(0, 42, 4) + pointer(32, 110, 4) + pointer(0, 110, 4, release=True)
             assert copied_text(b"i" + details_drag) == "Original Series", "Opening details must refresh mouse geometry"
             assert copied_text(b"h" + drag) == "Original Series", "Returning to preview must refresh mouse geometry"
@@ -247,6 +251,19 @@ while not (root / token).exists():
             process.send_signal(signal.SIGWINCH)
             pump(0.2)
             assert copied_text(drag) == "Original Series", "Resized preview did not restore mouse selection"
+            send(click_first)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 40, 320, 400))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
+            send(click_first)
+            assert not any("/api/theme/episode/list/" in path for path in requests), "Resize must cancel a pending double-click"
+            assert "Second Series" in copied_text(click_second + b"iy"), "Narrow lists must support clicks without a preview"
+            send(b"\x1b")
+            assert "Original Series" in copied_text(pointer(64, 3, 7) + b"iy"), "Narrow lists must support wheel navigation"
+            send(b"\x1b")
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
+            process.send_signal(signal.SIGWINCH)
+            pump(0.2)
             send(b"i")
             copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
@@ -257,10 +274,12 @@ while not (root / token).exists():
             send(b"\x1b[15~")  # F5 explicitly refreshes the synopsis.
             wait_for(lambda: requests.count("/original-1") == 2)
             send(b"\x1b")
-            send(b"\r")  # History -> episodes; last played 0 selects episode 1.
+            send(click_first + click_first)  # Double-click History -> episodes.
             wait_for(lambda: "/api/theme/episode/list/1" in requests)
             pump()
-            send(b" \x1b[B \r")  # Mark episodes 1 and 2, then play the queue.
+            send(b" \x1b[B ")  # Mark episodes 1 and 2.
+            click_episode = pointer(0, 3, 4) + pointer(0, 3, 4, release=True)
+            send(click_episode + click_episode)  # Double-click uses Enter's marked queue.
             wait_for(resolving.is_set)
             send(b"/other")
             pump(0.5)
@@ -330,7 +349,7 @@ while not (root / token).exists():
             assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
+            print("PASS: click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()

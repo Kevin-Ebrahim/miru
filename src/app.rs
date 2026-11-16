@@ -72,6 +72,7 @@ pub struct App {
     job: u64,
     quit: bool,
     copy_requested: bool,
+    last_click: Option<(Screen, usize, Position, Instant)>,
     back_stack: Vec<Visit>,
     writer: crate::persistence::Writer,
     library_rx: mpsc::UnboundedReceiver<Result<crate::persistence::Library>>,
@@ -120,6 +121,7 @@ impl App {
             job: 0,
             quit: false,
             copy_requested: false,
+            last_click: None,
             back_stack: vec![],
             writer,
             library_rx,
@@ -546,6 +548,9 @@ impl App {
     }
 
     fn message(&mut self, message: Message) {
+        if !matches!(message, Message::Synopsis(..)) {
+            self.last_click = None;
+        }
         match message {
             Message::Synopsis(generation, id, result) if generation == self.synopsis_generation => {
                 self.state.synopses.put(
@@ -680,7 +685,23 @@ impl App {
     }
 
     fn mouse(&mut self, event: MouseEvent) -> Option<String> {
+        let position = Position::new(event.column, event.row);
+        if matches!(
+            event.kind,
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp | MouseEventKind::Drag(_)
+        ) {
+            self.last_click = None;
+        }
         if self.state.help {
+            self.last_click = None;
+            if !self
+                .state
+                .view
+                .help_area
+                .is_some_and(|area| area.contains(position))
+            {
+                return None;
+            }
             match event.kind {
                 MouseEventKind::ScrollDown => {
                     self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(3)
@@ -692,8 +713,35 @@ impl App {
             }
             return None;
         }
-        if !self.state.details && self.state.view.text_view.is_none() {
-            return None;
+        let list = (!self.state.details)
+            .then_some(self.state.view.list.as_ref())
+            .flatten();
+        let over_list = list.is_some_and(|list| list.area.contains(position));
+        let item = list.and_then(|list| list.item_at(position));
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            let previous = self.last_click.take();
+            if let Some(index) = item {
+                self.state.view.text_selection = None;
+                self.state.focus = Focus::List;
+                match self.state.screen {
+                    Screen::Search => self.state.search.selected = index,
+                    Screen::History => self.state.history.selected = index,
+                    Screen::Episodes => self.state.episodes.selected = index,
+                    Screen::Home => return None,
+                }
+                let now = Instant::now();
+                if previous.is_some_and(|(screen, selected, point, at)| {
+                    screen == self.state.screen
+                        && selected == index
+                        && point == position
+                        && now.duration_since(at) <= Duration::from_millis(500)
+                }) {
+                    self.list_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                } else {
+                    self.last_click = Some((self.state.screen, index, position, now));
+                }
+                return None;
+            }
         }
 
         match event.kind {
@@ -703,7 +751,7 @@ impl App {
                     self.state.view.text_view.as_ref().is_some_and(|view| {
                         view.area.contains(Position::new(event.column, event.row))
                     });
-                if self.state.details || over_text {
+                if over_text {
                     let scroll = if self.state.details {
                         &mut self.state.view.details_scroll
                     } else {
@@ -714,8 +762,9 @@ impl App {
                     } else {
                         scroll.saturating_sub(3)
                     };
-                } else {
-                    self.key(KeyEvent::new(
+                } else if over_list {
+                    self.state.focus = Focus::List;
+                    self.list_key(KeyEvent::new(
                         if down { KeyCode::Down } else { KeyCode::Up },
                         KeyModifiers::NONE,
                     ));
@@ -759,6 +808,7 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        self.last_click = None;
         if self.state.help && !self.state.help_filtering {
             return;
         }
@@ -913,6 +963,7 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        self.last_click = None;
         if key.kind == KeyEventKind::Release {
             return;
         }
@@ -1401,13 +1452,17 @@ impl App {
                     Event::Mouse(event) => {
                         view_dirty |= matches!(
                             event.kind,
-                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                            MouseEventKind::Down(MouseButton::Left)
+                                | MouseEventKind::ScrollDown
+                                | MouseEventKind::ScrollUp
                         );
                         if let Some(text) = self.mouse(event) {
                             execute!(std::io::stdout(), CopyToClipboard::to_clipboard_from(text))?;
                         }
                     }
                     Event::Resize(_, _) => {
+                        self.last_click = None;
+                        self.state.view.list = None;
                         self.state.view.text_selection = None;
                         self.state.view.text_view = None;
                     }
@@ -1432,6 +1487,7 @@ impl App {
                     art_revision = self.state.art_revision;
                 }
                 art.request(url, cover.as_size(), self.provider.http(), art_tx.clone());
+                let previous_list = self.state.view.list.clone();
                 std::io::stdout().sync_update(|_| -> Result<()> {
                     if art.clear {
                         art.clear_graphics()?;
@@ -1440,17 +1496,15 @@ impl App {
                     terminal.draw(|frame| ui::render(frame, &mut self.state, &art))?;
                     Ok(())
                 })??;
+                if previous_list != self.state.view.list {
+                    self.last_click = None;
+                }
                 if std::mem::take(&mut self.copy_requested) {
                     self.copy_text();
                 }
-                let capture = self.state.help || self.state.view.text_view.is_some();
-                if capture != mouse_capture {
-                    if capture {
-                        execute!(std::io::stdout(), EnableMouseCapture)?;
-                    } else {
-                        execute!(std::io::stdout(), DisableMouseCapture)?;
-                    }
-                    mouse_capture = capture;
+                if !mouse_capture {
+                    execute!(std::io::stdout(), EnableMouseCapture)?;
+                    mouse_capture = true;
                 }
                 dirty = false;
             }
@@ -1547,6 +1601,174 @@ mod tests {
                 download_dir: dir.join("downloads"),
             },
         )
+    }
+
+    fn render_mouse_view(app: &mut App, width: u16, height: u16) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+        terminal
+            .draw(|frame| ui::render(frame, &mut app.state, &art))
+            .unwrap();
+    }
+
+    fn pointer(kind: MouseEventKind, position: Position) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: position.x,
+            row: position.y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_selects_rendered_rows_and_wheels_without_a_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        for (width, height) in [(120, 40), (80, 24), (40, 20), (32, 12)] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = Screen::Search;
+            state.search.replace_results(
+                (0..30)
+                    .map(|i| anime(&i.to_string(), &format!("Series {i}")))
+                    .collect(),
+            );
+            state.search.selected = 15;
+            let mut app = test_app(state, dir.path());
+            render_mouse_view(&mut app, width, height);
+            let list = app.state.view.list.clone().unwrap();
+            assert!(list.rows[0].1 > 0, "fixture must be scrolled");
+            for (area, index) in &list.rows {
+                for y in area.y..area.bottom() {
+                    app.mouse(pointer(
+                        MouseEventKind::Down(MouseButton::Left),
+                        Position::new(area.x, y),
+                    ));
+                    assert_eq!(app.state.search.selected, *index);
+                    assert_eq!(app.state.screen, Screen::Search);
+                }
+            }
+            app.state.focus = Focus::Search;
+            let before = app.state.search.selected;
+            app.mouse(pointer(
+                MouseEventKind::ScrollUp,
+                Position::new(list.area.x, list.area.y),
+            ));
+            assert_eq!(app.state.search.selected, before - 1);
+            assert_eq!(app.state.focus, Focus::List);
+            app.mouse(pointer(MouseEventKind::ScrollDown, Position::new(0, 0)));
+            assert_eq!(app.state.search.selected, before - 1);
+            render_mouse_view(&mut app, 20, 8);
+            assert!(app.state.view.list.is_none());
+            app.mouse(pointer(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(list.area.x, list.area.y),
+            ));
+            assert_eq!(app.state.screen, Screen::Search);
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_opens_filtered_item_and_keyboard_cancels_click_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "Target".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::Search;
+        state
+            .search
+            .replace_results(vec![anime("other", "Other"), anime("target", "Target")]);
+        let mut app = test_app(state, dir.path());
+        render_mouse_view(&mut app, 80, 24);
+        let row = app.state.view.list.as_ref().unwrap().rows[0].0;
+        let position = Position::new(row.x, row.y);
+        let down = pointer(MouseEventKind::Down(MouseButton::Left), position);
+        let up = pointer(MouseEventKind::Up(MouseButton::Left), position);
+        app.mouse(down);
+        app.mouse(up);
+        assert_eq!(app.state.selected_anime().unwrap().id, "target");
+        assert_eq!(app.state.screen, Screen::Search);
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.mouse(down);
+        app.mouse(up);
+        assert_eq!(app.state.screen, Screen::Search);
+        app.mouse(down);
+        assert_eq!(app.state.screen, Screen::Episodes);
+        assert_eq!(app.state.episodes.anime.as_ref().unwrap().id, "target");
+    }
+
+    #[tokio::test]
+    async fn mouse_episode_activation_preserves_enter_queue_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.episodes.anime = Some(anime("one", "One"));
+        state.episodes.items = (0..4)
+            .map(|i| Episode {
+                provider: Default::default(),
+                id: i.to_string(),
+                number: i.to_string(),
+                title: String::new(),
+            })
+            .collect();
+        state.episodes.marked.extend([0, 2]);
+        let mut app = test_app(state, dir.path());
+        render_mouse_view(&mut app, 80, 24);
+        let row = app.state.view.list.as_ref().unwrap().rows[3].0;
+        assert_eq!(row.height, 1);
+        let position = Position::new(row.x, row.y);
+        let down = pointer(MouseEventKind::Down(MouseButton::Left), position);
+        app.mouse(down);
+        assert_eq!(app.state.episodes.selected, 3);
+        assert!(app.state.activity.is_none());
+        app.last_click.as_mut().unwrap().3 = Instant::now() - Duration::from_secs(1);
+        app.mouse(down);
+        assert!(app.state.activity.is_none(), "Slow clicks must only select");
+        app.mouse(down);
+        let activity = app.state.activity.as_ref().unwrap();
+        assert_eq!(activity.kind, JobKind::Playback);
+        assert_eq!(activity.index, 0);
+        assert_eq!(activity.remaining, [2]);
+    }
+
+    #[tokio::test]
+    async fn mouse_overlays_and_blank_space_do_not_activate_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Search;
+        state.search.replace_results(vec![anime("one", "One")]);
+        let mut app = test_app(state, dir.path());
+        render_mouse_view(&mut app, 80, 24);
+        let list = app.state.view.list.clone().unwrap();
+        let blank = Position::new(list.area.x, list.area.bottom() - 1);
+        let down = pointer(MouseEventKind::Down(MouseButton::Left), blank);
+        app.mouse(down);
+        app.mouse(down);
+        assert_eq!(app.state.screen, Screen::Search);
+        for details in [false, true] {
+            app.state.help = !details;
+            app.state.details = details;
+            render_mouse_view(&mut app, 80, 24);
+            assert!(app.state.view.list.is_none());
+            let down = pointer(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(list.area.x, list.area.y),
+            );
+            app.mouse(down);
+            app.mouse(down);
+            assert_eq!(app.state.screen, Screen::Search);
+        }
+        app.state.details = false;
+        app.state.request_error = Some("unavailable".into());
+        // With no usable results, an error panel must not retain old targets.
+        app.state.search.replace_results(vec![]);
+        render_mouse_view(&mut app, 80, 24);
+        assert!(app.state.view.list.is_none());
     }
 
     #[tokio::test]
@@ -1825,6 +2047,10 @@ mod tests {
                 title: String::new(),
             })
             .collect();
+        app.state.view.list = Some(crate::view::ListView {
+            area: Rect::new(0, 5, 8, 3),
+            rows: vec![],
+        });
         app.mouse(mouse(MouseEventKind::ScrollDown, 0, 5));
         assert_eq!(app.state.episodes.selected, 1);
     }

@@ -84,8 +84,24 @@ impl TextView {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListView {
+    pub area: Rect,
+    pub rows: Vec<(Rect, usize)>,
+}
+
+impl ListView {
+    pub fn item_at(&self, position: ratatui::layout::Position) -> Option<usize> {
+        self.rows
+            .iter()
+            .find_map(|(area, index)| area.contains(position).then_some(*index))
+    }
+}
+
 #[derive(Default)]
 pub struct Geometry {
+    pub list: Option<ListView>,
+    pub help_area: Option<Rect>,
     pub list_offsets: [usize; 4],
     pub details_scroll: u16,
     pub preview_scroll: u16,

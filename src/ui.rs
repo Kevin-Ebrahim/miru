@@ -284,6 +284,8 @@ fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
 
 pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
+    state.view.list = None;
+    state.view.help_area = None;
     frame.render_widget(
         Block::default().style(
             Style::default()
@@ -1353,6 +1355,7 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             .collect(),
     };
 
+    let heights: Vec<_> = items.iter().map(ListItem::height).collect();
     let list = List::new(items)
         .highlight_symbol(if state.screen == Screen::Episodes {
             ""
@@ -1367,6 +1370,17 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     *selection.offset_mut() = state.view.list_offsets[state.screen as usize];
     frame.render_stateful_widget(list, inner, &mut selection);
     state.view.list_offsets[state.screen as usize] = selection.offset();
+    let mut y = inner.y;
+    let mut rows = Vec::new();
+    for (index, height) in heights.into_iter().enumerate().skip(selection.offset()) {
+        let height = height as u16;
+        if height > inner.bottom().saturating_sub(y) {
+            break;
+        }
+        rows.push((Rect::new(inner.x, y, inner.width, height), index));
+        y += height;
+    }
+    state.view.list = Some(crate::view::ListView { area: inner, rows });
 }
 
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
@@ -1914,6 +1928,8 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Esc / h / Left", "Back (Esc leaves text input)"),
             ("Alt+e", "Toggle exact search"),
             ("Delete", "Remove highlighted history entry"),
+            ("Click / double-click", "Select item / open or play"),
+            ("Mouse wheel", "Move list selection / scroll text"),
             ("Drag in text / y", "Select and copy / copy panel text"),
         ],
     ),
@@ -2033,6 +2049,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 }
 
 fn render_help(frame: &mut Frame, state: &mut State) {
+    state.view.list = None;
     let area = frame.area();
     let base = Style::default()
         .fg(palette(state).text)
@@ -2062,6 +2079,7 @@ fn render_help(frame: &mut Frame, state: &mut State) {
         Constraint::Length(1),
     ])
     .areas(inner);
+    state.view.help_area = Some(body);
     frame.render_widget(
         Paragraph::new("Keybindings").style(Style::default().bold()),
         header,
