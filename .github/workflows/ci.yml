@@ -37,7 +37,7 @@ jobs:
       - name: Install media test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc bubblewrap openssl dbus-daemon dbus-bin
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc libproxy-tools bubblewrap openssl dbus-daemon dbus-bin
 
       - name: Show tool versions
         run: |
@@ -47,6 +47,7 @@ jobs:
           ffprobe -version
           mpv --version
           vlc --version
+          command -v proxy
           bwrap --version
 
       - name: Check formatting

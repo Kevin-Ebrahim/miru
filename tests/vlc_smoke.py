@@ -30,7 +30,7 @@ def stop(process):
 
 def main():
     binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
-    for program in ("ffmpeg", "vlc", "dbus-daemon", "dbus-send"):
+    for program in ("ffmpeg", "vlc", "proxy", "dbus-daemon", "dbus-send"):
         if not shutil.which(program):
             raise SystemExit(f"Install {program} to run the VLC smoke test")
     with tempfile.TemporaryDirectory(prefix="miru-vlc-") as temporary:
@@ -124,17 +124,20 @@ def main():
                 provider.denied = True
                 denied = subprocess.run(common + ["--state-dir", str(root / "denied-state")], env=environment,
                                         capture_output=True, text=True, timeout=20)
-                if denied.returncode == 0:
-                    wait_for(lambda: private_requests, message="VLC silently succeeded without enforcing the destination policy")
+                denied_logs = "\n".join(path.read_text() for path in (root / "denied-state/logs").glob("player-*.log"))
                 assert not private_requests, f"Existing VLC bypassed Miru's policy: {private_requests}"
-                assert denied.returncode != 0 and "Media destination blocked" in denied.stderr, denied.stderr
+                assert denied.returncode != 0 and "Media destination blocked" in denied.stderr, (
+                    f"VLC did not report a destination denial (exit {denied.returncode})\n{denied.stderr}\n{denied_logs}")
                 assert host.poll() is None, "Denied playback stopped the existing VLC"
                 print("PASS: nested private VLC requests remain blocked despite single-instance preferences and user flags", flush=True)
                 provider.denied = False
-                for action in (signal.SIGINT, signal.SIGTERM):
+                for action, proxy_config in (
+                    (signal.SIGINT, {}),
+                    (signal.SIGTERM, {"PX_FORCE_CONFIG": "config-gnome"}),
+                ):
                     media_requests.clear()
                     owned = subprocess.Popen(common + ["--state-dir", str(root / f"owned-{action.name}")],
-                                             env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                             env=dict(environment, **proxy_config), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                     try:
                         def playing():
                             try:
@@ -157,7 +160,8 @@ def main():
                         wait_for(lambda: not remaining(tree), message=f"{action.name} left owned VLC processes: {remaining(tree)}")
                         assert host.poll() is None, f"{action.name} killed the unrelated existing VLC"
                         assert not private_requests, f"VLC reached private media: {private_requests}"
-                        print(f"PASS: {action.name} terminates owned real VLC playback and preserves the existing VLC", flush=True)
+                        print(f"PASS: allowed VLC media is requested with {proxy_config or 'default proxy settings'}; "
+                              f"{action.name} removes owned playback and preserves the existing VLC", flush=True)
                     finally:
                         stop(owned)
         finally:

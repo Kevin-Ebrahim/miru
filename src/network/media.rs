@@ -314,7 +314,10 @@ pub async fn run_helper() -> Result<()> {
     let proxy = format!("http://{}", listener.local_addr()?);
     let mut command = Command::new(program);
     if tool == "player" {
-        command.arg(format!("--http-proxy={proxy}"));
+        // VLC's libproxy discovery must use our environment, not desktop or PAC settings.
+        command
+            .arg(format!("--http-proxy={proxy}"))
+            .env("PX_FORCE_CONFIG", "config-env");
     } else {
         ensure!(tool == "download", "Invalid media tool kind");
     }

@@ -86,7 +86,8 @@ aliases, override it explicitly, for example
 Executable paths and extra arguments are passed literally, without a shell.
 VLC always starts a separate instance, overriding single-instance preferences
 and player arguments so playback stays under Miru's network policy and
-cancellation.
+cancellation. Its libproxy discovery uses Miru's proxy environment even when
+inherited `PX_FORCE_CONFIG` settings select desktop or PAC configuration.
 
 `--resolve` keeps the existing top-level `variants`, `referer`, `subtitle`, and
 `audio` fields. The top-level `audio` remains a URL or null and describes the
@@ -314,8 +315,10 @@ The smoke tests use isolated temporary state and local provider fixtures. The
 media, network and navigation checks need ffmpeg and bubblewrap. The media and
 network checks also need mpv, with ffprobe for the media check and OpenSSL for
 the network check's temporary TLS fixture. The VLC check needs ffmpeg, bubblewrap,
-VLC, `dbus-daemon` and `dbus-send`; it verifies private-request blocking and
-player ownership with an existing VLC on a disposable D-Bus session.
+VLC, the real `proxy` helper (`libproxy-tools` on Ubuntu), `dbus-daemon` and
+`dbus-send`. It verifies private-request blocking, allowed playback with inherited
+libproxy settings, and player ownership with an existing VLC on a disposable
+D-Bus session.
 The job checks need bubblewrap and use Python player/ffmpeg wrappers and Linux
 process identities to verify
 descendant termination and reaping. The terminal checks use a pseudo-terminal
