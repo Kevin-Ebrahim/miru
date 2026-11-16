@@ -423,20 +423,20 @@ impl App {
         if let Some(activity) = &self.state.activity
             && activity.retryable()
         {
-            self.play(activity.index);
+            self.start_episode_job(activity.index);
         }
     }
 
-    fn start_selection(&mut self, download: bool) {
+    fn start_selection(&mut self, kind: JobKind) {
         let indices: VecDeque<_> = if self.state.episodes.marked.is_empty() {
             [self.state.episodes.selected].into()
         } else {
             self.state.episodes.marked.iter().copied().collect()
         };
-        self.start(indices, download);
+        self.start(indices, kind);
     }
 
-    fn start(&mut self, mut indices: VecDeque<usize>, download: bool) {
+    fn start(&mut self, mut indices: VecDeque<usize>, kind: JobKind) {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
@@ -456,15 +456,11 @@ impl App {
             mode: self.state.mode,
             quality: self.state.quality.clone(),
             quality_note: String::new(),
-            kind: if download {
-                JobKind::Download
-            } else {
-                JobKind::Playback
-            },
+            kind,
             phase: JobPhase::Resolving,
             message: String::new(),
         });
-        self.play(index);
+        self.start_episode_job(index);
     }
 
     fn navigate_play(&mut self, index: usize) {
@@ -474,10 +470,10 @@ impl App {
         }
 
         self.state.episodes.selected = index;
-        self.start([index].into(), false);
+        self.start([index].into(), JobKind::Playback);
     }
 
-    fn play(&mut self, index: usize) {
+    fn start_episode_job(&mut self, index: usize) {
         self.activity_due = None;
         let Some(activity) = self.state.activity.as_mut() else {
             return;
@@ -513,7 +509,7 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(index) = activity.remaining.pop_front() {
-                    self.play(index);
+                    self.start_episode_job(index);
                 } else {
                     activity.phase = JobPhase::Finished;
                     activity.message = success;
@@ -1244,7 +1240,7 @@ impl App {
                 self.state.message("", false);
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
-                self.start_selection(true)
+                self.start_selection(JobKind::Download)
             }
             KeyCode::Char('Q') => {
                 self.cycle_quality(false);
@@ -1252,7 +1248,9 @@ impl App {
             KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
                 self.open()
             }
-            KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
+            KeyCode::Enter if self.state.screen == Screen::Episodes => {
+                self.start_selection(JobKind::Playback)
+            }
             KeyCode::Char('x') => {
                 let active = self.state.activity.as_ref().is_some_and(Activity::active);
                 self.stop();
@@ -1949,7 +1947,7 @@ mod tests {
             title: "First".into(),
         }];
         let mut app = test_app(state, dir.path());
-        app.start_selection(true);
+        app.start_selection(JobKind::Download);
         app.jobs.stop();
         let job = app.job;
         app.job_message(jobs::Event {
@@ -2017,7 +2015,7 @@ mod tests {
                     title: "First".into(),
                 }];
                 let mut app = test_app(state, dir.path());
-                app.start_selection(true);
+                app.start_selection(JobKind::Download);
                 app.jobs.stop();
                 let job = app.job;
                 if finish_elsewhere {
