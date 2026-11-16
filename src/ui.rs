@@ -242,6 +242,9 @@ pub fn cover_area(state: &State, area: Rect) -> Rect {
     if area.width < 32 || area.height < 12 || state.help {
         return Rect::default();
     }
+    if state.cover_view.is_some() {
+        return area.inner(Margin::new(2, 2));
+    }
     preview_regions(state, panels(state, area).1).0
 }
 
@@ -285,6 +288,7 @@ fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
 pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
     state.view.list = None;
+    state.view.cover = None;
     state.view.help_area = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
@@ -298,7 +302,9 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     );
 
     if area.width < 32 || area.height < 12 {
-        state.view.text_view = None;
+        if state.cover_view.is_none() {
+            state.view.text_view = None;
+        }
         state.view.text_selection = None;
         frame.render_widget(
             Paragraph::new(vec![
@@ -309,6 +315,12 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
             .wrap(Wrap { trim: true }),
             area,
         );
+        return;
+    }
+
+    if state.cover_view.is_some() {
+        state.view.text_selection = None;
+        render_cover_view(frame, state, art, area);
         return;
     }
 
@@ -464,6 +476,7 @@ pub fn home_scene_visible(state: &State, area: Rect) -> bool {
     state.screen == Screen::Home
         && !state.help
         && !state.details
+        && state.cover_view.is_none()
         && crate::sakura::fits(home_sections(state, area)[0])
 }
 
@@ -1407,6 +1420,61 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     state.view.list = Some(crate::view::ListView { area: inner, rows });
 }
 
+fn render_cover_image(frame: &mut Frame, art: &Artwork, area: Rect) -> Option<Rect> {
+    let protocol = art.protocol.as_ref()?;
+    let size = protocol.size();
+    if size.width > area.width || size.height > area.height {
+        return None;
+    }
+    let image = Rect::new(
+        area.x + (area.width - size.width) / 2,
+        area.y + (area.height - size.height) / 2,
+        size.width,
+        size.height,
+    );
+    frame.render_widget(Image::new(protocol), image);
+    Some(image)
+}
+
+fn render_cover_view(frame: &mut Frame, state: &State, art: &Artwork, area: Rect) {
+    let anime = state.cover_view.as_ref().expect("cover viewer is open");
+    frame.render_widget(
+        Paragraph::new(ellipsize(
+            &anime.title,
+            area.width.saturating_sub(8) as usize,
+            state,
+        ))
+        .style(accent(state)),
+        Rect::new(area.x + 2, area.y, area.width.saturating_sub(8), 1),
+    );
+    frame.render_widget(
+        Paragraph::new("[x]").style(accent(state)),
+        Rect::new(area.right() - 4, area.y, 3, 1),
+    );
+    let cover = cover_area(state, area);
+    if art.protocol.is_some() {
+        render_cover_image(frame, art, cover);
+    } else {
+        empty_message(
+            frame,
+            state,
+            cover,
+            if art.error.is_some() {
+                "Cover unavailable / F5 Retry"
+            } else {
+                "Loading cover..."
+            },
+            "",
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("Esc / click to close")
+            .centered()
+            .style(muted(state)),
+        Rect::new(area.x, area.bottom() - 1, area.width, 1),
+    );
+}
+
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
     let block = panel(
         if state.details { "" } else { " Series " }.into(),
@@ -1436,19 +1504,8 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         return;
     };
 
-    if let Some(protocol) = &art.protocol {
-        let size = protocol.size();
-        if size.width <= cover.width && size.height <= cover.height {
-            frame.render_widget(
-                Image::new(protocol),
-                Rect::new(
-                    cover.x + (cover.width - size.width) / 2,
-                    cover.y + (cover.height - size.height) / 2,
-                    size.width,
-                    size.height,
-                ),
-            );
-        }
+    let cover_hit = if art.protocol.is_some() {
+        render_cover_image(frame, art, cover)
     } else if cover.height > 0 {
         let label = if !art.enabled {
             "Covers disabled"
@@ -1460,7 +1517,10 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             "No cover"
         };
         empty_message(frame, state, cover, label, "");
-    }
+        None
+    } else {
+        None
+    };
 
     let compact_details = state.details && metadata.height < 10;
     let mut details = Vec::new();
@@ -1554,6 +1614,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         );
     }
 
+    state.view.cover = cover_hit;
     let text_lines: Vec<_> = details.iter().map(ToString::to_string).collect();
     if state
         .view
@@ -1952,6 +2013,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Esc / h / Left", "Back (Esc leaves text input)"),
             ("Alt+e", "Toggle exact search"),
             ("Delete", "Remove highlighted history entry"),
+            ("Click cover", "Enlarge cover; Esc / click closes"),
             ("Click / double-click", "Select item / open or play"),
             ("Mouse wheel", "Move list selection / scroll text"),
             ("Drag in text / y", "Select and copy / copy panel text"),
@@ -2074,6 +2136,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 
 fn render_help(frame: &mut Frame, state: &mut State) {
     state.view.list = None;
+    state.view.cover = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
     let area = frame.area();

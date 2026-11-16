@@ -686,6 +686,13 @@ impl App {
 
     fn mouse(&mut self, event: MouseEvent) -> Option<String> {
         let position = Position::new(event.column, event.row);
+        if self.state.cover_view.is_some() {
+            self.last_click = None;
+            if event.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.state.cover_view = None;
+            }
+            return None;
+        }
         if matches!(
             event.kind,
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp | MouseEventKind::Drag(_)
@@ -714,6 +721,17 @@ impl App {
             return None;
         }
         if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            if self
+                .state
+                .view
+                .cover
+                .is_some_and(|area| area.contains(position))
+            {
+                self.last_click = None;
+                self.state.cover_view = self.state.selected_anime().cloned();
+                self.state.view.text_selection = None;
+                return None;
+            }
             if self
                 .state
                 .view
@@ -831,6 +849,9 @@ impl App {
 
     fn paste(&mut self, text: &str) {
         self.last_click = None;
+        if self.state.cover_view.is_some() {
+            return;
+        }
         if self.state.help && !self.state.help_filtering {
             return;
         }
@@ -996,6 +1017,15 @@ impl App {
 
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+
+        if self.state.cover_view.is_some() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.state.cover_view = None,
+                KeyCode::F(5) => self.state.art_revision += 1,
+                _ => {}
+            }
             return;
         }
 
@@ -1488,7 +1518,9 @@ impl App {
                         self.last_click = None;
                         self.state.view.list = None;
                         self.state.view.text_selection = None;
-                        self.state.view.text_view = None;
+                        if self.state.cover_view.is_none() {
+                            self.state.view.text_view = None;
+                        }
                     }
                     _ => {}
                 }
@@ -1504,7 +1536,11 @@ impl App {
                 let url = if self.state.help {
                     None
                 } else {
-                    self.state.selected_anime().and_then(|a| a.cover.as_deref())
+                    self.state
+                        .cover_view
+                        .as_ref()
+                        .or_else(|| self.state.selected_anime())
+                        .and_then(|a| a.cover.as_deref())
                 };
                 if art_revision != self.state.art_revision {
                     art.request(None, cover.as_size(), self.provider.http(), art_tx.clone());
@@ -1642,6 +1678,98 @@ mod tests {
             column: position.x,
             row: position.y,
             modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn cover_view_enlarges_image_and_preserves_browsing_state() {
+        fn draw(app: &mut App, width: u16, height: u16) -> Rect {
+            let area = Rect::new(0, 0, width, height);
+            let cover = ui::cover_area(&app.state, area);
+            let mut art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), true);
+            art.protocol = Some(
+                art.picker
+                    .new_protocol(
+                        image::DynamicImage::new_rgb8(60, 90),
+                        cover.as_size(),
+                        ratatui_image::Resize::Scale(None),
+                    )
+                    .unwrap(),
+            );
+            let size = art.protocol.as_ref().unwrap().size();
+            assert!(size.width <= cover.width && size.height <= cover.height);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| ui::render(frame, &mut app.state, &art))
+                .unwrap();
+            Rect::new(
+                cover.x + (cover.width - size.width) / 2,
+                cover.y + (cover.height - size.height) / 2,
+                size.width,
+                size.height,
+            )
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for details in [false, true] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = Screen::Search;
+            state.details = details;
+            let mut series = anime("cover", "Cover series");
+            series.cover = Some("http://127.0.0.1/cover.png".into());
+            series.description = "A long synopsis with many lines. ".repeat(400);
+            state.search.replace_results(vec![series]);
+            let mut app = test_app(state, dir.path());
+            let preview = draw(&mut app, 120, 40);
+            assert_eq!(app.state.view.cover, Some(preview));
+            app.state.view.preview_scroll = 5;
+            app.state.view.details_scroll = 7;
+            draw(&mut app, 120, 40);
+            let scroll = (app.state.view.preview_scroll, app.state.view.details_scroll);
+            let offsets = app.state.view.list_offsets;
+            let focus = app.state.focus;
+            let click = pointer(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(preview.x, preview.y),
+            );
+            app.mouse(click);
+            assert_eq!(app.state.cover_view.as_ref().unwrap().id, "cover");
+            let enlarged = draw(&mut app, 120, 40);
+            assert!(enlarged.height > preview.height);
+            assert!(enlarged.width > preview.width);
+            assert!(app.state.view.list.is_none());
+            assert!(app.state.view.audio_setting.is_none());
+            app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+            app.paste("ignored");
+            app.mouse(pointer(MouseEventKind::ScrollDown, Position::new(10, 10)));
+            assert!(app.state.cover_view.is_some());
+            assert!(!app.state.help);
+            assert!(app.state.activity.is_none());
+            assert!(app.state.search.query.text.is_empty());
+            draw(&mut app, 80, 24);
+            render_mouse_view(&mut app, 20, 8);
+            draw(&mut app, 120, 40);
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            draw(&mut app, 120, 40);
+            assert!(app.state.cover_view.is_none());
+            assert_eq!(app.state.view.cover, Some(preview));
+            assert_eq!(
+                (app.state.view.preview_scroll, app.state.view.details_scroll),
+                scroll
+            );
+            assert_eq!(app.state.view.list_offsets, offsets);
+            assert_eq!(app.state.focus, focus);
+            assert_eq!(app.state.details, details);
+            app.mouse(click);
+            draw(&mut app, 120, 40);
+            app.mouse(pointer(
+                MouseEventKind::Down(MouseButton::Left),
+                Position::new(0, 0),
+            ));
+            assert!(app.state.cover_view.is_none());
         }
     }
 

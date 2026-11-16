@@ -101,6 +101,7 @@ impl ListView {
 #[derive(Default)]
 pub struct Geometry {
     pub list: Option<ListView>,
+    pub cover: Option<Rect>,
     pub help_area: Option<Rect>,
     pub audio_setting: Option<Rect>,
     pub quality_setting: Option<Rect>,

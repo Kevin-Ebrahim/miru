@@ -21,6 +21,7 @@ import termios
 import threading
 import time
 import urllib.parse
+import zlib
 
 
 def main():
@@ -40,6 +41,14 @@ def main():
                         "color=size=128x96:rate=12", "-t", "1", "-c:v", "libx264",
                         "-f", "mpegts", str(clip)], check=True, timeout=20)
 
+        def png_chunk(kind, data):
+            return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data))
+
+        poster = (b"\x89PNG\r\n\x1a\n"
+                  + png_chunk(b"IHDR", struct.pack("!2I5B", 60, 90, 8, 2, 0, 0, 0))
+                  + png_chunk(b"IDAT", zlib.compress((b"\x00" + b"\xc0\x60\x40" * 60) * 90))
+                  + png_chunk(b"IEND", b""))
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
@@ -49,6 +58,12 @@ def main():
                 path = parsed.path
                 base = f"http://127.0.0.1:{self.server.server_port}"
                 requests.append(self.path)
+                if path == "/cover.png":
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(poster)))
+                    self.end_headers()
+                    self.wfile.write(poster)
+                    return
                 if path == "/video.ts":
                     media_requested.set()
                     release_media.wait(timeout=10)
@@ -130,7 +145,7 @@ while not (root / token).exists():
         player.chmod(0o755)
         (root / "library.json").write_text(json.dumps({
             "version": 1, "mode": "sub", "quality": "best", "entries": [{
-                "anime": {"id": "original-1", "title": "Original Series", "cover": None},
+                "anime": {"id": "original-1", "title": "Original Series", "cover": f"http://127.0.0.1:{server.server_port}/cover.png"},
                 "episode": "0", "mode": "sub", "watched_at": 1,
             }, {
                 "anime": {"id": "history-2", "title": "Second Series", "cover": None},
@@ -145,11 +160,13 @@ while not (root / token).exists():
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"download_dir": str(root / "downloads")}))
         saved_config = config.read_bytes()
+        environment = {**os.environ, "XDG_CONFIG_HOME": str(config_home)}
+        environment.pop("NO_COLOR", None)
         process = subprocess.Popen([
-            str(binary), "--images", "off", "--no-animation", "--state-dir", str(root),
+            str(binary), "--images", "halfblocks", "--no-animation", "--state-dir", str(root),
             "--cache-dir", str(root / "cache"), "--player", str(player), "--player-backend", "mpv",
             "--provider", f"http://127.0.0.1:{server.server_port}/",
-        ], env={**os.environ, "XDG_CONFIG_HOME": str(config_home)},
+        ], env=environment,
             stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         pending = bytearray()
         output = bytearray()
@@ -232,6 +249,15 @@ while not (root / token).exists():
             up = pointer(0, 115, 7, release=True)
             drag = down + pointer(32, 115, 7) + up
             assert copied_text(drag) == "Original Series", "Mouse control must select the visible title"
+            wait_for(lambda: "/cover.png" in requests)
+            pump(0.3)
+            output.clear()
+            send(pointer(0, 50, 10) + pointer(0, 50, 10, release=True))
+            wait_for(lambda: b"Esc / click to close" in output)
+            assert not clipboard_texts(b"y"), "Cover viewer must block hidden synopsis copying"
+            send(b"\x1b")
+            assert copied_text(drag) == "Original Series", "Closing cover viewer must restore the preview"
+            assert requests.count("/cover.png") == 1, "Enlarging a cached cover must not download it again"
             copied = copied_text(b"j" + drag)
             assert copied == "Second Series", f"Queued navigation+mouse-copy used stale panel text: {copied!r}"
             assert clipboard_texts(drag + b"k" + drag) == ["Second Series", "Original Series"], "Mouse-copy/navigation must retain input order"
@@ -358,7 +384,7 @@ while not (root / token).exists():
             assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: clickable persisted settings, click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
+            print("PASS: enlarged cached cover viewer, clickable persisted settings, click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()
