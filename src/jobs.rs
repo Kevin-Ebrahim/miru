@@ -1,3 +1,6 @@
+mod log;
+pub use log::Log;
+
 use crate::{
     download,
     model::{Anime, Episode, Mode},
@@ -31,8 +34,7 @@ pub struct Request {
 
 #[derive(Clone)]
 pub struct Options {
-    pub player: String,
-    pub player_args: Vec<String>,
+    pub player: player::Player,
     pub state_dir: PathBuf,
     pub download_dir: PathBuf,
     pub history: crate::persistence::Sender,
@@ -172,13 +174,8 @@ async fn run(
         update: Update::Resolved(quality_note),
     });
 
-    let log = options
-        .state_dir
-        .join(if request.kind == JobKind::Download {
-            "download.log"
-        } else {
-            "player.log"
-        });
+    let media = crate::network::Session::new(stream, provider.http())?;
+    let log = Log::new(&options.state_dir, request.kind)?;
 
     if request.kind == JobKind::Download {
         let _ = notify.send(Event {
@@ -187,9 +184,14 @@ async fn run(
         });
         let (progress, mut updates) = mpsc::unbounded_channel();
         let download = download::download(
-            &stream,
+            &media,
             &request.quality,
-            &request.title,
+            download::Name {
+                display_title: &request.title,
+                anime: &request.anime,
+                episode: &request.episode,
+                mode: request.mode,
+            },
             &options.download_dir,
             &log,
             progress,
@@ -210,14 +212,18 @@ async fn run(
         return Ok(result.map(Output::Download));
     }
 
-    let mut child = player::launch(
+    let Some(mut child) = player::launch(
         &options.player,
-        &options.player_args,
-        &stream,
+        &media,
         &request.quality,
         &request.title,
         &log,
-    )?;
+        cancel,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
     if let Err(error) = options.history.submit(crate::persistence::Change::Record {
         anime: request.anime,
         episode: request.episode.number,
@@ -235,10 +241,11 @@ async fn run(
     let Some(status) = wait_child(&mut child, cancel).await? else {
         return Ok(None);
     };
+    media.check()?;
     anyhow::ensure!(
         status.success(),
         "Player exited with {status}. See {}",
-        log.display()
+        log.path().display()
     );
 
     Ok(Some(Output::Playback))
