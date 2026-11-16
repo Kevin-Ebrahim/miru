@@ -102,6 +102,8 @@ impl ListView {
 pub struct Geometry {
     pub list: Option<ListView>,
     pub help_area: Option<Rect>,
+    pub audio_setting: Option<Rect>,
+    pub quality_setting: Option<Rect>,
     pub list_offsets: [usize; 4],
     pub details_scroll: u16,
     pub preview_scroll: u16,

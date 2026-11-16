@@ -215,6 +215,15 @@ while not (root / token).exists():
             send(b"\x1bh")
             wait_for(lambda: requests.count("/original-1") == 1)
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
+            click_audio = pointer(0, 108, 1) + pointer(0, 108, 1, release=True)
+            send(click_audio)
+            wait_for(lambda: json.loads((root / "library.json").read_text())["mode"] == "dub")
+            send(click_audio)
+            wait_for(lambda: json.loads((root / "library.json").read_text())["mode"] == "sub")
+            send(pointer(0, 116, 1) + pointer(0, 116, 1, release=True))
+            wait_for(lambda: json.loads((root / "library.json").read_text())["quality"] == "1080p")
+            send(b"QQQQQ")
+            wait_for(lambda: json.loads((root / "library.json").read_text())["quality"] == "best")
             copied = copied_text(b"jy")
             assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
             copied = copied_text(b"yk")
@@ -349,7 +358,7 @@ while not (root / token).exists():
             assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
-            print("PASS: click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
+            print("PASS: clickable persisted settings, click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")
         finally:
             release.set()
             release_media.set()

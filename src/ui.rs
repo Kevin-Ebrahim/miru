@@ -286,6 +286,8 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     let area = frame.area();
     state.view.list = None;
     state.view.help_area = None;
+    state.view.audio_setting = None;
+    state.view.quality_setting = None;
     frame.render_widget(
         Block::default().style(
             Style::default()
@@ -465,7 +467,7 @@ pub fn home_scene_visible(state: &State, area: Rect) -> bool {
         && crate::sakura::fits(home_sections(state, area)[0])
 }
 
-fn render_home(frame: &mut Frame, state: &State, area: Rect) {
+fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
     let [space, status, activity, _, footer] = home_sections(state, area);
     let width = space.width.saturating_sub(4).min(64);
     let big_logo = !state.ascii && space.width >= 60 && space.height >= 20;
@@ -616,6 +618,13 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
             1,
         ),
     );
+    state.view.audio_setting = Some(Rect::new(inner.x, inner.bottom() - 1, 5, 1));
+    state.view.quality_setting = Some(Rect::new(
+        inner.right() - quality_width,
+        inner.bottom() - 1,
+        quality_width,
+        1,
+    ));
     let mut hint = Line::default();
     if matches!(state.focus, Focus::Audio | Focus::Quality) {
         hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
@@ -656,7 +665,7 @@ fn render_home(frame: &mut Frame, state: &State, area: Rect) {
     }
 }
 
-fn render_header(frame: &mut Frame, state: &State, header: Rect) {
+fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
     if header.width >= 120 || (state.screen == Screen::Episodes && !state.details) {
         render_wide_header(frame, state, header);
         return;
@@ -673,26 +682,35 @@ fn render_header(frame: &mut Frame, state: &State, header: Rect) {
     };
     let settings = format!("{} / {}", state.mode.as_str().to_uppercase(), state.quality);
     let context = format!("   {location}   {settings}");
-    let heading = vec![Line::from(
-        if " ani / watch".width() + context.width() > usize::from(header.width) {
-            vec![
-                Span::styled(format!(" {location}"), accent(state)),
-                Span::raw(format!("   {settings}")),
-            ]
+    let compact = " ani / watch".width() + context.width() > usize::from(header.width);
+    let settings_x = header.x
+        + if compact {
+            format!(" {location}   ").width() as u16
         } else {
-            vec![
-                Span::styled(" ani / watch", accent(state)),
-                Span::raw(context),
-            ]
-        },
-    )];
+            format!(" ani / watch   {location}   ").width() as u16
+        };
+    state.view.audio_setting = Some(Rect::new(settings_x, header.y, 3, 1).intersection(header));
+    state.view.quality_setting = Some(
+        Rect::new(settings_x + 6, header.y, state.quality.width() as u16, 1).intersection(header),
+    );
+    let heading = vec![Line::from(if compact {
+        vec![
+            Span::styled(format!(" {location}"), accent(state)),
+            Span::raw(format!("   {settings}")),
+        ]
+    } else {
+        vec![
+            Span::styled(" ani / watch", accent(state)),
+            Span::raw(context),
+        ]
+    })];
     frame.render_widget(
         Paragraph::new(heading).style(Style::default().bold()),
         header,
     );
 }
 
-fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
+fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     let bar = Style::default().fg(palette(state).text).bold();
     frame.render_widget(Block::default().style(bar), area);
     let shortcuts = state.focus == Focus::List && !state.details;
@@ -768,6 +786,12 @@ fn render_wide_header(frame: &mut Frame, state: &State, area: Rect) {
     .areas(Rect::new(area.x, area.y, area.width, 1));
     frame.render_widget(Paragraph::new(navigation), left);
     frame.render_widget(Paragraph::new(settings), right);
+    let audio_width = if shortcuts { 5 } else { 3 };
+    let quality_width = state.quality.width() as u16 + if shortcuts { 2 } else { 0 };
+    state.view.audio_setting =
+        Some(Rect::new(right.x, right.y, audio_width, 1).intersection(right));
+    state.view.quality_setting =
+        Some(Rect::new(right.x + audio_width + 3, right.y, quality_width, 1).intersection(right));
     if inline_search(state, area.width) {
         let label = if state.search.exact { "[EXACT] " } else { "" };
         let field = Rect::new(middle.x, middle.y, middle.width.saturating_sub(2), 1);
@@ -2050,6 +2074,8 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 
 fn render_help(frame: &mut Frame, state: &mut State) {
     state.view.list = None;
+    state.view.audio_setting = None;
+    state.view.quality_setting = None;
     let area = frame.area();
     let base = Style::default()
         .fg(palette(state).text)
@@ -2221,6 +2247,55 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn setting_hit_areas_match_visible_labels_across_layouts() {
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::History,
+            Screen::Episodes,
+        ] {
+            for width in [32, 40, 80, 120] {
+                for focus in [Focus::Search, Focus::List] {
+                    for details in [false, true] {
+                        let mut state = State::new(
+                            String::new(),
+                            Mode::Sub,
+                            "best".into(),
+                            false,
+                            false,
+                            false,
+                        );
+                        state.screen = screen;
+                        state.focus = focus;
+                        state.details = details;
+                        for quality in ["best", "1080p"] {
+                            state.quality = quality.into();
+                            let text = render_text(&mut state, width, 24);
+                            for (area, label) in [
+                                (state.view.audio_setting.unwrap(), "sub"),
+                                (state.view.quality_setting.unwrap(), quality),
+                            ] {
+                                let visible: String = text
+                                    .lines()
+                                    .nth(area.y as usize)
+                                    .unwrap()
+                                    .chars()
+                                    .skip(area.x as usize)
+                                    .take(area.width as usize)
+                                    .collect();
+                                assert!(
+                                    visible.to_lowercase().contains(label),
+                                    "{screen:?}/{focus:?}/{details}/{width}: {visible:?} should contain {label}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

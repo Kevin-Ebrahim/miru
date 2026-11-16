@@ -713,6 +713,28 @@ impl App {
             }
             return None;
         }
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            if self
+                .state
+                .view
+                .audio_setting
+                .is_some_and(|area| area.contains(position))
+            {
+                self.last_click = None;
+                self.toggle_audio();
+                return None;
+            }
+            if self
+                .state
+                .view
+                .quality_setting
+                .is_some_and(|area| area.contains(position))
+            {
+                self.last_click = None;
+                self.cycle_quality(false);
+                return None;
+            }
+        }
         let list = (!self.state.details)
             .then_some(self.state.view.list.as_ref())
             .flatten();
@@ -866,6 +888,12 @@ impl App {
         self.state.help_query.set(String::new());
     }
 
+    fn toggle_audio(&mut self) {
+        self.state.mode.toggle();
+        self.settings();
+        self.state.message("", false);
+    }
+
     fn cycle_quality(&mut self, backwards: bool) {
         let choices = ["best", "1080p", "720p", "480p", "360p", "worst"];
         let index = choices
@@ -946,9 +974,7 @@ impl App {
                     )
                 {
                     if self.state.focus == Focus::Audio {
-                        self.state.mode.toggle();
-                        self.settings();
-                        self.state.message("", false);
+                        self.toggle_audio();
                     } else {
                         self.cycle_quality(matches!(
                             key.code,
@@ -1038,9 +1064,7 @@ impl App {
         }
 
         if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
-            self.state.mode.toggle();
-            self.settings();
-            self.state.message("", false);
+            self.toggle_audio();
             return;
         }
 
@@ -1618,6 +1642,58 @@ mod tests {
             column: position.x,
             row: position.y,
             modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_settings_cycle_without_changing_focus_and_help_blocks_them() {
+        let dir = tempfile::tempdir().unwrap();
+        for screen in [
+            Screen::Home,
+            Screen::Search,
+            Screen::History,
+            Screen::Episodes,
+        ] {
+            for width in [32, 80, 120] {
+                let mut state =
+                    State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+                state.screen = screen;
+                let mut app = test_app(state, dir.path());
+                let focus = app.state.focus;
+                render_mouse_view(&mut app, width, 24);
+                let audio = app.state.view.audio_setting.unwrap();
+                let quality = app.state.view.quality_setting.unwrap();
+                let click_audio = pointer(
+                    MouseEventKind::Down(MouseButton::Left),
+                    Position::new(audio.x, audio.y),
+                );
+                app.mouse(click_audio);
+                assert_eq!(app.state.mode, Mode::Dub);
+                app.mouse(pointer(
+                    MouseEventKind::Up(MouseButton::Left),
+                    Position::new(audio.x, audio.y),
+                ));
+                assert_eq!(app.state.mode, Mode::Dub);
+                app.mouse(click_audio);
+                assert_eq!(app.state.mode, Mode::Sub);
+                app.mouse(pointer(
+                    MouseEventKind::Down(MouseButton::Left),
+                    Position::new(quality.x, quality.y),
+                ));
+                assert_eq!(app.state.quality, "1080p");
+                assert_eq!(app.state.focus, focus);
+                assert_eq!(app.state.screen, screen);
+                app.state.help = true;
+                render_mouse_view(&mut app, width, 24);
+                assert!(app.state.view.audio_setting.is_none());
+                assert!(app.state.view.quality_setting.is_none());
+                app.mouse(click_audio);
+                assert_eq!(app.state.mode, Mode::Sub);
+                app.state.help = false;
+                render_mouse_view(&mut app, 20, 8);
+                assert!(app.state.view.audio_setting.is_none());
+                assert!(app.state.view.quality_setting.is_none());
+            }
         }
     }
 
