@@ -3,6 +3,7 @@ use crate::model::Stream;
 use anyhow::{Context, Result, ensure};
 use std::{
     ffi::OsStr,
+    os::unix::fs::PermissionsExt,
     path::Path,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -314,10 +315,17 @@ pub async fn run_helper() -> Result<()> {
     let proxy = format!("http://{}", listener.local_addr()?);
     let mut command = Command::new(program);
     if tool == "player" {
-        // VLC's libproxy discovery must use our environment, not desktop or PAC settings.
-        command
-            .arg(format!("--http-proxy={proxy}"))
-            .env("PX_FORCE_CONFIG", "config-env");
+        // VLC queries the `proxy` executable even when http_proxy is set.
+        // Give it this session's route without consulting desktop/PAC settings.
+        let directory = Path::new(&socket)
+            .parent()
+            .context("Missing media directory")?;
+        let helper = directory.join("proxy");
+        std::fs::write(&helper, "#!/bin/sh\nprintf '%s\\n' \"$http_proxy\"\n")?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
+        let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+        let paths = std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&path));
+        command.env("PATH", std::env::join_paths(paths)?);
     } else {
         ensure!(tool == "download", "Invalid media tool kind");
     }

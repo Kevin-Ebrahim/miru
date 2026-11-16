@@ -30,7 +30,7 @@ def stop(process):
 
 def main():
     binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
-    for program in ("ffmpeg", "vlc", "proxy", "dbus-daemon", "dbus-send"):
+    for program in ("ffmpeg", "vlc", "bwrap", "dbus-daemon", "dbus-send"):
         if not shutil.which(program):
             raise SystemExit(f"Install {program} to run the VLC smoke test")
     with tempfile.TemporaryDirectory(prefix="miru-vlc-") as temporary:
@@ -85,8 +85,15 @@ def main():
         config = root / "config/vlc"
         config.mkdir(parents=True)
         (config / "vlcrc").write_text("[core]\none-instance=1\none-instance-when-started-from-file=1\n")
+        # Reproduce a desktop proxy resolver choosing a direct connection despite
+        # http_proxy. Miru's isolated player must use its own resolver instead.
+        tools = root / "tools"
+        tools.mkdir()
+        resolver = tools / "proxy"
+        resolver.write_text("#!/bin/sh\nprintf 'direct://\\n'\n")
+        resolver.chmod(0o700)
         environment = dict(os.environ, XDG_CONFIG_HOME=str(config.parent), XDG_CACHE_HOME=str(root / "cache"),
-                           no_proxy="*", NO_PROXY="*")
+                           PATH=f"{tools}:{os.environ.get('PATH', '/usr/bin:/bin')}", no_proxy="*", NO_PROXY="*")
         vlc_args = ["--intf=dummy", "--extraintf=dbus", "--aout=dummy", "--vout=dummy",
                     "--no-media-library", "--no-metadata-network-access", "--no-interact",
                     "--one-instance", "--one-instance-when-started-from-file"]

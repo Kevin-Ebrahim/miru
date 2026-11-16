@@ -287,7 +287,7 @@ def main():
                 expected = "--play-and-exit" if backend == "vlc" else "--input-terminal=no"
                 excluded = "--input-terminal=no" if backend == "vlc" else "--play-and-exit"
                 assert expected in recorded and excluded not in recorded, recorded
-                assert literal in recorded and any(argument.startswith("--http-proxy=") for argument in recorded), recorded
+                assert literal in recorded, recorded
                 assert not (root / "marker").exists(), "Player argument was evaluated by a shell"
             history = json.loads(run(common + ["--history"]).stdout)
             assert len(history) == 1 and history[0]["episode"] == "2"

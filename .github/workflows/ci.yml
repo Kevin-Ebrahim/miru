@@ -33,16 +33,10 @@ jobs:
       - name: Install Rust tools
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
 
-      - name: Install process test dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
-
       - name: Show tool versions
         run: |
           rustc --version
           cargo --version
-          bwrap --version
 
       - name: Check formatting
         run: cargo fmt --check
@@ -55,16 +49,3 @@ jobs:
 
       - name: Build test binary
         run: cargo build --locked
-
-      - name: Check CLI, storage and terminal behavior
-        run: |
-          status=0
-          for suite in rename cli output storage parser jobs terminal theme; do
-            echo "::group::${suite} smoke test"
-            if ! python3 "tests/${suite}_smoke.py" target/debug/miru; then
-              echo "::error::${suite} smoke test failed"
-              status=1
-            fi
-            echo "::endgroup::"
-          done
-          exit "$status"

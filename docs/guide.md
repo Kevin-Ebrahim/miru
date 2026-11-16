@@ -291,16 +291,16 @@ There are three GitHub Actions workflows:
 
 | Workflow | When it runs | Purpose |
 | --- | --- | --- |
-| CI / Build and test | Pull requests to `main`, pushes to `main`, or manually | Formatting, Clippy, unit tests and CLI/terminal smoke tests using a debug build. Needs Rust stable and bubblewrap. |
-| Media integration | Manually | Release build, real mpv/VLC playback, downloads, network policy and navigation. Uses Ubuntu 26.04 for FFmpeg 8. |
+| CI / Build and test | Pull requests to `main`, pushes to `main`, or manually | Formatting, Clippy, Rust unit tests and a debug build. |
+| Integration tests | Manually | Release build and all Python smoke tests, including real mpv/VLC playback, downloads and terminal behavior. Uses Ubuntu 26.04 for FFmpeg 8. |
 | CodeQL weekly | Weekly or manually | Static security analysis. |
 
 Only `Build and test` should be a required PR check. Routine CI reuses Cargo's
-debug profile and does not install desktop players or compile an optimized
-release. Run `Media integration` from the Actions tab when changing playback,
-downloads or media networking, and before a release. Its smoke suites all run
-even if another suite fails. The workflow must land on `main` before GitHub
-offers its Run workflow button; you can then select the branch to test.
+debug profile and does not install system packages or compile an optimized
+release. Run `Integration tests` from the Actions tab when changing playback,
+downloads, storage or terminal behavior, and before a release. Its smoke suites
+all run even if another suite fails. The workflow must land on `main` before
+GitHub offers its Run workflow button; you can then select the branch to test.
 
 Run the routine checks locally:
 
@@ -309,34 +309,25 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 cargo build --locked
-python3 tests/cli_smoke.py target/debug/miru
-python3 tests/output_smoke.py target/debug/miru
-python3 tests/storage_smoke.py target/debug/miru
-python3 tests/rename_smoke.py target/debug/miru
-python3 tests/parser_smoke.py target/debug/miru
-python3 tests/jobs_smoke.py target/debug/miru
-python3 tests/terminal_smoke.py target/debug/miru
-python3 tests/theme_smoke.py target/debug/miru
 ```
 
-Run the media integration checks locally:
+Run the integration checks locally (or pass either build to an individual script):
 
 ```sh
 cargo build --release --locked
-python3 tests/smoke.py target/release/miru
-python3 tests/network_smoke.py target/release/miru
-python3 tests/vlc_smoke.py target/release/miru
-python3 tests/navigation_smoke.py target/release/miru
+for suite in tests/*smoke.py; do
+  python3 "$suite" target/release/miru || exit 1
+done
 ```
 
 The smoke tests use isolated temporary state and local provider fixtures. The
 media, network and navigation checks need ffmpeg and bubblewrap. The media and
 network checks also need mpv, with ffprobe for the media check and OpenSSL for
 the network check's temporary TLS fixture. The VLC check needs ffmpeg, bubblewrap,
-VLC, the real `proxy` helper (`libproxy-tools` on Ubuntu), `dbus-daemon` and
-`dbus-send`. It verifies private-request blocking, allowed playback with inherited
-libproxy settings, and player ownership with an existing VLC on a disposable
-D-Bus session.
+VLC, `dbus-daemon` and `dbus-send`. It verifies private-request blocking, allowed
+playback despite a system proxy resolver choosing direct connections, and player
+ownership with an existing VLC on a disposable D-Bus session. Miru supplies its
+own session-scoped `proxy` helper to VLC, so libproxy-tools is not required.
 The job checks need bubblewrap and use Python player/ffmpeg wrappers and Linux
 process identities to verify
 descendant termination and reaping. The terminal checks use a pseudo-terminal

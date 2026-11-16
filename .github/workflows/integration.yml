@@ -1,4 +1,4 @@
-name: Media integration
+name: Integration tests
 
 on:
   workflow_dispatch:
@@ -16,8 +16,8 @@ env:
   RUSTUP_TOOLCHAIN: stable
 
 jobs:
-  media:
-    name: Real players and downloads
+  integration:
+    name: Offline smoke tests
     # FFmpeg 8 supports the HLS input options used by the download smoke tests.
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -33,7 +33,7 @@ jobs:
       - name: Install media test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc libproxy-tools bubblewrap openssl dbus-daemon dbus-bin
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc bubblewrap openssl dbus-daemon dbus-bin
 
       - name: Show tool versions
         run: |
@@ -41,25 +41,20 @@ jobs:
           ffmpeg -version
           mpv --version
           vlc --version
-          command -v proxy
           bwrap --version
 
       - name: Build release binary
-        id: build
         run: cargo build --release --locked
 
-      - name: Check media destination enforcement
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python3 tests/network_smoke.py target/release/miru
-
-      - name: Check VLC isolation and ownership
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python3 tests/vlc_smoke.py target/release/miru
-
-      - name: Check playback and downloads
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python3 tests/smoke.py target/release/miru
-
-      - name: Check navigation and queue ownership
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python3 tests/navigation_smoke.py target/release/miru
+      - name: Run smoke tests
+        run: |
+          status=0
+          for suite in tests/*smoke.py; do
+            echo "::group::${suite}"
+            if ! python3 "$suite" target/release/miru; then
+              echo "::error::${suite} failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
