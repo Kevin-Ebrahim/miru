@@ -100,13 +100,13 @@ impl Artwork {
         let permits = self.permits.clone();
 
         self.task = Some(tokio::spawn(async move {
-            // Avoid downloading every item crossed during rapid key repeats.
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let result = async {
                 let cached = decoded.lock().await.get(&url).cloned();
                 let img = if let Some(img) = cached {
                     img
                 } else {
+                    // Debounce misses while keeping decoded covers responsive.
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     let path = cache.join(format!("{:x}", Sha256::digest(url.as_bytes())));
                     let disk = match tokio::fs::metadata(&path).await {
                         Ok(meta)
@@ -121,9 +121,13 @@ impl Artwork {
                         }
                         _ => None,
                     };
+                    let mut disk_hit = false;
                     let (img, bytes) = if let Some(bytes) = disk {
                         match decode_image(bytes, permits.clone()).await {
-                            Ok(decoded) => decoded,
+                            Ok(decoded) => {
+                                disk_hit = true;
+                                decoded
+                            }
                             Err(_) => {
                                 let _ = tokio::fs::remove_file(&path).await;
                                 let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
@@ -134,19 +138,10 @@ impl Artwork {
                         let bytes = http.bytes(&url, None, 12 * 1024 * 1024).await?;
                         decode_image(bytes, permits.clone()).await?
                     };
-                    if tokio::fs::create_dir_all(&cache).await.is_ok() {
-                        // Atomic cache writes; a failed cache write must never hide an image.
-                        let path_copy = path.clone();
-                        let _ = tokio::task::spawn_blocking(move || -> Result<()> {
-                            let mut temp =
-                                tempfile::NamedTempFile::new_in(path_copy.parent().unwrap())?;
-                            temp.write_all(&bytes)?;
-                            temp.persist(&path_copy)?;
-                            prune_cache(path_copy.parent().unwrap());
-                            Ok(())
-                        })
-                        .await;
-                    }
+                    // Cache maintenance is best effort and must not delay presentation.
+                    tokio::task::spawn_blocking(move || {
+                        let _ = maintain_cache(&path, (!disk_hit).then_some(bytes));
+                    });
                     decoded.lock().await.put(url.clone(), img.clone());
                     img
                 };
@@ -256,6 +251,23 @@ async fn decode_image(
     .await?
 }
 
+fn maintain_cache(path: &std::path::Path, bytes: Option<Vec<u8>>) -> Result<()> {
+    if let Some(bytes) = bytes {
+        let dir = path
+            .parent()
+            .context("Cover cache has no parent directory")?;
+        std::fs::create_dir_all(dir)?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        temp.write_all(&bytes)?;
+        temp.persist(path)?;
+        prune_cache(dir);
+    } else {
+        // Preserve sliding expiry and eviction recency without rewriting cached bytes.
+        std::fs::File::open(path)?.set_modified(std::time::SystemTime::now())?;
+    }
+    Ok(())
+}
+
 fn prune_cache(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -289,6 +301,25 @@ fn prune_cache(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_hit_refreshes_age_without_replacing_file() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a".repeat(64));
+        maintain_cache(&path, Some(vec![1, 2, 3])).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH;
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        maintain_cache(&path, None).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.ino(), inode);
+        assert!(metadata.modified().unwrap() > old);
+        assert_eq!(std::fs::read(path).unwrap(), [1, 2, 3]);
+    }
 
     #[test]
     fn stale_art_and_failures_never_replace_current_cover() {
