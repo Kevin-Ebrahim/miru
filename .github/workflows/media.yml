@@ -1,0 +1,65 @@
+name: Media integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  media:
+    name: Real players and downloads
+    # FFmpeg 8 supports the HLS input options used by the download smoke tests.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg mpv vlc libproxy-tools bubblewrap openssl dbus-daemon dbus-bin
+
+      - name: Show tool versions
+        run: |
+          rustc --version
+          ffmpeg -version
+          mpv --version
+          vlc --version
+          command -v proxy
+          bwrap --version
+
+      - name: Build release binary
+        id: build
+        run: cargo build --release --locked
+
+      - name: Check media destination enforcement
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python3 tests/network_smoke.py target/release/miru
+
+      - name: Check VLC isolation and ownership
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python3 tests/vlc_smoke.py target/release/miru
+
+      - name: Check playback and downloads
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python3 tests/smoke.py target/release/miru
+
+      - name: Check navigation and queue ownership
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python3 tests/navigation_smoke.py target/release/miru

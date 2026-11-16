@@ -287,28 +287,46 @@ must apply their own policy.
 
 ## Development
 
-GitHub Actions runs the checks below for pull requests to `main`, pushes to
-`main`, and manual runs. The `Build and test` job uses Ubuntu 26.04 with Rust
-stable, FFmpeg 8, mpv and VLC. Select `Build and test` as a required status check
-in the `main` ruleset after its first successful run.
+There are three GitHub Actions workflows:
+
+| Workflow | When it runs | Purpose |
+| --- | --- | --- |
+| CI / Build and test | Pull requests to `main`, pushes to `main`, or manually | Formatting, Clippy, unit tests and CLI/terminal smoke tests using a debug build. Needs Rust stable and bubblewrap. |
+| Media integration | Manually | Release build, real mpv/VLC playback, downloads, network policy and navigation. Uses Ubuntu 26.04 for FFmpeg 8. |
+| CodeQL weekly | Weekly or manually | Static security analysis. |
+
+Only `Build and test` should be a required PR check. Routine CI reuses Cargo's
+debug profile and does not install desktop players or compile an optimized
+release. Run `Media integration` from the Actions tab when changing playback,
+downloads or media networking, and before a release. Its smoke suites all run
+even if another suite fails. The workflow must land on `main` before GitHub
+offers its Run workflow button; you can then select the branch to test.
+
+Run the routine checks locally:
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+cargo build --locked
+python3 tests/cli_smoke.py target/debug/miru
+python3 tests/output_smoke.py target/debug/miru
+python3 tests/storage_smoke.py target/debug/miru
+python3 tests/rename_smoke.py target/debug/miru
+python3 tests/parser_smoke.py target/debug/miru
+python3 tests/jobs_smoke.py target/debug/miru
+python3 tests/terminal_smoke.py target/debug/miru
+python3 tests/theme_smoke.py target/debug/miru
+```
+
+Run the media integration checks locally:
+
+```sh
 cargo build --release --locked
-python3 tests/cli_smoke.py target/release/miru
-python3 tests/output_smoke.py target/release/miru
-python3 tests/storage_smoke.py target/release/miru
-python3 tests/rename_smoke.py target/release/miru
 python3 tests/smoke.py target/release/miru
 python3 tests/network_smoke.py target/release/miru
 python3 tests/vlc_smoke.py target/release/miru
-python3 tests/parser_smoke.py target/release/miru
-python3 tests/jobs_smoke.py target/release/miru
-python3 tests/terminal_smoke.py target/release/miru
 python3 tests/navigation_smoke.py target/release/miru
-python3 tests/theme_smoke.py target/release/miru
 ```
 
 The smoke tests use isolated temporary state and local provider fixtures. The
