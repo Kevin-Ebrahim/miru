@@ -129,16 +129,20 @@ impl App {
     fn search(&mut self) {
         self.search_due = None;
         abort(&mut self.search_task);
+
         if self.state.search.query.text.trim().is_empty() {
             return;
         }
+
         self.state.loading = true;
         self.state.request_error = None;
         self.state.message("", false);
+
         let generation = self.state.search_generation;
         let query = self.state.search.query.text.clone();
         let provider = self.provider.clone();
         let tx = self.tx.clone();
+
         self.search_task = Some(tokio::spawn(async move {
             let result = provider.search(&query).await;
             let _ = tx.send(Message::Search(generation, result));
@@ -174,6 +178,7 @@ impl App {
                 ),
             });
         }
+
         self.show(screen);
     }
 
@@ -187,11 +192,13 @@ impl App {
             self.state.activity = None;
             self.activity_due = None;
         }
+
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
         self.search_due = None;
         self.state.search_generation += 1;
         self.state.episode_generation += 1;
+
         self.state.screen = screen;
         self.state.focus = if screen == Screen::Home {
             Focus::Search
@@ -202,6 +209,7 @@ impl App {
         self.state.loading = false;
         self.state.request_error = None;
         self.state.message("", false);
+
         if screen == Screen::Search
             && !self.state.search.query.text.trim().is_empty()
             && self.state.search.results_query != self.state.search.query.text
@@ -233,6 +241,7 @@ impl App {
                 Screen::Episodes
             }
         };
+
         self.show(screen);
     }
 
@@ -311,6 +320,7 @@ impl App {
         };
         abort(&mut self.episode_task);
         self.state.episode_generation += 1;
+
         self.state.loading = true;
         self.state.request_error = None;
         self.state.message("", false);
@@ -388,6 +398,7 @@ impl App {
 
     fn retry(&mut self) {
         self.state.art_revision += 1;
+
         if self.state.details {
             self.load_synopsis(true);
             return;
@@ -411,20 +422,20 @@ impl App {
         if let Some(activity) = &self.state.activity
             && activity.retryable()
         {
-            self.play(activity.index);
+            self.start_episode_job(activity.index);
         }
     }
 
-    fn start_selection(&mut self, download: bool) {
+    fn start_selection(&mut self, kind: JobKind) {
         let indices: VecDeque<_> = if self.state.episodes.marked.is_empty() {
             [self.state.episodes.selected].into()
         } else {
             self.state.episodes.marked.iter().copied().collect()
         };
-        self.start(indices, download);
+        self.start(indices, kind);
     }
 
-    fn start(&mut self, mut indices: VecDeque<usize>, download: bool) {
+    fn start(&mut self, mut indices: VecDeque<usize>, kind: JobKind) {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
@@ -434,6 +445,7 @@ impl App {
         else {
             return;
         };
+
         self.stop();
         self.state.activity = Some(Activity {
             anime,
@@ -443,15 +455,11 @@ impl App {
             mode: self.state.mode,
             quality: self.state.quality.clone(),
             quality_note: String::new(),
-            kind: if download {
-                JobKind::Download
-            } else {
-                JobKind::Playback
-            },
+            kind,
             phase: JobPhase::Resolving,
             message: String::new(),
         });
-        self.play(index);
+        self.start_episode_job(index);
     }
 
     fn navigate_play(&mut self, index: usize) {
@@ -459,25 +467,29 @@ impl App {
             self.state.message("No more episodes.", false);
             return;
         }
+
         self.state.episodes.selected = index;
-        self.start([index].into(), false);
+        self.start([index].into(), JobKind::Playback);
     }
 
-    fn play(&mut self, index: usize) {
+    fn start_episode_job(&mut self, index: usize) {
         self.activity_due = None;
         let Some(activity) = self.state.activity.as_mut() else {
             return;
         };
+
         let episode = activity.episodes[index].clone();
         activity.index = index;
         activity.phase = JobPhase::Resolving;
         activity.message.clear();
         activity.quality_note.clear();
+
         self.job += 1;
         let mut title = format!("{} / Episode {}", activity.anime.title, episode.number);
         if activity.kind == JobKind::Download {
             title.push_str(&format!(" {}", activity.mode.as_str().to_uppercase()));
         }
+
         self.jobs.start(jobs::Request {
             id: self.job,
             episode,
@@ -496,7 +508,7 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(index) = activity.remaining.pop_front() {
-                    self.play(index);
+                    self.start_episode_job(index);
                 } else {
                     activity.phase = JobPhase::Finished;
                     activity.message = success;
@@ -569,6 +581,7 @@ impl App {
                             .items
                             .get(self.state.episodes.selected)
                             .map(Episode::source_id);
+
                         self.state.episodes.items = episodes;
                         self.state.episodes.marked = self
                             .state
@@ -588,6 +601,7 @@ impl App {
                                     .position(|e| e.source_id() == id)
                             })
                             .unwrap_or(0);
+
                         self.state.request_error = None;
                         self.state.message("", false);
                         self.select_continuation();
@@ -604,6 +618,7 @@ impl App {
                         .state
                         .selected_history()
                         .map(|e| (e.anime.source_id(), e.mode));
+
                     self.state.history.replace_entries(library.entries);
                     self.state.history.selected = key
                         .and_then(|(id, mode)| {
@@ -680,6 +695,7 @@ impl App {
         if !self.state.details && self.state.view.text_view.is_none() {
             return None;
         }
+
         match event.kind {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = event.kind == MouseEventKind::ScrollDown;
@@ -751,6 +767,7 @@ impl App {
         {
             return;
         }
+
         let input = if self.state.help {
             &mut self.state.help_query
         } else if self.state.focus == Focus::Range {
@@ -760,6 +777,7 @@ impl App {
         } else {
             &mut self.state.search.query
         };
+
         let mut changed = false;
         for c in text.chars().take(512) {
             let c = if c.is_whitespace() {
@@ -771,15 +789,18 @@ impl App {
             };
             changed |= input.edit(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
+
         if self.state.help {
             if changed {
                 self.state.view.help_scroll = 0;
             }
             return;
         }
+
         if changed && self.state.screen == Screen::History {
             self.state.history_filter_changed();
         }
+
         if changed && self.state.focus == Focus::Search && self.state.screen == Screen::Search {
             self.state.invalidate_search();
             abort(&mut self.search_task);
@@ -802,6 +823,7 @@ impl App {
             .position(|q| *q == self.state.quality)
             .unwrap_or(0);
         let step = if backwards { choices.len() - 1 } else { 1 };
+
         self.state.quality = choices[(index + step) % choices.len()].into();
         self.settings();
         self.state.message(
@@ -819,13 +841,16 @@ impl App {
             self.history();
             return true;
         }
+
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('e') {
             self.state.search.exact = !self.state.search.exact;
             return true;
         }
+
         if key.code == KeyCode::F(5) || key.code == KeyCode::F(6) {
             return false;
         }
+
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -833,6 +858,7 @@ impl App {
                 _ => {}
             }
         }
+
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 let focuses = [Focus::Search, Focus::Audio, Focus::Quality];
@@ -886,14 +912,16 @@ impl App {
         true
     }
 
-    fn key(&mut self, mut key: KeyEvent) {
+    fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
         }
+
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
         }
+
         if key.code == KeyCode::F(1) {
             if self.state.help {
                 self.state.help = false;
@@ -902,36 +930,12 @@ impl App {
             }
             return;
         }
+
         if self.state.help && self.state.help_filtering {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
-                KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
-                    self.state.help_filtering = false
-                }
-                KeyCode::Down | KeyCode::PageDown => {
-                    self.state.help_filtering = false;
-                    self.state.view.help_scroll = self
-                        .state
-                        .view
-                        .help_scroll
-                        .saturating_add(if key.code == KeyCode::Down { 1 } else { 10 });
-                }
-                KeyCode::Up | KeyCode::PageUp => {
-                    self.state.help_filtering = false;
-                    self.state.view.help_scroll = self
-                        .state
-                        .view
-                        .help_scroll
-                        .saturating_sub(if key.code == KeyCode::Up { 1 } else { 10 });
-                }
-                _ => {
-                    if self.state.help_query.edit(key) {
-                        self.state.view.help_scroll = 0;
-                    }
-                }
-            }
+            self.help_filter_key(key);
             return;
         }
+
         if self.state.screen == Screen::Home
             && !self.state.help
             && !self.state.details
@@ -939,25 +943,9 @@ impl App {
         {
             return;
         }
-        // Modified navigation must not fall through to playback/download shortcuts.
+
         let editing = !self.state.help && !self.state.details && self.state.focus != Focus::List;
-        if editing && key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
-        }
-        if !editing && key.modifiers == KeyModifiers::CONTROL {
-            key.code = match key.code {
-                KeyCode::Char('n') => KeyCode::Down,
-                KeyCode::Char('p') => KeyCode::Up,
-                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
-                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
-                _ => return,
-            };
-            key.modifiers = KeyModifiers::NONE;
-        }
+
         if key.modifiers == KeyModifiers::ALT {
             match key.code {
                 KeyCode::Char('h') if !self.state.help => {
@@ -978,6 +966,67 @@ impl App {
                 _ => {}
             }
         }
+
+        let Some(key) = self.normalize_key(key, editing) else {
+            return;
+        };
+
+        if self.state.help {
+            self.help_key(key);
+            return;
+        }
+
+        if key.code == KeyCode::F(5) {
+            self.retry();
+            return;
+        }
+
+        if key.code == KeyCode::F(6) {
+            self.retry_activity();
+            return;
+        }
+
+        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
+            self.state.mode.toggle();
+            self.settings();
+            self.state.message("", false);
+            return;
+        }
+
+        if self.state.details {
+            self.details_key(key);
+            return;
+        }
+
+        match self.state.focus {
+            Focus::Range => self.range_key(key),
+            Focus::Search if self.state.screen == Screen::History => self.history_filter_key(key),
+            Focus::Search => self.search_key(key),
+            Focus::List | Focus::Audio | Focus::Quality => self.list_key(key),
+        }
+    }
+
+    fn normalize_key(&self, mut key: KeyEvent, editing: bool) -> Option<KeyEvent> {
+        // Modified navigation must not fall through to playback/download shortcuts.
+        if editing && key.modifiers == KeyModifiers::CONTROL {
+            match key.code {
+                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                _ => {}
+            }
+        }
+
+        if !editing && key.modifiers == KeyModifiers::CONTROL {
+            key.code = match key.code {
+                KeyCode::Char('n') => KeyCode::Down,
+                KeyCode::Char('p') => KeyCode::Up,
+                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
+                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
+                _ => return None,
+            };
+            key.modifiers = KeyModifiers::NONE;
+        }
+
         if !editing
             && key.modifiers.intersects(
                 KeyModifiers::CONTROL
@@ -987,13 +1036,15 @@ impl App {
                     | KeyModifiers::META,
             )
         {
-            return;
+            return None;
         }
+
         if key.modifiers == KeyModifiers::SHIFT
             && let KeyCode::Char(c) = key.code
         {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }
+
         if !editing
             && !key
                 .modifiers
@@ -1011,128 +1062,145 @@ impl App {
                 _ => key.code,
             };
         }
-        if self.state.help {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
-                KeyCode::Char('q') => self.state.help = false,
-                KeyCode::Char('/') => {
-                    self.state.help_filtering = true;
-                    self.state.help_query.cursor = self.state.help_query.text.len();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(1)
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(1)
-                }
-                KeyCode::PageDown => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(10)
-                }
-                KeyCode::PageUp => {
-                    self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
-                _ => {}
+
+        Some(key)
+    }
+
+    fn help_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
+            KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.help_filtering = false
             }
-            return;
-        }
-        if key.code == KeyCode::F(5) {
-            self.retry();
-            return;
-        }
-        if key.code == KeyCode::F(6) {
-            self.retry_activity();
-            return;
-        }
-        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
-            self.state.mode.toggle();
-            self.settings();
-            self.state.message("", false);
-            return;
-        }
-        if self.state.details {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_add(1)
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_sub(1)
-                }
-                KeyCode::PageDown => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_add(10)
-                }
-                KeyCode::PageUp => {
-                    self.state.view.details_scroll =
-                        self.state.view.details_scroll.saturating_sub(10)
-                }
-                KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
-                KeyCode::Char('q') => self.state.details = false,
-                KeyCode::Char('x') => self.stop(),
-                KeyCode::Char('y') => self.copy_requested = true,
-                _ => {}
+            KeyCode::Down | KeyCode::PageDown => {
+                self.state.help_filtering = false;
+                self.state.view.help_scroll = self
+                    .state
+                    .view
+                    .help_scroll
+                    .saturating_add(if key.code == KeyCode::Down { 1 } else { 10 });
             }
-            return;
+            KeyCode::Up | KeyCode::PageUp => {
+                self.state.help_filtering = false;
+                self.state.view.help_scroll = self
+                    .state
+                    .view
+                    .help_scroll
+                    .saturating_sub(if key.code == KeyCode::Up { 1 } else { 10 });
+            }
+            _ => {
+                if self.state.help_query.edit(key) {
+                    self.state.view.help_scroll = 0;
+                }
+            }
         }
-        if self.state.focus == Focus::Range {
-            match key.code {
-                KeyCode::Esc => self.state.focus = Focus::List,
-                KeyCode::Enter => {
-                    match crate::model::episode_range(
-                        &self.state.episodes.range.text,
-                        &self.state.episodes.items,
-                    ) {
-                        Ok(indices) => {
-                            self.state.episodes.marked = indices.into_iter().collect();
-                            self.state.focus = Focus::List;
-                            self.state.message("", false);
-                        }
-                        Err(err) => self.state.message(err.to_string(), true),
+    }
+
+    fn help_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
+            KeyCode::Char('q') => self.state.help = false,
+            KeyCode::Char('/') => {
+                self.state.help_filtering = true;
+                self.state.help_query.cursor = self.state.help_query.text.len();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
+    fn details_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(10)
+            }
+            KeyCode::PageUp => {
+                self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(10)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
+            KeyCode::Char('q') => self.state.details = false,
+            KeyCode::Char('x') => self.stop(),
+            KeyCode::Char('y') => self.copy_requested = true,
+            _ => {}
+        }
+    }
+
+    fn range_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.state.focus = Focus::List,
+            KeyCode::Enter => {
+                match crate::model::episode_range(
+                    &self.state.episodes.range.text,
+                    &self.state.episodes.items,
+                ) {
+                    Ok(indices) => {
+                        self.state.episodes.marked = indices.into_iter().collect();
+                        self.state.focus = Focus::List;
+                        self.state.message("", false);
                     }
-                }
-                _ => {
-                    self.state.episodes.range.edit(key);
+                    Err(err) => self.state.message(err.to_string(), true),
                 }
             }
-            return;
+            _ => {
+                self.state.episodes.range.edit(key);
+            }
         }
-        if self.state.focus == Focus::Search && self.state.screen == Screen::History {
-            match key.code {
-                KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
-                    self.state.focus = Focus::List
-                }
-                _ => {
-                    if self.state.history.query.edit(key) {
-                        self.state.history_filter_changed();
-                    }
+    }
+
+    fn history_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
+                self.state.focus = Focus::List
+            }
+            _ => {
+                if self.state.history.query.edit(key) {
+                    self.state.history_filter_changed();
                 }
             }
-            return;
         }
-        if self.state.focus == Focus::Search {
-            match key.code {
-                KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
-                    if self.search_due.is_some() {
-                        self.search();
-                    }
-                    self.state.focus = Focus::List;
+    }
+
+    fn search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
+                if self.search_due.is_some() {
+                    self.search();
                 }
-                KeyCode::Esc => self.state.focus = Focus::List,
-                _ => {
-                    if self.state.search.query.edit(key) {
-                        self.state.invalidate_search();
-                        abort(&mut self.search_task);
-                        self.search_due = Some(Instant::now() + Duration::from_millis(300));
-                    }
+                self.state.focus = Focus::List;
+            }
+            KeyCode::Esc => self.state.focus = Focus::List,
+            _ => {
+                if self.state.search.query.edit(key) {
+                    self.state.invalidate_search();
+                    abort(&mut self.search_task);
+                    self.search_due = Some(Instant::now() + Duration::from_millis(300));
                 }
             }
-            return;
         }
+    }
+
+    fn list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') if self.state.view.text_view.is_some() => self.copy_requested = true,
             KeyCode::Char('?') => self.open_help(),
@@ -1172,7 +1240,7 @@ impl App {
                 self.state.message("", false);
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
-                self.start_selection(true)
+                self.start_selection(JobKind::Download)
             }
             KeyCode::Char('Q') => {
                 self.cycle_quality(false);
@@ -1180,7 +1248,9 @@ impl App {
             KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
                 self.open()
             }
-            KeyCode::Enter if self.state.screen == Screen::Episodes => self.start_selection(false),
+            KeyCode::Enter if self.state.screen == Screen::Episodes => {
+                self.start_selection(JobKind::Playback)
+            }
             KeyCode::Char('x') => {
                 let active = self.state.activity.as_ref().is_some_and(Activity::active);
                 self.stop();
@@ -1248,6 +1318,7 @@ impl App {
         theme: crate::theme::ThemeSource,
     ) -> Result<()> {
         let result = self.run_loop(terminal, picker, signals, theme).await;
+
         self.stop();
         abort(&mut self.search_task);
         abort(&mut self.episode_task);
@@ -1346,6 +1417,7 @@ impl App {
                     break;
                 }
             }
+
             if dirty {
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -1382,6 +1454,7 @@ impl App {
                 }
                 dirty = false;
             }
+
             tokio::select! {
                 // Resume deferred input immediately while still polling jobs and shutdown.
                 _ = std::future::ready(()), if pending_mouse.is_some() => {},
@@ -1405,15 +1478,28 @@ impl App {
                         }
                     }
                 }
-                Some(event) = self.jobs.recv() => { self.job_message(event); dirty = true; },
-                Some(result) = self.library_rx.recv() => { self.message(Message::Library(result)); dirty = true; },
-                Some(message) = self.rx.recv() => { self.message(message); dirty = true; },
-                Some(message) = art_rx.recv() => { art.accept(message); dirty = true; },
+                Some(event) = self.jobs.recv() => {
+                    self.job_message(event);
+                    dirty = true;
+                }
+                Some(result) = self.library_rx.recv() => {
+                    self.message(Message::Library(result));
+                    dirty = true;
+                }
+                Some(message) = self.rx.recv() => {
+                    self.message(message);
+                    dirty = true;
+                }
+                Some(message) = art_rx.recv() => {
+                    art.accept(message);
+                    dirty = true;
+                }
                 _ = terminate.recv() => self.quit = true,
                 _ = hangup.recv() => self.quit = true,
                 _ = interrupt.recv() => self.quit = true,
             }
         }
+
         if mouse_capture {
             execute!(std::io::stdout(), DisableMouseCapture)?;
         }
@@ -1433,6 +1519,7 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn source(id: &str) -> SourceId {
         SourceId {
             provider: Default::default(),
@@ -1447,6 +1534,7 @@ mod tests {
             ..Default::default()
         }
     }
+
     fn test_app(state: State, dir: &std::path::Path) -> App {
         App::new(
             state,
@@ -1879,7 +1967,7 @@ mod tests {
             title: "First".into(),
         }];
         let mut app = test_app(state, dir.path());
-        app.start_selection(true);
+        app.start_selection(JobKind::Download);
         app.jobs.stop();
         let job = app.job;
         app.job_message(jobs::Event {
@@ -1947,7 +2035,7 @@ mod tests {
                     title: "First".into(),
                 }];
                 let mut app = test_app(state, dir.path());
-                app.start_selection(true);
+                app.start_selection(JobKind::Download);
                 app.jobs.stop();
                 let job = app.job;
                 if finish_elsewhere {
@@ -2087,6 +2175,7 @@ mod tests {
         state.search.exact = true;
         assert!(state.visible().is_empty());
     }
+
     #[tokio::test]
     async fn navigation_discards_stale_episode_playback_and_synopsis_messages() {
         let dir = tempfile::tempdir().unwrap();
@@ -2135,6 +2224,7 @@ mod tests {
         );
         assert!(app.state.synopses.peek(&source("old")).is_none());
     }
+
     #[tokio::test]
     async fn range_entry_marks_actual_episode_order_without_launching() {
         let dir = tempfile::tempdir().unwrap();
@@ -2173,6 +2263,7 @@ mod tests {
         assert_eq!(app.state.focus, Focus::List);
         assert!(app.state.activity.is_none());
     }
+
     #[tokio::test]
     async fn nested_back_restores_the_original_series_search_and_marks() {
         let dir = tempfile::tempdir().unwrap();
@@ -2278,6 +2369,7 @@ mod tests {
         assert!(!state.accept_search(old + 1, Ok(vec![Anime::default()])));
         assert!(state.search.results().is_empty());
     }
+
     #[tokio::test]
     async fn episode_forward_navigation_opens_details_without_starting_playback() {
         let dir = tempfile::tempdir().unwrap();

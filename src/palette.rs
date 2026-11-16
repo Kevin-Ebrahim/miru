@@ -149,12 +149,14 @@ fn readable(mut color: (u8, u8, u8), backgrounds: &[(u8, u8, u8)], minimum: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn channels(c: Color) -> (u8, u8, u8) {
         let Color::Rgb(r, g, b) = c else {
             panic!("Expected measured RGB color")
         };
         (r, g, b)
     }
+
     #[test]
     fn semantic_pairs_remain_readable_on_dark_light_and_mid_tone_backgrounds() {
         for background in [

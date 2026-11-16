@@ -99,15 +99,18 @@ pub async fn download(
     tokio::fs::create_dir_all(dir)
         .await
         .context("Could not create download directory")?;
+
     ensure!(
         !destination.exists(),
         "File already exists: {}. Choose another download directory or remove it explicitly",
         destination.display()
     );
+
     let temporary = tempfile::Builder::new()
         .prefix(".miru-")
         .suffix(".part")
         .tempfile_in(dir)?;
+
     let mut cmd = media.command("ffmpeg", Tool::Download)?;
     cmd.args([
         "-nostdin",
@@ -127,6 +130,7 @@ pub async fn download(
         "-i",
         &variant.url,
     ]);
+
     let mut input = 1;
     let audio_index = variant.audio_url().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
@@ -147,6 +151,7 @@ pub async fn download(
         cmd.args(["-referer", &stream.referer, "-i", url]);
         input
     });
+
     cmd.args([
         "-map",
         "0:v:0",
@@ -158,6 +163,7 @@ pub async fn download(
     }
     cmd.args(["-c:v", "copy", "-c:a", "copy", "-f", "matroska"])
         .arg(temporary.path());
+
     let error_log = log.writer()?;
     let mut child = cmd
         .stdin(Stdio::null())
@@ -175,6 +181,7 @@ pub async fn download(
     {
         return Ok(None);
     }
+
     let stdout = child
         .stdout
         .take()
@@ -191,24 +198,34 @@ pub async fn download(
         }
         child.wait().await
     };
+
     let status = tokio::select! {
         biased;
-        _ = cancel => { child.kill().await?; return Ok(None); },
+        _ = cancel => {
+            child.kill().await?;
+            return Ok(None);
+        },
         result = transfer => match result {
             Ok(status) => status,
-            Err(error) => { let _ = child.kill().await; return Err(error.into()); }
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error.into());
+            }
         },
     };
+
     media.check()?;
     ensure!(
         status.success(),
         "Download failed ({status}). See {}",
         log.path().display()
     );
+
     temporary.as_file().sync_all()?;
     temporary
         .persist_noclobber(&destination)
         .context("Could not save download; destination may already exist")?;
+
     Ok(Some(destination))
 }
 

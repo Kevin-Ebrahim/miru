@@ -168,12 +168,15 @@ impl Provider {
 fn selector(s: &str) -> Selector {
     Selector::parse(s).expect("static CSS selector")
 }
+
 pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
     // The sidebar repeats cards. Exclude it just as the reference implementation does.
     let page = page.split("id=\"main-sidebar\"").next().unwrap_or(page);
     let document = parser::document(page)?;
+
     let mut seen = HashSet::new();
     let mut results = Vec::new();
+
     for item in document.select(&selector(".flw-item")) {
         let Some(link) = item.select(&selector(".film-name a")).next() else {
             continue;
@@ -181,6 +184,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
         let Some(href) = link.attr("href") else {
             continue;
         };
+
         let url = base.join(href)?;
         let id = url
             .path()
@@ -191,6 +195,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
         if id.is_empty() || !seen.insert(id.to_owned()) {
             continue;
         }
+
         let title = clean(
             link.attr("title")
                 .unwrap_or(&link.text().collect::<String>()),
@@ -206,6 +211,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
             .next()
             .map(|e| clean(&e.text().collect::<String>()))
             .unwrap_or_default();
+
         let mut info = item
             .select(&selector(".fdi-item"))
             .map(|e| clean(&e.text().collect::<String>()))
@@ -215,6 +221,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
                 info.push(format!("{label} {}", clean(&e.text().collect::<String>())));
             }
         }
+
         results.push(Anime {
             provider: ProviderId::default(),
             id: id.into(),
@@ -224,6 +231,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
             info: info.join(" / "),
         });
     }
+
     ensure!(
         !results.is_empty()
             || page.contains("film_list-wrap")
@@ -234,6 +242,7 @@ pub fn parse_search(page: &str, base: &Url) -> Result<Vec<Anime>> {
             || page.contains("no-results"),
         "Search markup changed. Check the provider or update the parser"
     );
+
     Ok(results)
 }
 
@@ -310,6 +319,7 @@ pub fn parse_episodes(html: &str, slug: &str) -> Result<Vec<Episode>> {
             title: clean(e.attr("title").unwrap_or("")),
         });
     }
+
     ensure!(
         !episodes.is_empty(),
         "No episodes found for this series. Try searching for it again"
@@ -546,6 +556,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
             audio: None,
         });
     }
+
     ensure!(
         !variants.is_empty(),
         "No playable streams in the HLS playlist"
@@ -557,6 +568,7 @@ pub fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn full_synopsis_keeps_paragraphs_and_inline_text_without_marketing_metadata() {
         let text = parse_synopsis(
@@ -591,6 +603,7 @@ mod tests {
         assert_eq!(results[1].title, "日本語 & English");
         assert!(results[1].cover.is_none());
     }
+
     #[test]
     fn empty_live_search_is_not_a_markup_error() {
         assert!(
@@ -602,6 +615,7 @@ mod tests {
             .is_empty()
         );
     }
+
     #[test]
     fn changed_search_markup_is_an_error() {
         assert!(
@@ -620,6 +634,7 @@ mod tests {
             .is_empty()
         );
     }
+
     #[test]
     fn episodes_reject_another_series_with_reused_id() {
         let episodes = parse_episodes(
@@ -634,6 +649,7 @@ mod tests {
             parse_episodes(include_str!("../tests/fixtures/episodes.html"), "old-481").is_err()
         );
     }
+
     #[test]
     fn server_selects_language_and_supported_host() {
         let hash = STANDARD.encode("https://example.org/stream/sub");
@@ -646,6 +662,7 @@ mod tests {
         );
         assert!(parse_server(&html, Mode::Dub).is_err());
     }
+
     #[test]
     fn player_config_decodes_without_executing_javascript() {
         let data = br#"{"src":"https://example.org/master.m3u8","subtitles":[]}"#;
@@ -662,6 +679,7 @@ mod tests {
         );
         assert!(parse_embed("window.__P='bad'").is_err());
     }
+
     #[test]
     fn hls_resolves_relative_urls_audio_and_quality() {
         let master = Url::parse("https://cdn.example/path/master.m3u8?token=test").unwrap();
@@ -687,6 +705,7 @@ mod tests {
         assert_eq!(stream.select("720p").0.height, 720);
         assert!(stream.select("480p").1);
     }
+
     #[test]
     fn media_playlist_and_invalid_responses() {
         let url = Url::parse("https://example.org/a.m3u8").unwrap();

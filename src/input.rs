@@ -7,11 +7,13 @@ pub struct Input {
     pub cursor: usize,
     killed: String,
 }
+
 impl Input {
     pub fn set(&mut self, text: String) {
         self.cursor = text.len();
         self.text = text;
     }
+
     fn previous_character(&self) -> usize {
         self.text[..self.cursor]
             .grapheme_indices(true)
@@ -30,6 +32,7 @@ impl Input {
     fn previous_word(&self, whitespace_only: bool) -> usize {
         let mut start = self.cursor;
         let mut in_word = false;
+
         for (i, g) in self.text[..self.cursor].grapheme_indices(true).rev() {
             let word = if whitespace_only {
                 !g.chars().all(char::is_whitespace)
@@ -42,12 +45,14 @@ impl Input {
             in_word |= word;
             start = i;
         }
+
         start
     }
 
     fn next_word(&self) -> usize {
         let mut end = self.cursor;
         let mut in_word = false;
+
         for (i, g) in self.text[self.cursor..].grapheme_indices(true) {
             let word = g.chars().any(char::is_alphanumeric);
             if in_word && !word {
@@ -56,6 +61,7 @@ impl Input {
             in_word |= word;
             end = self.cursor + i + g.len();
         }
+
         end
     }
 
@@ -63,9 +69,11 @@ impl Input {
         if start == end {
             return false;
         }
+
         self.killed = self.text[start..end].to_owned();
         self.text.replace_range(start..end, "");
         self.cursor = start;
+
         true
     }
 
@@ -80,6 +88,7 @@ impl Input {
         {
             return false;
         }
+
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Left => {
@@ -136,6 +145,7 @@ impl Input {
                 _ => return false,
             }
         }
+
         match key.code {
             KeyCode::Char(c) if !c.is_control() => {
                 if self.text.len() + c.len_utf8() > 512 {
@@ -171,6 +181,7 @@ impl Input {
             }
             _ => return false,
         }
+
         true
     }
 }

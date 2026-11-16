@@ -81,6 +81,7 @@ pub struct Library {
     pub mode: Mode,
     pub quality: String,
 }
+
 impl Default for Library {
     fn default() -> Self {
         Self {
@@ -97,6 +98,7 @@ pub struct Store {
     pub path: PathBuf,
     lock_timeout: Duration,
 }
+
 pub enum Change {
     Record {
         anime: Anime,
@@ -113,6 +115,7 @@ pub enum Change {
         mode: Mode,
     },
 }
+
 impl Store {
     pub fn new(dir: &Path) -> Self {
         Self {
@@ -120,6 +123,7 @@ impl Store {
             lock_timeout: Duration::from_secs(2),
         }
     }
+
     pub fn load(&self) -> Result<Library> {
         let bytes = match read_regular(&self.path, MAX_HISTORY_BYTES) {
             Ok(bytes) => bytes,
@@ -128,8 +132,10 @@ impl Store {
                 return Err(e).with_context(|| format!("Could not read {}", self.path.display()));
             }
         };
+
         Self::parse_library(&bytes, &self.path)
     }
+
     fn parse_library(bytes: &[u8], path: &Path) -> Result<Library> {
         let mut library: Library = serde_json::from_slice(bytes).with_context(|| {
             format!(
@@ -137,16 +143,19 @@ impl Store {
                 path.display()
             )
         })?;
+
         ensure!(
             matches!(library.version, 1 | 2),
             "Unsupported history version {} in {}",
             library.version,
             path.display()
         );
+
         // Version 1 omitted provenance. Serde supplies HiAnime; the next write persists v2.
         library.version = 2;
         Ok(library)
     }
+
     fn lock(&self) -> Result<File> {
         let dir = self.path.parent().context("Missing state directory")?;
         fs::create_dir_all(dir)?;
@@ -156,6 +165,7 @@ impl Store {
             .read(true)
             .write(true)
             .open(dir.join("library.lock"))?;
+
         let deadline = Instant::now() + self.lock_timeout;
         loop {
             match lock.try_lock() {
@@ -171,10 +181,12 @@ impl Store {
             }
         }
     }
+
     pub fn migrate_from(&self, old: &Store) -> Result<()> {
         if self.path.try_exists()? {
             return Ok(());
         }
+
         let bytes = match read_regular(&old.path, MAX_HISTORY_BYTES) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -183,29 +195,37 @@ impl Store {
                     .with_context(|| format!("Could not read {}", old.path.display()));
             }
         };
+
         let _lock = self.lock()?;
         if self.path.try_exists()? {
             return Ok(());
         }
+
         Self::parse_library(&bytes, &old.path)?;
         let dir = self.path.parent().context("Missing state directory")?;
+
         let mut temp = tempfile::NamedTempFile::new_in(dir)?;
         temp.write_all(&bytes)?;
         temp.as_file().sync_all()?;
+
         match temp.persist_noclobber(&self.path) {
             Ok(_) => File::open(dir)?.sync_all()?,
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => (),
             Err(error) => return Err(error).context("Could not migrate history"),
         }
+
         Ok(())
     }
+
     pub fn update(&self, change: Change) -> Result<Library> {
         self.update_many(vec![change])
     }
+
     fn update_many(&self, changes: Vec<Change>) -> Result<Library> {
         let _lock = self.lock()?;
         let dir = self.path.parent().context("Missing state directory")?;
         let mut library = self.load()?;
+
         for change in changes {
             match change {
                 Change::Record {
@@ -247,6 +267,7 @@ impl Store {
                 }),
             }
         }
+
         let mut temp = tempfile::NamedTempFile::new_in(dir)?;
         {
             let mut writer = HistoryWriter {
@@ -461,6 +482,7 @@ mod tests {
         }
         assert_eq!(store.load().unwrap().entries.len(), 8);
     }
+
     #[test]
     fn continue_handles_specials_finished_and_missing_episodes() {
         let entry = Entry {
@@ -500,6 +522,7 @@ mod tests {
             None
         );
     }
+
     #[test]
     fn roundtrip_separates_languages_and_preserves_settings() {
         let dir = tempfile::tempdir().unwrap();
@@ -529,6 +552,7 @@ mod tests {
         assert_eq!(loaded.quality, "720p");
         assert_eq!(loaded.entries[0].anime.title, "日本語 & title");
     }
+
     #[test]
     fn malformed_history_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
@@ -544,6 +568,7 @@ mod tests {
         );
         assert_eq!(fs::read(&store.path).unwrap(), b"broken");
     }
+
     #[test]
     fn import_is_read_only_and_deduplicated() {
         let entries = import_legacy("3\tshow-123\tA & B\n2\tlegacy_id\tSkip\nmalformed");
@@ -555,6 +580,7 @@ mod tests {
         assert_eq!(library.entries.len(), 1);
         assert!(next_episode(&library.entries[0], &[]).is_none());
     }
+
     #[test]
     fn playback_preserves_large_imported_history_until_explicit_removal() {
         let text: String = (0..600)

@@ -85,6 +85,7 @@ impl SearchState {
     pub fn results(&self) -> &[Anime] {
         self.results.items()
     }
+
     pub fn replace_results(&mut self, results: Vec<Anime>) {
         self.results.replace(results, |anime| &anime.title);
     }
@@ -104,6 +105,7 @@ impl HistoryState {
     pub fn entries(&self) -> &[crate::persistence::Entry] {
         self.entries.items()
     }
+
     pub fn replace_entries(&mut self, entries: Vec<crate::persistence::Entry>) {
         self.entries.replace(entries, |entry| &entry.anime.title);
     }
