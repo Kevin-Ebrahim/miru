@@ -10,6 +10,18 @@ use crate::{
 };
 use anyhow::{Result, bail};
 
+pub fn downloads_supported(id: &ProviderId) -> bool {
+    *id == Source::HiAnime.id()
+}
+
+pub fn require_downloads(id: &ProviderId) -> Result<()> {
+    anyhow::ensure!(
+        downloads_supported(id),
+        "Downloads are unavailable for provider {id}. Use HiAnime for downloads."
+    );
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Source {
     #[default]

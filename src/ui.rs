@@ -1018,12 +1018,15 @@ fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
         } else {
             "Download".into()
         };
-        return vec![
+        let mut hints = vec![
             KeyHint::new(HintAction::MarkEpisode, "Mark"),
             KeyHint::new(HintAction::EnterRange, "Range"),
-            KeyHint::new(HintAction::Download, download),
-            KeyHint::new(HintAction::Details, "Details"),
         ];
+        if state.downloads_supported() {
+            hints.push(KeyHint::new(HintAction::Download, download));
+        }
+        hints.push(KeyHint::new(HintAction::Details, "Details"));
+        return hints;
     }
 
     let search = if state.screen == Screen::Search {
@@ -2106,13 +2109,19 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let key_style = key_style(state);
     for (group, entries) in HELP_GROUPS {
+        let group = if *group == "Playback & downloads" && !state.downloads_supported() {
+            "Playback"
+        } else {
+            *group
+        };
         let entries: Vec<_> = entries
             .iter()
             .filter(|(key, action)| {
-                help_matches(
-                    &query,
-                    &format!("{group} {key} {action} {}", help_key_aliases(key)),
-                )
+                (*key != "d" || state.downloads_supported())
+                    && help_matches(
+                        &query,
+                        &format!("{group} {key} {action} {}", help_key_aliases(key)),
+                    )
             })
             .collect();
         if entries.is_empty() {
@@ -2121,7 +2130,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.push(Line::styled(*group, accent(state)));
+        lines.push(Line::styled(group, accent(state)));
         for (key, action) in entries {
             if width >= 64 {
                 for (index, description) in wrap_prose(action, width - 29).into_iter().enumerate() {
@@ -2316,6 +2325,41 @@ mod tests {
         backend::{Backend, TestBackend},
     };
     use ratatui_image::picker::Picker;
+
+    #[test]
+    fn download_actions_follow_episode_provider_not_search_source() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.focus = Focus::List;
+        state.episodes.anime = Some(Anime {
+            provider: crate::provider::Source::AnimeGg.id(),
+            title: "Probe".into(),
+            ..Default::default()
+        });
+        state.episodes.items = vec![Episode {
+            provider: crate::provider::Source::AnimeGg.id(),
+            id: "one".into(),
+            number: "1".into(),
+            title: "One".into(),
+        }];
+        for width in [40, 80, 120] {
+            let text = render_text(&mut state, width, 24);
+            assert!(!text.contains("Download"), "{text}");
+        }
+        assert!(
+            !help_lines(&state, 80)
+                .iter()
+                .any(|line| line.to_string().contains("Download marked"))
+        );
+        state.search.source = crate::provider::Source::AnimeGg;
+        state.episodes.anime.as_mut().unwrap().provider = crate::provider::Source::HiAnime.id();
+        assert!(render_text(&mut state, 80, 24).contains("Download"));
+        assert!(
+            help_lines(&state, 80)
+                .iter()
+                .any(|line| line.to_string().contains("Download marked"))
+        );
+    }
 
     #[test]
     fn provider_selector_is_visible_and_clickable_on_compact_and_wide_search() {

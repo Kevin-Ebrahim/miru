@@ -252,7 +252,10 @@ entries are treated as SUB.
 
 ## Provider and troubleshooting
 
-Miru supports HiAnime (the default) and AnimeGG. Select a source with F2 or by
+Miru supports HiAnime (the default) and AnimeGG. AnimeGG downloads are disabled
+because sustained transfers have been unreliable. Its episode view hides the
+download action, and `--source animegg --download` fails before network access.
+HiAnime downloads remain available, regardless of the current search source. Select a source with F2 or by
 clicking its name on Home or Search. From the CLI:
 
 ```sh
@@ -281,12 +284,9 @@ AnimeGG quality labels are advertised values, not measurements of video dimensio
 metadata to variants (`format: "direct"` distinguishes direct media from HLS).
 The adapter resolves the site's direct sources; third-party backup embeds are not
 supported. Site challenges, missing language sources and changed markup can still
-interrupt playback. Short playback or a sample download does not establish
-full-episode reliability. AnimeGG media hosts have produced truncated transfers;
-Miru now rejects transfers when ffmpeg reports an error and removes the partial
-file. A completed download is not a guarantee that every frame decodes. Errors
-appear in the affected view, and F5 retries it.
-Check state-directory logs for player or download failures.
+interrupt playback. Short playback tests do not establish full-episode reliability.
+Errors appear in the affected view, and F5 retries it. Check state-directory logs
+for player failures.
 
 ### Network policy
 

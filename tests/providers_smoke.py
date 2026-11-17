@@ -24,8 +24,6 @@ def main():
                         "-c:a", "aac", "-movflags", "+faststart", str(media / "high.mp4")], check=True, timeout=20)
         (media / "low.mp4").write_bytes((media / "high.mp4").read_bytes())
 
-        broken_media = False
-
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
@@ -48,13 +46,6 @@ def main():
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
-                elif broken_media and path.startswith("/media/"):
-                    body = (media / "high.mp4").read_bytes()
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body[:len(body) // 2])
-                    self.close_connection = True
                 else:
                     super().do_GET()
 
@@ -104,19 +95,17 @@ def main():
             invoke("--play", "Probe", "-e", "1", "--player-arg=--no-config", "--player-arg=--vo=null", "--player-arg=--ao=null")
             history = json.loads(invoke("--history").stdout)
             assert history[0]["anime"]["provider"] == "animegg" and history[0]["episode"] == "1"
-            invoke("--download", "Probe", "-e", "1.5", "--download-dir", str(root / "downloads"))
-            files = list((root / "downloads").glob("*.mkv"))
-            assert len(files) == 1
-            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", str(files[0]), "-f", "null", "-"], check=True, timeout=15)
             assert any(path.startswith("/media/") and referer == base for path, referer in requests)
             assert json.loads(invoke("--source", "hianime", "--history").stdout) == history
-            print("PASS: protected AnimeGG mpv/ffmpeg media, referer propagation and provider-qualified history", flush=True)
-            broken_media = True
-            failed_dir = root / "failed-downloads"
+            print("PASS: protected AnimeGG playback, referer propagation and provider-qualified history", flush=True)
+            requests.clear()
+            failed_dir = root / "disabled-downloads"
             failed = invoke("--download", "Probe", "-e", "1", "--download-dir", str(failed_dir), success=False)
-            assert "Download failed" in failed.stderr, failed.stderr
-            assert not list(failed_dir.iterdir()), "Interrupted media was published or left a partial file"
-            print("PASS: corrupt/truncated direct media fails without publishing a partial download", flush=True)
+            assert "Downloads are unavailable for provider animegg" in failed.stderr
+            assert not requests, "Disabled download contacted the provider"
+            assert not failed_dir.exists(), "Disabled download created output storage"
+            assert json.loads(invoke("--history").stdout) == history
+            print("PASS: AnimeGG downloads are rejected before network or output side effects", flush=True)
         finally:
             server.shutdown()
             server.server_close()

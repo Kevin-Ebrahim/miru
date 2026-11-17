@@ -156,6 +156,14 @@ pub struct State {
 }
 
 impl State {
+    pub fn downloads_supported(&self) -> bool {
+        let source = self
+            .selected_anime()
+            .map(|a| a.provider.clone())
+            .unwrap_or_else(|| self.search.source.id());
+        crate::provider::downloads_supported(&source)
+    }
+
     pub fn request_blocks_list(&self) -> bool {
         self.request_error.is_some()
             && (self.screen != Screen::Episodes || self.episodes.items.is_empty())

@@ -42,7 +42,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 Use Tab on Home to select audio or quality, then the arrow keys to change it.
 Press F2 or click the provider name on Home or Search to switch between HiAnime
-and AnimeGG. HiAnime remains the default.
+and AnimeGG. HiAnime remains the default. AnimeGG supports playback only;
+downloads are available through HiAnime.
 
 | Key | Action |
 | --- | --- |

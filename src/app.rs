@@ -466,6 +466,12 @@ impl App {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
+        if kind == JobKind::Download
+            && let Err(error) = crate::provider::require_downloads(&anime.provider)
+        {
+            self.state.message(error.to_string(), true);
+            return;
+        }
         let Some(index) = indices
             .pop_front()
             .filter(|i| *i < self.state.episodes.items.len())
@@ -1727,6 +1733,44 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn animegg_download_shortcut_does_not_replace_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(String::new(), Mode::Sub, "best".into(), false, false, false),
+            dir.path(),
+        );
+        app.state.screen = Screen::Episodes;
+        let mut series = anime("probe", "Probe");
+        series.provider = crate::provider::Source::AnimeGg.id();
+        let episode = Episode {
+            provider: series.provider.clone(),
+            id: "one".into(),
+            number: "1".into(),
+            title: "One".into(),
+        };
+        app.state.episodes.anime = Some(series.clone());
+        app.state.episodes.items = vec![episode.clone()];
+        app.state.activity = Some(Activity {
+            anime: series,
+            episodes: vec![episode],
+            index: 0,
+            remaining: VecDeque::new(),
+            mode: Mode::Sub,
+            quality: "best".into(),
+            quality_note: String::new(),
+            kind: JobKind::Playback,
+            phase: JobPhase::Running,
+            message: String::new(),
+        });
+        let job = app.job;
+        app.start_selection(JobKind::Download);
+        assert_eq!(app.job, job);
+        assert_eq!(app.state.activity.as_ref().unwrap().kind, JobKind::Playback);
+        assert!(app.state.status.contains("Downloads are unavailable"));
+        app.jobs.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn changing_source_discards_stale_results_and_preserves_existing_queue() {

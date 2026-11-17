@@ -156,6 +156,9 @@ async fn run(
     notify: &mpsc::UnboundedSender<Event>,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Output>> {
+    if request.kind == JobKind::Download {
+        crate::provider::require_downloads(&request.episode.provider)?;
+    }
     let resolved = tokio::select! {
         biased;
         _ = &mut *cancel => return Ok(None),

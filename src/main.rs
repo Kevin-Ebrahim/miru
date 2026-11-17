@@ -184,6 +184,9 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
+    if cli.download {
+        provider::require_downloads(&cli.source.id())?;
+    }
     let provider = provider::Providers::configured(cli.source, cli.provider.as_deref())?;
     let query = cli.query.join(" ");
     let state_dir = cli
