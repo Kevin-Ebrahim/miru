@@ -13,6 +13,7 @@ See the [README](../README.md) for installation and first use.
 | ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
 | `i` | Open full cover and series details |
 | `s` or Shift+D | Toggle SUB/DUB |
+| F2 | Change provider on Home or Search |
 | `Q` | Cycle playback quality |
 | Alt+e | Toggle exact title matching |
 | Alt+h | Open watch history |
@@ -216,7 +217,8 @@ reported as an error; Miru does not switch to another folder.
 | `MIRU_STATE_DIR` | `--state-dir` | Override the state directory |
 | `MIRU_CACHE_DIR` | `--cache-dir` | Override the cover cache directory |
 | `MIRU_THEME` | `--theme` | Set `auto` or `terminal` |
-| `MIRU_PROVIDER` | `--provider` | Override the provider's base URL |
+| `MIRU_SOURCE` | `--source` | Choose `hianime` (default), `animegg` or `kaa` |
+| `MIRU_PROVIDER` | `--provider` | Override the selected source's base URL |
 
 Command-line options take precedence over `MIRU_*` variables. The previous
 `ANI_WATCH_STATE_DIR`, `ANI_WATCH_CACHE_DIR`, `ANI_WATCH_THEME`, and
@@ -250,12 +252,74 @@ entries are treated as SUB.
 
 ## Provider and troubleshooting
 
-Miru is an unofficial client for `https://hianime.at/` and its ZokoAnime server.
-`--provider` and `MIRU_PROVIDER` change the base URL for a compatible provider;
-they do not add support for other sites' APIs. Site challenges, missing language
-sources, and changed markup may prevent playback. Errors appear in the affected
-view, and F5 retries it. Check the logs in the state directory for player or
-download errors.
+Miru supports HiAnime (the default), AnimeGG and KAA. AnimeGG downloads are disabled
+because sustained transfers have been unreliable. Its episode view hides the
+download action, and `--source animegg --download` fails before network access.
+HiAnime and KAA downloads remain available, regardless of the current search source.
+Select a source with F2 or by
+clicking its name on Home or Search. From the CLI:
+
+```sh
+miru --source animegg "Cowboy Bebop"
+miru --source animegg --dub --play "Cowboy Bebop" -e 1
+```
+
+Switching sources reruns the current search. Running playback, queued episodes
+and history retain their original provider. The search source is a per-run choice;
+use `MIRU_SOURCE` for your shell default. There is no automatic cross-provider
+fallback or history merging.
+
+`--provider URL` / `MIRU_PROVIDER` overrides the selected source's endpoint only.
+It must implement that source's API; it does not select an adapter. Explicit CLI
+values override environment values, including the older `ANI_WATCH_PROVIDER` alias.
+History entries from other sources use their own configured adapter.
+
+AnimeGG and KAA can have different SUB/DUB episode lists. Changing audio reloads that list
+and clears marks; selection follows the episode number when available. Existing
+queues keep their captured language. AnimeGG combined releases such as `277-278`
+remain one item; selecting either covered episode plays that combined release. Missing
+individual episodes are not replaced by the nearest list position.
+
+AnimeGG quality labels are advertised values, not measurements of video dimensions.
+`--resolve` preserves the existing JSON fields and adds optional `label` and `format`
+metadata to variants (`format: "direct"` distinguishes direct media from HLS).
+The adapter resolves the site's direct sources; third-party backup embeds are not
+supported. Site challenges, missing language sources and changed markup can still
+interrupt playback. Short playback tests do not establish full-episode reliability.
+Errors appear in the affected view, and F5 retries it. Check state-directory logs
+for player failures.
+
+KAA selects Japanese audio for SUB and English audio for DUB from the HLS
+manifest, regardless of track order or default flags. If an English episode has
+no server, Miru may try the exact same episode number in the same series' Japanese
+listing, then require English audio in that manifest. It never substitutes audio
+or matches by list position. Missing sources remain explicit errors.
+
+KAA exposes available English subtitles and advertised video dimensions. Its
+player properties are parsed in the isolated parser. Media uses a validated shared
+request profile for video, separate audio and subtitles; JSON includes optional
+`request.origin` and `request.user_agent` alongside the existing `referer`.
+mpv and ffmpeg apply these headers to nested media requests. VLC cannot apply a
+required Origin header, so KAA playback reports an explicit error asking for mpv.
+No player is silently substituted. KAA supports downloads through ffmpeg.
+Provider connection or segment errors can still occur; failed transfers remove
+the partial file instead of publishing it as a completed episode.
+
+### Search another provider
+
+Press F3 on a series, in its episode view, or after a failed search to search
+the same title on the next provider. The footer names the destination provider;
+use F2 in the resulting search to choose another source.
+The requested SUB/DUB mode is retained. Choose the matching series or season and
+then the episode yourself; Miru does not match episodes across providers.
+Esc returns to the previous view.
+
+Searching does not replace active or failed playback, change its queue, or merge
+history. Starting a replacement uses the normal stop-and-replace behavior and
+records the new provider separately. CLI failures identify the provider and stage,
+and suggest a `--source` search command. Replace `<title>` in that example with
+your quoted search text. Remove any `--provider` / `MIRU_PROVIDER` override
+when switching to another site.
 
 ### Network policy
 

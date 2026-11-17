@@ -10,6 +10,18 @@ use url::{Host, Url};
 mod media;
 pub use media::{Session, Tool, run_helper};
 
+/// Media and the network context that validated it travel together.
+pub struct ResolvedMedia {
+    stream: crate::model::Stream,
+    http: Http,
+}
+
+impl ResolvedMedia {
+    pub fn stream(&self) -> &crate::model::Stream {
+        &self.stream
+    }
+}
+
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 pub const MEDIA_PROTOCOLS: &str = "http,https,tcp,tls,crypto,httpproxy,data";
 pub const MEDIA_INPUT_OPTIONS: [&str; 4] = [
@@ -162,6 +174,37 @@ pub struct Http {
 }
 
 impl Http {
+    pub fn resolve_media(&self, stream: crate::model::Stream) -> Result<ResolvedMedia> {
+        reqwest::header::HeaderValue::from_str(&stream.referer).context("Invalid media referer")?;
+        if let Some(profile) = &stream.request {
+            if let Some(origin) = &profile.origin {
+                let url = http_url(origin)?;
+                ensure!(
+                    url.origin().ascii_serialization() == *origin,
+                    "Invalid media origin"
+                );
+            }
+            if let Some(agent) = &profile.user_agent {
+                ensure!(agent.len() <= 1024, "Media user agent exceeds limit");
+                reqwest::header::HeaderValue::from_str(agent)
+                    .context("Invalid media user agent")?;
+            }
+        }
+        for variant in &stream.variants {
+            self.validate(&variant.url)?;
+            if let Some(audio) = variant.audio_url() {
+                self.validate(audio)?;
+            }
+        }
+        if let Some(url) = &stream.subtitle {
+            self.validate(url)?;
+        }
+        Ok(ResolvedMedia {
+            stream,
+            http: self.clone(),
+        })
+    }
+
     pub fn new(base: &Url) -> Result<Self> {
         let policy = Policy::new(base);
         let redirects = policy.clone();
@@ -194,6 +237,26 @@ impl Http {
             request = request.header(reqwest::header::REFERER, referer);
         }
 
+        self.response_bytes(request, &url, limit).await
+    }
+
+    pub async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
+        let url = self.validate(url)?;
+        self.response_bytes(self.client.post(url.clone()).json(body), &url, limit)
+            .await
+    }
+
+    async fn response_bytes(
+        &self,
+        request: reqwest::RequestBuilder,
+        url: &Url,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
         let mut response = request
             .send()
             .await
@@ -233,6 +296,56 @@ impl Http {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_binding_checks_video_audio_and_subtitle_destinations() {
+        use crate::model::{Audio, Stream, Variant};
+        let http = super::Http::new(&super::http_url("https://example.com/").unwrap()).unwrap();
+        let stream = Stream {
+            request: None,
+            variants: vec![Variant {
+                format: crate::model::MediaFormat::Hls,
+                label: None,
+                height: 720,
+                url: "https://cdn.example/video".into(),
+                audio: Some(Audio {
+                    group: "audio".into(),
+                    url: Some("https://cdn.example/audio".into()),
+                }),
+            }],
+            referer: "https://example.com/".into(),
+            subtitle: Some("https://cdn.example/subtitle".into()),
+        };
+        for profile in [
+            crate::model::MediaRequest {
+                origin: Some("https://example.com/path".into()),
+                user_agent: None,
+            },
+            crate::model::MediaRequest {
+                origin: Some("https://example.com\r\nInjected: x".into()),
+                user_agent: None,
+            },
+            crate::model::MediaRequest {
+                origin: None,
+                user_agent: Some("agent\r\nInjected: x".into()),
+            },
+        ] {
+            let mut blocked = stream.clone();
+            blocked.request = Some(profile);
+            assert!(http.resolve_media(blocked).is_err());
+        }
+        assert!(http.resolve_media(stream.clone()).is_ok());
+        for target in 0..3 {
+            let mut blocked = stream.clone();
+            let url = "http://127.0.0.1/private".to_owned();
+            match target {
+                0 => blocked.variants[0].url = url,
+                1 => blocked.variants[0].audio.as_mut().unwrap().url = Some(url),
+                _ => blocked.subtitle = Some(url),
+            }
+            assert!(http.resolve_media(blocked).is_err());
+        }
+    }
+
     use super::*;
 
     #[test]

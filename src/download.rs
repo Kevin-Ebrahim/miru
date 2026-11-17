@@ -82,6 +82,17 @@ fn truncate(value: &str, bytes: usize) -> &str {
     value[..end].trim_end_matches(['.', ' '])
 }
 
+fn request_headers(cmd: &mut tokio::process::Command, stream: &crate::model::Stream) {
+    if let Some(profile) = &stream.request {
+        if let Some(agent) = &profile.user_agent {
+            cmd.args(["-user_agent", agent]);
+        }
+        if let Some(origin) = &profile.origin {
+            cmd.args(["-headers", &format!("Origin: {origin}\r\n")]);
+        }
+    }
+}
+
 /// Download to a unique temporary file. Cancellation removes only this task's partial output.
 /// Never clobber an existing episode, and mux separate audio/subtitles when available.
 pub async fn download(
@@ -114,26 +125,25 @@ pub async fn download(
     let mut cmd = media.command("ffmpeg", Tool::Download)?;
     cmd.args([
         "-nostdin",
+        "-xerror",
         "-y",
         "-loglevel",
-        "warning",
+        "level+warning",
         "-progress",
         "pipe:1",
         "-nostats",
     ]);
     cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
-    cmd.args([
-        "-extension_picky",
-        "0",
-        "-referer",
-        &stream.referer,
-        "-i",
-        &variant.url,
-    ]);
+    if variant.format == crate::model::MediaFormat::Hls {
+        cmd.args(["-extension_picky", "0"]);
+    }
+    request_headers(&mut cmd, stream);
+    cmd.args(["-referer", &stream.referer, "-i", &variant.url]);
 
     let mut input = 1;
     let audio_index = variant.audio_url().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
+        request_headers(&mut cmd, stream);
         cmd.args([
             "-extension_picky",
             "0",
@@ -148,6 +158,7 @@ pub async fn download(
     });
     let subtitle_index = stream.subtitle.as_ref().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
+        request_headers(&mut cmd, stream);
         cmd.args(["-referer", &stream.referer, "-i", url]);
         input
     });
@@ -201,7 +212,7 @@ pub async fn download(
 
     let status = tokio::select! {
         biased;
-        _ = cancel => {
+        _ = &mut *cancel => {
             child.kill().await?;
             return Ok(None);
         },
@@ -221,7 +232,30 @@ pub async fn download(
         log.path().display()
     );
 
+    publish_download(
+        temporary,
+        destination,
+        cancel,
+        verify_transfer_log(log.path()),
+    )
+    .await
+}
+
+async fn publish_download(
+    temporary: tempfile::NamedTempFile,
+    destination: PathBuf,
+    cancel: &mut oneshot::Receiver<()>,
+    verification: impl std::future::Future<Output = Result<()>>,
+) -> Result<Option<PathBuf>> {
+    tokio::select! {
+        biased;
+        _ = &mut *cancel => return Ok(None),
+        result = verification => result?,
+    }
     temporary.as_file().sync_all()?;
+    if !matches!(cancel.try_recv(), Err(oneshot::error::TryRecvError::Empty)) {
+        return Ok(None);
+    }
     temporary
         .persist_noclobber(&destination)
         .context("Could not save download; destination may already exist")?;
@@ -229,9 +263,84 @@ pub async fn download(
     Ok(Some(destination))
 }
 
+async fn verify_transfer_log(path: &Path) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buffer = vec![0u8; 8192];
+    let mut carry = Vec::new();
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        carry.extend_from_slice(&buffer[..count]);
+        for marker in [
+            b"[error]".as_slice(),
+            b"[fatal]",
+            b"failed too many times, skipping",
+        ] {
+            ensure!(
+                !carry.windows(marker.len()).any(|part| part == marker),
+                "Download incomplete: ffmpeg reported damaged or missing media. See {}",
+                path.display()
+            );
+        }
+        if carry.len() > 128 {
+            carry.drain(..carry.len() - 128);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancellation_during_verification_removes_partial_without_publishing() {
+        let dir = tempfile::tempdir().unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let partial = temporary.path().to_owned();
+        let destination = dir.path().join("episode.mkv");
+        let (cancel_tx, mut cancel) = oneshot::channel();
+        let (started_tx, started) = oneshot::channel();
+        let target = destination.clone();
+        let task = tokio::spawn(async move {
+            publish_download(temporary, target, &mut cancel, async {
+                started_tx.send(()).unwrap();
+                std::future::pending::<Result<()>>().await
+            })
+            .await
+        });
+        started.await.unwrap();
+        cancel_tx.send(()).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .expect("verification ignored cancellation")
+            .unwrap()
+            .unwrap();
+        assert!(result.is_none());
+        assert!(!destination.exists());
+        assert!(!partial.exists());
+    }
+
+    #[tokio::test]
+    async fn cancellation_at_verification_completion_prevents_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let temporary = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        let partial = temporary.path().to_owned();
+        let destination = dir.path().join("episode.mkv");
+        let (cancel_tx, mut cancel) = oneshot::channel();
+        let result = publish_download(temporary, destination.clone(), &mut cancel, async {
+            cancel_tx.send(()).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(result.is_none());
+        assert!(!destination.exists());
+        assert!(!partial.exists());
+    }
 
     fn anime(title: &str) -> Anime {
         Anime {

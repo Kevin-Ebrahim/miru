@@ -8,7 +8,7 @@ use crate::{
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
     player::Player,
-    provider::Provider,
+    provider::Providers,
     state::{
         Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
     },
@@ -56,7 +56,7 @@ enum Visit {
 
 pub struct App {
     pub state: State,
-    provider: Provider,
+    provider: Providers,
     options: Options,
     tx: mpsc::UnboundedSender<Message>,
     rx: mpsc::UnboundedReceiver<Message>,
@@ -85,7 +85,7 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
 }
 
 impl App {
-    pub fn new(state: State, provider: Provider, options: Options) -> Self {
+    pub fn new(state: State, provider: Providers, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (writer, library_rx) =
             crate::persistence::Writer::new(crate::persistence::Store::new(&options.state_dir));
@@ -142,11 +142,12 @@ impl App {
 
         let generation = self.state.search_generation;
         let query = self.state.search.query.text.clone();
+        let source = self.state.search.source;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
 
         self.search_task = Some(tokio::spawn(async move {
-            let result = provider.search(&query).await;
+            let result = provider.search(&source.id(), &query).await;
             let _ = tx.send(Message::Search(generation, result));
         }));
     }
@@ -217,7 +218,16 @@ impl App {
             && self.state.search.results_query != self.state.search.query.text
         {
             self.search();
-        } else if screen == Screen::Episodes && self.state.episodes.items.is_empty() {
+        } else if screen == Screen::Episodes
+            && (self.state.episodes.items.is_empty()
+                || (self
+                    .state
+                    .episodes
+                    .anime
+                    .as_ref()
+                    .is_some_and(|a| self.provider.mode_specific_episodes(&a.provider))
+                    && self.state.episodes.mode != Some(self.state.mode)))
+        {
             self.load_episodes();
         }
     }
@@ -273,6 +283,8 @@ impl App {
             self.state.episodes.marked.clear();
         }
         if !same_series {
+            self.state.episodes.mode = None;
+            self.state.episodes.pending_number = None;
             self.state.episodes.items.clear();
             self.state.episodes.selected = 0;
             self.state.view.list_offsets[Screen::Episodes as usize] = 0;
@@ -320,6 +332,18 @@ impl App {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
+        if self.provider.mode_specific_episodes(&anime.provider)
+            && self.state.episodes.mode != Some(self.state.mode)
+        {
+            if let Some(episode) = self.state.episodes.items.get(self.state.episodes.selected) {
+                self.state.episodes.pending_number = Some(episode.number.clone());
+            }
+            self.state.episodes.items.clear();
+            self.state.episodes.marked.clear();
+            self.state.episodes.range.set(String::new());
+            self.state.episodes.selected = 0;
+        }
+        self.state.episodes.mode = Some(self.state.mode);
         abort(&mut self.episode_task);
         self.state.episode_generation += 1;
 
@@ -329,8 +353,9 @@ impl App {
         let generation = self.state.episode_generation;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
+        let mode = self.state.mode;
         self.episode_task = Some(tokio::spawn(async move {
-            let result = provider.episodes(&anime).await;
+            let result = provider.episodes(&anime, mode).await;
             let _ = tx.send(Message::Episodes(generation, result));
         }));
     }
@@ -441,6 +466,12 @@ impl App {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
+        if kind == JobKind::Download
+            && let Err(error) = crate::provider::require_downloads(&anime.provider)
+        {
+            self.state.message(error.to_string(), true);
+            return;
+        }
         let Some(index) = indices
             .pop_front()
             .filter(|i| *i < self.state.episodes.items.len())
@@ -532,8 +563,15 @@ impl App {
                 }
             }
             Err(err) => {
+                let stage = if activity.phase == JobPhase::Resolving {
+                    "resolution/startup"
+                } else if activity.kind == JobKind::Download {
+                    "download"
+                } else {
+                    "playback"
+                };
+                activity.message = format!("{} {stage} failed: {err:#}", activity.anime.provider);
                 activity.phase = JobPhase::Failed;
-                activity.message = format!("{err:#}");
             }
         }
     }
@@ -585,7 +623,7 @@ impl App {
                             .episodes
                             .items
                             .get(self.state.episodes.selected)
-                            .map(Episode::source_id);
+                            .map(|e| (e.source_id(), e.number.clone()));
 
                         self.state.episodes.items = episodes;
                         self.state.episodes.marked = self
@@ -598,15 +636,31 @@ impl App {
                             .map(|(i, _)| i)
                             .collect();
                         self.state.episodes.selected = selected
-                            .and_then(|id| {
+                            .and_then(|(id, number)| {
                                 self.state
                                     .episodes
                                     .items
                                     .iter()
                                     .position(|e| e.source_id() == id)
+                                    .or_else(|| {
+                                        self.state
+                                            .episodes
+                                            .items
+                                            .iter()
+                                            .position(|e| e.number == number)
+                                    })
                             })
                             .unwrap_or(0);
 
+                        if let Some(number) = self.state.episodes.pending_number.take() {
+                            self.state.episodes.selected = self
+                                .state
+                                .episodes
+                                .items
+                                .iter()
+                                .position(|e| e.number == number)
+                                .unwrap_or(0);
+                        }
                         self.state.request_error = None;
                         self.state.message("", false);
                         self.select_continuation();
@@ -730,6 +784,16 @@ impl App {
                 self.last_click = None;
                 self.state.cover_view = self.state.selected_anime().cloned();
                 self.state.view.text_selection = None;
+                return None;
+            }
+            if self
+                .state
+                .view
+                .source_setting
+                .is_some_and(|area| area.contains(position))
+            {
+                self.last_click = None;
+                self.cycle_source();
                 return None;
             }
             if self
@@ -909,9 +973,64 @@ impl App {
         self.state.help_query.set(String::new());
     }
 
+    fn search_elsewhere(&mut self) {
+        let Some((title, source, mode)) = self.state.recovery_search() else {
+            return;
+        };
+        if self.state.screen == Screen::Search {
+            self.back_stack.push(Visit::Search(
+                Box::new(self.state.search.clone()),
+                self.state.view.list_offsets[Screen::Search as usize],
+            ));
+        }
+        self.navigate(Screen::Search);
+        abort(&mut self.search_task);
+        self.cancel_synopsis();
+        self.state.search.source = source;
+        self.state.search.query.set(title);
+        self.state.search.exact = false;
+        self.state.search.replace_results(vec![]);
+        self.state.search.results_query.clear();
+        self.state.mode = mode;
+        self.state.invalidate_search();
+        self.search();
+    }
+
+    fn cycle_source(&mut self) {
+        if self.state.help
+            || self.state.details
+            || !matches!(self.state.screen, Screen::Home | Screen::Search)
+        {
+            return;
+        }
+        self.state.search.source = self.state.search.source.next();
+        abort(&mut self.search_task);
+        self.cancel_synopsis();
+        self.search_due = None;
+        self.state.invalidate_search();
+        self.state.search.replace_results(vec![]);
+        self.state.search.results_query.clear();
+        if self.state.screen == Screen::Search {
+            self.search();
+        } else {
+            self.state.loading = false;
+        }
+    }
+
     fn toggle_audio(&mut self) {
         self.state.mode.toggle();
         self.settings();
+        if self.state.screen == Screen::Episodes
+            && self
+                .state
+                .episodes
+                .anime
+                .as_ref()
+                .is_some_and(|a| self.provider.mode_specific_episodes(&a.provider))
+        {
+            self.state.episodes.continuation = None;
+            self.load_episodes();
+        }
         self.state.message("", false);
     }
 
@@ -1026,6 +1145,16 @@ impl App {
                 KeyCode::F(5) => self.state.art_revision += 1,
                 _ => {}
             }
+            return;
+        }
+
+        if key.code == KeyCode::F(3) && !self.state.help {
+            self.search_elsewhere();
+            return;
+        }
+
+        if key.code == KeyCode::F(2) && !self.state.help && !self.state.details {
+            self.cycle_source();
             return;
         }
 
@@ -1533,20 +1662,26 @@ impl App {
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
                 let cover = ui::cover_area(&self.state, area);
-                let url = if self.state.help {
+                let anime = self
+                    .state
+                    .cover_view
+                    .as_ref()
+                    .or_else(|| self.state.selected_anime());
+                let source = anime
+                    .map(|anime| anime.provider.clone())
+                    .unwrap_or_default();
+                let context = self.provider.http(&source);
+                let url = if self.state.help || context.is_err() {
                     None
                 } else {
-                    self.state
-                        .cover_view
-                        .as_ref()
-                        .or_else(|| self.state.selected_anime())
-                        .and_then(|a| a.cover.as_deref())
+                    anime.and_then(|a| a.cover.as_deref())
                 };
+                let http = context.or_else(|_| self.provider.http(&Default::default()))?;
                 if art_revision != self.state.art_revision {
-                    art.request(None, cover.as_size(), self.provider.http(), art_tx.clone());
+                    art.request(None, cover.as_size(), http.clone(), art_tx.clone());
                     art_revision = self.state.art_revision;
                 }
-                art.request(url, cover.as_size(), self.provider.http(), art_tx.clone());
+                art.request(url, cover.as_size(), http, art_tx.clone());
                 let previous_list = self.state.view.list.clone();
                 std::io::stdout().sync_update(|_| -> Result<()> {
                     if art.clear {
@@ -1634,6 +1769,245 @@ impl Drop for App {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn recovery_search_preserves_failed_activity_and_back_navigation() {
+        for source in [
+            crate::provider::Source::HiAnime,
+            crate::provider::Source::AnimeGg,
+            crate::provider::Source::Kaa,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(
+                State::new(String::new(), Mode::Dub, "best".into(), false, false, false),
+                dir.path(),
+            );
+            // No real provider is contacted: the spawned search is aborted before yielding.
+            app.state.screen = Screen::Episodes;
+            let mut series = anime("original", "Probe Season 2");
+            series.provider = source.id();
+            let episode = Episode {
+                provider: source.id(),
+                id: "special".into(),
+                number: "1.5".into(),
+                title: "Special".into(),
+            };
+            app.state.episodes.anime = Some(series.clone());
+            app.state.episodes.items = vec![episode.clone()];
+            app.state.episodes.mode = Some(Mode::Dub);
+            app.state.episodes.marked.insert(0);
+            app.state.activity = Some(Activity {
+                anime: series.clone(),
+                episodes: vec![episode],
+                index: 0,
+                remaining: VecDeque::new(),
+                mode: Mode::Dub,
+                quality: "best".into(),
+                quality_note: String::new(),
+                kind: JobKind::Playback,
+                phase: JobPhase::Failed,
+                message: "Resolution unavailable".into(),
+            });
+            let job = app.job;
+            app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+            abort(&mut app.search_task);
+            assert_eq!(app.state.screen, Screen::Search);
+            assert_eq!(app.state.search.source, source.next());
+            assert_eq!(app.state.search.query.text, "Probe Season 2");
+            assert_eq!(app.state.mode, Mode::Dub);
+            assert_eq!(app.job, job);
+            assert_eq!(
+                app.state.activity.as_ref().unwrap().message,
+                "Resolution unavailable"
+            );
+            let generation = app.state.search_generation;
+            app.message(Message::Search(
+                generation,
+                Ok(vec![
+                    anime("ambiguous-a", "Probe Season 2"),
+                    anime("ambiguous-b", "Probe Season 2"),
+                ]),
+            ));
+            assert_eq!(app.state.search.results().len(), 2);
+            assert_eq!(app.job, job);
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.state.screen, Screen::Episodes);
+            assert_eq!(app.state.episodes.anime.as_ref(), Some(&series));
+            assert_eq!(app.state.episodes.items[0].number, "1.5");
+            assert!(app.state.episodes.marked.contains(&0));
+            assert_eq!(app.state.activity.as_ref().unwrap().phase, JobPhase::Failed);
+            app.jobs.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_catalogue_recovery_retains_query_and_ignores_old_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(
+                "Missing title".into(),
+                Mode::Sub,
+                "best".into(),
+                false,
+                false,
+                false,
+            ),
+            dir.path(),
+        );
+        app.state.screen = Screen::Search;
+        app.state.request_error = Some("Offline".into());
+        let old = app.state.search_generation;
+        app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        abort(&mut app.search_task);
+        assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
+        assert_eq!(app.state.search.query.text, "Missing title");
+        app.message(Message::Search(old, Ok(vec![anime("stale", "Wrong show")])));
+        assert!(app.state.search.results().is_empty());
+        assert!(app.state.activity.is_none());
+        app.back();
+        abort(&mut app.search_task);
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        assert_eq!(app.state.search.query.text, "Missing title");
+        app.jobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn animegg_download_shortcut_does_not_replace_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(String::new(), Mode::Sub, "best".into(), false, false, false),
+            dir.path(),
+        );
+        app.state.screen = Screen::Episodes;
+        let mut series = anime("probe", "Probe");
+        series.provider = crate::provider::Source::AnimeGg.id();
+        let episode = Episode {
+            provider: series.provider.clone(),
+            id: "one".into(),
+            number: "1".into(),
+            title: "One".into(),
+        };
+        app.state.episodes.anime = Some(series.clone());
+        app.state.episodes.items = vec![episode.clone()];
+        app.state.activity = Some(Activity {
+            anime: series,
+            episodes: vec![episode],
+            index: 0,
+            remaining: VecDeque::new(),
+            mode: Mode::Sub,
+            quality: "best".into(),
+            quality_note: String::new(),
+            kind: JobKind::Playback,
+            phase: JobPhase::Running,
+            message: String::new(),
+        });
+        let job = app.job;
+        app.start_selection(JobKind::Download);
+        assert_eq!(app.job, job);
+        assert_eq!(app.state.activity.as_ref().unwrap().kind, JobKind::Playback);
+        assert!(app.state.status.contains("Downloads are unavailable"));
+        app.jobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_source_discards_stale_results_and_preserves_existing_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "Probe".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::Home;
+        let original = anime("probe", "Probe");
+        let episode = Episode {
+            id: "1".into(),
+            provider: original.provider.clone(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        state.activity = Some(Activity {
+            anime: original.clone(),
+            episodes: vec![episode],
+            index: 0,
+            remaining: VecDeque::new(),
+            mode: Mode::Sub,
+            quality: "best".into(),
+            quality_note: String::new(),
+            kind: JobKind::Playback,
+            phase: JobPhase::Running,
+            message: String::new(),
+        });
+        state.search.replace_results(vec![original.clone()]);
+        let mut app = test_app(state, dir.path());
+        let old = app.state.search_generation;
+        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
+        render_mouse_view(&mut app, 80, 24);
+        let area = app.state.view.source_setting.unwrap();
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 1,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.state.search.source, crate::provider::Source::Kaa);
+        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        assert!(app.state.search.results().is_empty());
+        app.message(Message::Search(old, Ok(vec![original.clone()])));
+        assert!(app.state.search.results().is_empty());
+        assert_eq!(app.state.activity.as_ref().unwrap().anime, original);
+        assert_eq!(
+            app.state.activity.as_ref().unwrap().phase,
+            JobPhase::Running
+        );
+        app.back_stack.push(Visit::Search(Box::default(), 0));
+        app.back();
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        app.jobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_animegg_audio_clears_old_rows_and_restores_actual_episode_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        let mut app = test_app(state, dir.path());
+        let source = crate::provider::Source::AnimeGg;
+        app.provider = Providers::configured(source, Some("http://127.0.0.1:9/")).unwrap();
+        app.state.screen = Screen::Episodes;
+        let mut series = anime("probe", "Probe");
+        series.provider = source.id();
+        app.state.episodes.anime = Some(series);
+        app.state.episodes.mode = Some(Mode::Sub);
+        let episode = Episode {
+            id: "sub-special".into(),
+            provider: source.id(),
+            number: "1.5".into(),
+            title: "Special".into(),
+        };
+        app.state.episodes.items = vec![episode.clone()];
+        app.state.episodes.marked.insert(0);
+        app.toggle_audio();
+        assert!(app.state.episodes.items.is_empty());
+        assert!(app.state.episodes.marked.is_empty());
+        app.start([0].into(), JobKind::Playback);
+        assert!(app.state.activity.is_none());
+        let mut first = episode.clone();
+        first.id = "dub-first".into();
+        first.number = "1".into();
+        let mut special = episode;
+        special.id = "dub-special".into();
+        app.message(Message::Episodes(
+            app.state.episode_generation,
+            Ok(vec![first, special]),
+        ));
+        assert_eq!(app.state.episodes.selected, 1);
+        assert_eq!(app.state.mode, Mode::Dub);
+        app.jobs.shutdown().await.unwrap();
+    }
+
     fn source(id: &str) -> SourceId {
         SourceId {
             provider: Default::default(),
@@ -1652,7 +2026,7 @@ mod tests {
     fn test_app(state: State, dir: &std::path::Path) -> App {
         App::new(
             state,
-            Provider::new("http://127.0.0.1:9").unwrap(),
+            Providers::new("http://127.0.0.1:9").unwrap(),
             Options {
                 player: Player::new("does-not-exist", vec![], None),
                 cache: dir.join("cache"),
@@ -2617,7 +2991,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         app.state.screen = Screen::Episodes;
         app.state.focus = Focus::List;
         app.state.focus = Focus::List;
@@ -2679,7 +3057,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(
             app.state
@@ -2714,7 +3096,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let back = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.key(enter);

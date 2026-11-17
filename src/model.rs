@@ -124,9 +124,27 @@ pub struct Audio {
     pub url: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaFormat {
+    #[default]
+    Hls,
+    Direct,
+}
+
+impl MediaFormat {
+    fn is_hls(&self) -> bool {
+        *self == Self::Hls
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Variant {
-    /// Zero means an unknown video resolution; known audio-only entries are excluded at parsing.
+    #[serde(default, skip_serializing_if = "MediaFormat::is_hls")]
+    pub format: MediaFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Advertised video height, not a measurement. Zero means unknown; audio-only entries are excluded.
     pub height: u32,
     pub url: String,
     #[serde(default)]
@@ -139,8 +157,18 @@ impl Variant {
     }
 }
 
+/// One validated header profile applies to video, external audio and subtitles.
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Stream {
+    pub request: Option<MediaRequest>,
     pub variants: Vec<Variant>,
     pub referer: String,
     pub subtitle: Option<String>,
@@ -158,12 +186,15 @@ impl Serialize for Stream {
             referer: &'a str,
             subtitle: &'a Option<String>,
             audio: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            request: &'a Option<MediaRequest>,
         }
         Export {
             variants: &self.variants,
             referer: &self.referer,
             subtitle: &self.subtitle,
             audio: self.variants.first().and_then(Variant::audio_url),
+            request: &self.request,
         }
         .serialize(serializer)
     }
@@ -217,6 +248,18 @@ pub fn episode_range(input: &str, episodes: &[Episode]) -> Result<Vec<usize>> {
             _ => episodes
                 .iter()
                 .position(|e| e.number == value)
+                .or_else(|| {
+                    let number = value.parse::<u32>().ok()?;
+                    episodes.iter().position(|episode| {
+                        episode
+                            .number
+                            .split_once('-')
+                            .and_then(|(first, last)| {
+                                Some((first.parse::<u32>().ok()?, last.parse::<u32>().ok()?))
+                            })
+                            .is_some_and(|(first, last)| first <= number && number <= last)
+                    })
+                })
                 .ok_or_else(|| anyhow::anyhow!("Episode {value} is not available")),
         }
     };

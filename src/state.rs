@@ -68,6 +68,7 @@ pub enum Synopsis {
 
 #[derive(Clone, Default)]
 pub struct SearchState {
+    pub source: crate::provider::Source,
     pub query: Input,
     results: TitleList<Anime>,
     pub results_query: String,
@@ -113,6 +114,8 @@ impl HistoryState {
 
 #[derive(Clone, Default)]
 pub struct EpisodesState {
+    pub mode: Option<Mode>,
+    pub pending_number: Option<String>,
     pub anime: Option<Anime>,
     pub items: Vec<Episode>,
     pub selected: usize,
@@ -153,6 +156,52 @@ pub struct State {
 }
 
 impl State {
+    pub fn recovery_search(&self) -> Option<(String, crate::provider::Source, Mode)> {
+        if self.screen == Screen::Search
+            && self.request_error.is_some()
+            && !self.search.query.text.trim().is_empty()
+        {
+            return Some((
+                self.search.query.text.clone(),
+                self.search.source.next(),
+                self.mode,
+            ));
+        }
+        let target = self
+            .selected_anime()
+            .map(|anime| {
+                let mode = if self.screen == Screen::History {
+                    self.selected_history()
+                        .map_or(self.mode, |entry| entry.mode)
+                } else {
+                    self.mode
+                };
+                (anime.title.clone(), anime.provider.clone(), mode)
+            })
+            .or_else(|| {
+                self.activity
+                    .as_ref()
+                    .filter(|a| a.retryable())
+                    .map(|a| (a.anime.title.clone(), a.anime.provider.clone(), a.mode))
+            });
+        if let Some((title, provider, mode)) = target {
+            let source = crate::provider::Source::from_id(&provider).map_or(
+                crate::provider::Source::HiAnime,
+                crate::provider::Source::next,
+            );
+            return Some((title, source, mode));
+        }
+        None
+    }
+
+    pub fn downloads_supported(&self) -> bool {
+        let source = self
+            .selected_anime()
+            .map(|a| a.provider.clone())
+            .unwrap_or_else(|| self.search.source.id());
+        crate::provider::downloads_supported(&source)
+    }
+
     pub fn request_blocks_list(&self) -> bool {
         self.request_error.is_some()
             && (self.screen != Screen::Episodes || self.episodes.items.is_empty())

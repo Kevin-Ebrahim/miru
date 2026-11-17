@@ -290,6 +290,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     state.view.list = None;
     state.view.cover = None;
     state.view.help_area = None;
+    state.view.source_setting = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
     frame.render_widget(
@@ -574,7 +575,10 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         );
     }
     let field = Rect::new(x, y + logo_height + gap, width, box_height);
-    let block = panel(String::new(), state, state.focus != Focus::List)
+    let source = format!(" F2 {} ", state.search.source.label());
+    state.view.source_setting =
+        Some(Rect::new(field.x + 1, field.y, source.width() as u16, 1).intersection(field));
+    let block = panel(source, state, state.focus != Focus::List)
         .style(Style::default().bg(palette(state).surface));
     let inner = block.inner(field);
     frame.render_widget(block, field);
@@ -789,6 +793,12 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
             nav.push(Span::styled("History", accent(state).underlined()));
         }
     }
+    if inline_search(state, area.width) {
+        let label = format!("F2 {}  ", state.search.source.label());
+        let x = area.x + Line::from(nav.clone()).width() as u16;
+        state.view.source_setting = Some(Rect::new(x, area.y, label.width() as u16, 1));
+        nav.push(Span::styled(label, muted(state)));
+    }
     let navigation = Line::from(nav);
     let nav_width = navigation.width() as u16;
     let [left, middle, right] = Layout::horizontal([
@@ -830,11 +840,19 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     }
 }
 
-fn render_input(frame: &mut Frame, state: &State, area: Rect) {
+fn render_input(frame: &mut Frame, state: &mut State, area: Rect) {
     let title = if state.focus == Focus::Range {
         " Mark episodes / 1-3, 5 "
     } else {
         " Search "
+    };
+    let title = if state.screen == Screen::Search && !state.details {
+        let label = format!("F2 {}", state.search.source.label());
+        state.view.source_setting =
+            Some(Rect::new(area.x + 11, area.y, label.width() as u16, 1).intersection(area));
+        format!(" Search / {label} ")
+    } else {
+        title.to_owned()
     };
     let block = panel(
         format!(
@@ -877,6 +895,7 @@ enum HintAction {
     MarkRange,
     Cancel,
     RetryRequest,
+    SearchElsewhere,
     Search,
     MarkEpisode,
     EnterRange,
@@ -905,6 +924,7 @@ impl KeyHint {
             HintAction::ExactSearch => "Alt+e",
             HintAction::MarkRange => "Enter",
             HintAction::RetryRequest => "F5",
+            HintAction::SearchElsewhere => "F3",
             HintAction::Search => "/",
             HintAction::MarkEpisode => "Space",
             HintAction::EnterRange => ":",
@@ -1000,12 +1020,15 @@ fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
         } else {
             "Download".into()
         };
-        return vec![
+        let mut hints = vec![
             KeyHint::new(HintAction::MarkEpisode, "Mark"),
             KeyHint::new(HintAction::EnterRange, "Range"),
-            KeyHint::new(HintAction::Download, download),
-            KeyHint::new(HintAction::Details, "Details"),
         ];
+        if state.downloads_supported() {
+            hints.push(KeyHint::new(HintAction::Download, download));
+        }
+        hints.push(KeyHint::new(HintAction::Details, "Details"));
+        return hints;
     }
 
     let search = if state.screen == Screen::Search {
@@ -1054,6 +1077,16 @@ fn global_hints(state: &State, compact: bool, copy_available: bool) -> Vec<KeyHi
     if state.activity.as_ref().is_some_and(Activity::retryable) {
         let action = if compact { "Retry" } else { "Retry remaining" };
         hints.insert(0, KeyHint::new(HintAction::RetryActivity, action));
+    }
+
+    if let Some((_, source, _)) = state.recovery_search() {
+        hints.insert(
+            0,
+            KeyHint::new(
+                HintAction::SearchElsewhere,
+                format!("Search {}", source.label()),
+            ),
+        );
     }
 
     if copy_available {
@@ -2002,6 +2035,11 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("H", "Home"),
             ("/", "Search"),
+            ("F2", "Change search provider"),
+            (
+                "F3",
+                "Search this title on another provider; choose series and episode",
+            ),
             ("Alt+h", "History"),
             ("j/k / Up/Down", "Move or scroll"),
             ("Ctrl+n/p", "Next / previous item"),
@@ -2087,13 +2125,19 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let key_style = key_style(state);
     for (group, entries) in HELP_GROUPS {
+        let group = if *group == "Playback & downloads" && !state.downloads_supported() {
+            "Playback"
+        } else {
+            *group
+        };
         let entries: Vec<_> = entries
             .iter()
             .filter(|(key, action)| {
-                help_matches(
-                    &query,
-                    &format!("{group} {key} {action} {}", help_key_aliases(key)),
-                )
+                (*key != "d" || state.downloads_supported())
+                    && help_matches(
+                        &query,
+                        &format!("{group} {key} {action} {}", help_key_aliases(key)),
+                    )
             })
             .collect();
         if entries.is_empty() {
@@ -2102,7 +2146,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.push(Line::styled(*group, accent(state)));
+        lines.push(Line::styled(group, accent(state)));
         for (key, action) in entries {
             if width >= 64 {
                 for (index, description) in wrap_prose(action, width - 29).into_iter().enumerate() {
@@ -2137,6 +2181,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 fn render_help(frame: &mut Frame, state: &mut State) {
     state.view.list = None;
     state.view.cover = None;
+    state.view.source_setting = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
     let area = frame.area();
@@ -2296,6 +2341,96 @@ mod tests {
         backend::{Backend, TestBackend},
     };
     use ratatui_image::picker::Picker;
+
+    #[test]
+    fn recovery_hint_names_destination_at_all_layout_widths() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.focus = Focus::List;
+        state.episodes.anime = Some(Anime {
+            provider: crate::provider::Source::AnimeGg.id(),
+            title: "Probe".into(),
+            ..Default::default()
+        });
+        for width in [40, 80, 120] {
+            let text = render_text(&mut state, width, 24);
+            assert!(text.contains("F3") && text.contains("Search KAA"), "{text}");
+        }
+    }
+
+    #[test]
+    fn download_actions_follow_episode_provider_not_search_source() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.focus = Focus::List;
+        state.episodes.anime = Some(Anime {
+            provider: crate::provider::Source::AnimeGg.id(),
+            title: "Probe".into(),
+            ..Default::default()
+        });
+        state.episodes.items = vec![Episode {
+            provider: crate::provider::Source::AnimeGg.id(),
+            id: "one".into(),
+            number: "1".into(),
+            title: "One".into(),
+        }];
+        for width in [40, 80, 120] {
+            let text = render_text(&mut state, width, 24);
+            assert!(!text.contains("Download"), "{text}");
+        }
+        assert!(
+            !help_lines(&state, 80)
+                .iter()
+                .any(|line| line.to_string().contains("Download marked"))
+        );
+        state.search.source = crate::provider::Source::AnimeGg;
+        state.episodes.anime.as_mut().unwrap().provider = crate::provider::Source::HiAnime.id();
+        assert!(render_text(&mut state, 80, 24).contains("Download"));
+        assert!(
+            help_lines(&state, 80)
+                .iter()
+                .any(|line| line.to_string().contains("Download marked"))
+        );
+    }
+
+    #[test]
+    fn provider_selector_is_visible_and_clickable_on_compact_and_wide_search() {
+        for source in [
+            crate::provider::Source::HiAnime,
+            crate::provider::Source::AnimeGg,
+            crate::provider::Source::Kaa,
+        ] {
+            for screen in [Screen::Home, Screen::Search] {
+                for width in [32, 40, 80, 119, 120, 160] {
+                    let mut state = State::new(
+                        "Probe".into(),
+                        Mode::Dub,
+                        "1080p".into(),
+                        false,
+                        false,
+                        false,
+                    );
+                    state.screen = screen;
+                    state.search.source = source;
+                    let text = render_text(&mut state, width, 24);
+                    let area = state.view.source_setting.expect("provider selector");
+                    let visible: String = text
+                        .lines()
+                        .nth(area.y as usize)
+                        .unwrap()
+                        .chars()
+                        .skip(area.x as usize)
+                        .take(area.width as usize)
+                        .collect();
+                    assert!(
+                        visible.contains(source.label()),
+                        "{width} {screen:?}: {visible:?}\n{text}"
+                    );
+                    assert!(text.contains("DUB") && text.contains("1080p"), "{text}");
+                }
+            }
+        }
+    }
 
     fn render_text(state: &mut State, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
