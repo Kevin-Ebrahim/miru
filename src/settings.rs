@@ -385,7 +385,11 @@ impl Settings {
                     selected = items.len();
                 }
                 let label = *name;
-                let value = format!("< {} >", self.value(i));
+                let value = match i {
+                    0 | 3 => format!("{}  [Edit]", self.value(i)),
+                    4 => format!("{}  [Manage]", self.value(i)),
+                    _ => format!("< {} >", self.value(i)),
+                };
                 if body.width >= 48 {
                     let available = usize::from(body.width.saturating_sub(4));
                     let value = fit_value(&value, available.saturating_sub(label.len() + 2));
@@ -421,14 +425,14 @@ impl Settings {
         } else {
             match self.selected {
                 0 => format!(
-                    "Destination: {}\nReset restores the automatic Downloads/miru folder.",
+                    "Destination: {}\nEnter edits the folder path. R restores Automatic.",
                     self.download()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|e| e.to_string())
                 ),
                 1 => "Preferred language for new queues. Existing queues keep their audio.".into(),
                 2 => "Preferred quality; the closest available stream is used.".into(),
-                3 => "Executable name or path. Defaults to mpv.".into(),
+                3 => "Enter edits the executable name or path. Defaults to mpv.".into(),
                 4 => "Add, edit or remove individual player arguments.".into(),
                 _ => "Automatic infers mpv or VLC from the executable name.".into(),
             }
@@ -480,8 +484,12 @@ impl Settings {
             "Enter Save   Esc Cancel"
         } else if self.arguments {
             "Enter Edit/Add   Del Remove   Esc Back"
+        } else if matches!(self.selected, 0 | 3) {
+            "Enter Edit   R Reset   Esc Back"
+        } else if self.selected == 4 {
+            "Enter Manage   R Reset   Esc Back"
         } else {
-            "Left/Right Change   Enter Edit   R Reset   Esc Back"
+            "Left/Right Change   R Reset   Esc Back"
         };
         frame.render_widget(
             Paragraph::new(hint)
