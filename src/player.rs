@@ -46,6 +46,15 @@ impl Player {
         }
     }
 
+    pub fn playback_marker(&self, log: &Log) -> Option<String> {
+        matches!(self.backend, Backend::Mpv).then(|| {
+            format!(
+                "MIRU_PLAYBACK_STARTED_{}",
+                log.path().file_stem().unwrap().to_string_lossy()
+            )
+        })
+    }
+
     fn validate_request(&self, stream: &Stream) -> Result<()> {
         anyhow::ensure!(
             !matches!(self.backend, Backend::Vlc)
@@ -135,6 +144,7 @@ pub async fn launch(
     let executable = &player.executable;
     let mut child = media.command(executable, Tool::Player(player.backend))?
         .args(player.args(media.stream(), quality, title))
+        .args(player.playback_marker(log).map(|marker| format!("--term-playing-msg={marker}")))
         .stdin(Stdio::null())
         .stdout(output.try_clone().context("Could not capture player stdout")?)
         .stderr(output)
@@ -151,6 +161,32 @@ pub async fn launch(
         return Ok(None);
     }
     Ok(Some(child))
+}
+
+/// Tail the owned diagnostic file without buffering arbitrarily long player output.
+pub async fn wait_loaded(log: &Log, marker: Option<&str>) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let Some(marker) = marker else {
+        return std::future::pending().await;
+    };
+    let marker = marker.as_bytes();
+    let mut file = tokio::fs::File::open(log.path()).await?;
+    let mut buffer = [0u8; 8192];
+    let mut tail = Vec::new();
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        }
+        tail.extend_from_slice(&buffer[..count]);
+        if tail.windows(marker.len()).any(|bytes| bytes == marker) {
+            return Ok(());
+        }
+        if tail.len() >= marker.len() {
+            tail.drain(..tail.len() - (marker.len() - 1));
+        }
+    }
 }
 
 #[cfg(test)]

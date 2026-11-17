@@ -172,6 +172,11 @@ path atomically, leaving an original symlink target unchanged. Startup and offli
 commands retain normal signal termination until Miru starts work that needs
 coordinated shutdown.
 
+With mpv, history updates when playback starts, not when the player process launches.
+Failed loads leave the previous entry unchanged. VLC and custom wrappers that do
+not emit mpv's start notification update history only after a successful exit;
+cancelling those players does not advance history.
+
 History entries are retained until explicitly removed. Importing history and
 recording new playback do not prune older entries.
 
