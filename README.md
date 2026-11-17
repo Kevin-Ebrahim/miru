@@ -41,6 +41,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 3. Select an episode and press Enter to play it.
 
 Use Tab on Home to select audio or quality, then the arrow keys to change it.
+Press F4 for Settings: download folder, playback defaults, and advanced player options.
+Enter edits a setting, R restores its default, and Esc returns to browsing.
+Saved defaults apply to the next queue; command-line overrides remain temporary.
 Press F2 or click the provider name on Home or Search to switch between HiAnime,
 AnimeGG and KAA. HiAnime remains the default. AnimeGG supports playback only.
 KAA requires mpv; its media hosts need headers that VLC cannot apply.

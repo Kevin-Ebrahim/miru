@@ -23,6 +23,7 @@ pub enum JobKind {
 
 #[derive(Clone)]
 pub struct Request {
+    pub execution: Option<(player::Player, PathBuf)>,
     pub id: u64,
     pub episode: Episode,
     pub anime: Anime,
@@ -156,6 +157,11 @@ async fn run(
     notify: &mpsc::UnboundedSender<Event>,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Output>> {
+    let mut options = options.clone();
+    if let Some((player, folder)) = &request.execution {
+        options.player = player.clone();
+        options.download_dir = folder.clone();
+    }
     if request.kind == JobKind::Download {
         crate::provider::require_downloads(&request.episode.provider)?;
     }

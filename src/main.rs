@@ -13,6 +13,7 @@ mod persistence;
 mod player;
 mod provider;
 mod sakura;
+mod settings;
 mod state;
 mod terminal;
 mod theme;
@@ -86,8 +87,8 @@ struct Cli {
     #[arg(long)]
     exact: bool,
     /// Executable accepting mpv options (or VLC)
-    #[arg(long, default_value = "mpv")]
-    player: String,
+    #[arg(long)]
+    player: Option<String>,
     /// Override argument style; inferred from the executable basename when omitted
     #[arg(long, value_enum)]
     player_backend: Option<player::Backend>,
@@ -224,7 +225,28 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    let download_dir = config::download_dir(cli.download_dir.as_deref())?;
+    let config_path = config::path()?;
+    let mut saved = config::Config::load(&config_path)?;
+    saved.inherit(&library);
+    let preferences = settings::Settings::new(
+        saved,
+        settings::Overrides {
+            download: cli.download_dir.clone(),
+            audio: if cli.dub {
+                Some(Mode::Dub)
+            } else if cli.sub {
+                Some(Mode::Sub)
+            } else {
+                None
+            },
+            quality: cli.quality.clone(),
+            player: cli.player.clone(),
+            args: (!cli.player_arg.is_empty()).then(|| cli.player_arg.clone()),
+            backend: cli.player_backend,
+        },
+        config_path,
+    );
+    let download_dir = preferences.download()?;
     // Keep normal signal termination during startup and offline storage operations.
     let signals = jobs::shutdown_signals()?;
     let mode = if cli.dub {
@@ -232,12 +254,15 @@ async fn run() -> Result<()> {
     } else if cli.sub {
         Mode::Sub
     } else {
-        library.mode
+        preferences.saved.audio.unwrap_or(library.mode)
     };
-    let quality = cli
-        .quality
-        .clone()
-        .unwrap_or_else(|| library.quality.clone());
+    let quality = cli.quality.clone().unwrap_or_else(|| {
+        preferences
+            .saved
+            .quality
+            .clone()
+            .unwrap_or_else(|| library.quality.clone())
+    });
 
     if cli.list || cli.resolve || cli.play || cli.download {
         if cli.play || cli.download {
@@ -247,11 +272,7 @@ async fn run() -> Result<()> {
         let mut runner = jobs::Jobs::new(
             provider.clone(),
             jobs::Options {
-                player: player::Player::new(
-                    cli.player.clone(),
-                    cli.player_arg.clone(),
-                    cli.player_backend,
-                ),
+                player: preferences.player(),
                 state_dir: state_dir.clone(),
                 download_dir: download_dir.clone(),
                 history: writer.sender(),
@@ -332,7 +353,7 @@ async fn run() -> Result<()> {
         state.status = "Enter opens episodes with the next episode selected.".into();
     }
     let options = app::Options {
-        player: player::Player::new(cli.player, cli.player_arg, cli.player_backend),
+        player: preferences.player(),
         cache: cli
             .cache_dir
             .unwrap_or_else(|| directory("XDG_CACHE_HOME", ".cache", "miru/covers")),
@@ -341,6 +362,7 @@ async fn run() -> Result<()> {
         download_dir,
     };
     app::App::new(state, provider, options)
+        .with_settings(preferences)
         .run(
             &mut terminal,
             picker,
@@ -399,6 +421,7 @@ async fn run_cli(
             format!("{} / Episode {}", anime.title, episodes[i].number)
         };
         runner.start(jobs::Request {
+            execution: None,
             id: id as u64,
             episode: episodes[i].clone(),
             anime: anime.clone(),

@@ -428,6 +428,9 @@ fn home_footer_hint(state: &State) -> Line<'static> {
         hint.spans.push(Span::raw("  "));
     }
     hint.spans.extend(shortcut(state, "F1", "Help").spans);
+    if visible_activity(state).is_none() {
+        hint.spans.extend(shortcut(state, " F4", "Settings").spans);
+    }
     hint
 }
 
