@@ -487,8 +487,10 @@ impl Settings {
             "Enter Edit   R Reset   Esc Back"
         } else if self.selected == 4 {
             "Enter Manage   R Reset   Esc Back"
-        } else {
+        } else if state.ascii {
             "Left/Right Change   R Reset   Esc Back"
+        } else {
+            "←/→ Change   R Reset   Esc Back"
         };
         frame.render_widget(
             Paragraph::new(hint)
