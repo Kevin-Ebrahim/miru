@@ -604,7 +604,7 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         Paragraph::new(input),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
-    if state.focus == Focus::Search && !state.help {
+    if state.focus == Focus::Search && !state.help && !state.hide_input_cursor {
         frame.set_cursor_position((inner.x + prefix.len() as u16 + cursor as u16, inner.y));
     }
     let setting_style = |focus| {
@@ -837,7 +837,7 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
             Paragraph::new(text).style(Style::default().fg(palette(state).text).not_bold()),
             content,
         );
-        if state.focus == Focus::Search && !state.help {
+        if state.focus == Focus::Search && !state.help && !state.hide_input_cursor {
             frame.set_cursor_position((content.x + cursor as u16, content.y));
         }
     }
@@ -885,7 +885,7 @@ fn render_input(frame: &mut Frame, state: &mut State, area: Rect) {
     );
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(text), inner);
-    if state.focus != Focus::List && !state.help {
+    if state.focus != Focus::List && !state.help && !state.hide_input_cursor {
         frame.set_cursor_position((inner.x + cursor as u16, inner.y));
     }
 }
@@ -2243,7 +2243,8 @@ fn render_help(frame: &mut Frame, state: &mut State) {
             Paragraph::new(format!("/ {query}")).style(accent(state)),
             filter,
         );
-        if state.help_filtering && filter.width > 2 && filter.height > 0 {
+        if state.help_filtering && filter.width > 2 && filter.height > 0 && !state.hide_input_cursor
+        {
             frame.set_cursor_position((filter.x + 2 + cursor as u16, filter.y));
         }
     } else {

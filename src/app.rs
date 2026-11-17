@@ -1776,6 +1776,8 @@ impl App {
                         terminal.clear()?;
                     }
                     terminal.draw(|frame| {
+                        self.state.hide_input_cursor =
+                            self.settings.as_ref().is_some_and(|s| s.open);
                         ui::render(frame, &mut self.state, &art);
                         if let Some(s) = self.settings.as_ref().filter(|s| s.open) {
                             s.render(frame, &self.state);

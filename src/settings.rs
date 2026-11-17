@@ -49,7 +49,6 @@ pub struct Settings {
     pub path: PathBuf,
     pub open: bool,
     selected: usize,
-    advanced: bool,
     arguments: bool,
     argument: usize,
     error: bool,
@@ -64,7 +63,6 @@ impl Settings {
             path,
             open: false,
             selected: 0,
-            advanced: false,
             arguments: false,
             argument: 0,
             error: false,
@@ -137,7 +135,7 @@ impl Settings {
                 let (selected, max) = if self.arguments {
                     (&mut self.argument, self.saved.player_args.len())
                 } else {
-                    (&mut self.selected, if self.advanced { 5 } else { 3 })
+                    (&mut self.selected, 5)
                 };
                 *selected = if down {
                     selected.saturating_add(3).min(max)
@@ -190,7 +188,7 @@ impl Settings {
                 KeyCode::Down => {
                     self.argument = (self.argument + 1).min(self.saved.player_args.len())
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Left | KeyCode::Right => {
                     let mut input = Input::default();
                     input.set(
                         self.saved
@@ -212,17 +210,10 @@ impl Settings {
         }
         let mut next = self.saved.clone();
         match key.code {
-            KeyCode::Esc if self.advanced => {
-                self.advanced = false;
-                self.selected = 3;
-            }
             KeyCode::Esc | KeyCode::F(4) => self.open = false,
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = (self.selected + 1).min(if self.advanced { 5 } else { 3 })
-            }
+            KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(5),
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Enter if self.selected == 3 && !self.advanced => self.advanced = true,
-            KeyCode::Enter => match self.selected {
+            KeyCode::Enter | KeyCode::Left | KeyCode::Right => match self.selected {
                 4 => {
                     self.arguments = true;
                     self.argument = 0;
@@ -247,13 +238,23 @@ impl Settings {
                         .iter()
                         .position(|q| Some(*q) == next.quality.as_deref())
                         .unwrap_or(0);
-                    next.quality = Some(QUALITIES[(i + 1) % QUALITIES.len()].into());
+                    next.quality = Some(
+                        QUALITIES[(i + if key.code == KeyCode::Left {
+                            QUALITIES.len() - 1
+                        } else {
+                            1
+                        }) % QUALITIES.len()]
+                        .into(),
+                    );
                     return self.save(next);
                 }
                 _ => {
-                    next.player_backend = match next.player_backend {
-                        None => Some(Backend::Mpv),
-                        Some(Backend::Mpv) => Some(Backend::Vlc),
+                    next.player_backend = match (next.player_backend, key.code == KeyCode::Left) {
+                        (None, true) => Some(Backend::Vlc),
+                        (Some(Backend::Vlc), true) => Some(Backend::Mpv),
+                        (Some(Backend::Mpv), true) => None,
+                        (None, false) => Some(Backend::Mpv),
+                        (Some(Backend::Mpv), false) => Some(Backend::Vlc),
                         _ => None,
                     };
                     return self.save(next);
@@ -264,7 +265,7 @@ impl Settings {
                     0 => next.download_dir = None,
                     1 => next.audio = Some(Mode::Sub),
                     2 => next.quality = Some("best".into()),
-                    3 if self.advanced => next.player = None,
+                    3 => next.player = None,
                     4 => next.player_args.clear(),
                     5 => next.player_backend = None,
                     _ => return false,
@@ -306,7 +307,7 @@ impl Settings {
         let height = area
             .height
             .saturating_sub(u16::from(area.height >= 24) * 2)
-            .min(if self.advanced { 28 } else { 24 });
+            .min(28);
         let modal = Rect::new(
             area.x + (area.width - width) / 2,
             area.y + (area.height - height) / 2,
@@ -366,11 +367,7 @@ impl Settings {
                 }
             }
         } else {
-            for (i, name) in names
-                .iter()
-                .enumerate()
-                .take(if self.advanced { 6 } else { 4 })
-            {
+            for (i, name) in names.iter().enumerate().take(6) {
                 if matches!(i, 0 | 1 | 3) {
                     if i != 0 {
                         items.push(ListItem::new(""));
@@ -387,16 +384,8 @@ impl Settings {
                 if i == self.selected {
                     selected = items.len();
                 }
-                let label = if i == 3 && !self.advanced {
-                    "Player options"
-                } else {
-                    *name
-                };
-                let value = if i == 3 && !self.advanced {
-                    if state.ascii { ">" } else { "›" }.into()
-                } else {
-                    self.value(i)
-                };
+                let label = *name;
+                let value = format!("< {} >", self.value(i));
                 if body.width >= 48 {
                     let available = usize::from(body.width.saturating_sub(4));
                     let value = fit_value(&value, available.saturating_sub(label.len() + 2));
@@ -439,12 +428,7 @@ impl Settings {
                 ),
                 1 => "Preferred language for new queues. Existing queues keep their audio.".into(),
                 2 => "Preferred quality; the closest available stream is used.".into(),
-                3 => if self.advanced {
-                    "Executable name or path. Defaults to mpv."
-                } else {
-                    "Configure the player, its arguments and compatibility mode."
-                }
-                .into(),
+                3 => "Executable name or path. Defaults to mpv.".into(),
                 4 => "Add, edit or remove individual player arguments.".into(),
                 _ => "Automatic infers mpv or VLC from the executable name.".into(),
             }
@@ -497,7 +481,7 @@ impl Settings {
         } else if self.arguments {
             "Enter Edit/Add   Del Remove   Esc Back"
         } else {
-            "Enter Change   R Reset   Esc Back"
+            "Left/Right Change   Enter Edit   R Reset   Esc Back"
         };
         frame.render_widget(
             Paragraph::new(hint)
@@ -515,6 +499,29 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
+    #[test]
+    fn arrows_cycle_both_directions_and_open_editors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings::new(
+            Config::default(),
+            Overrides::default(),
+            dir.path().join("config.json"),
+        );
+        settings.selected = 2;
+        assert!(settings.key(key(KeyCode::Left)));
+        assert_eq!(settings.saved.quality.as_deref(), Some("worst"));
+        assert!(settings.key(key(KeyCode::Right)));
+        assert_eq!(settings.saved.quality.as_deref(), Some("best"));
+        settings.selected = 5;
+        assert!(settings.key(key(KeyCode::Left)));
+        assert_eq!(settings.saved.player_backend, Some(Backend::Vlc));
+        assert!(settings.key(key(KeyCode::Right)));
+        assert_eq!(settings.saved.player_backend, None);
+        settings.selected = 0;
+        settings.key(key(KeyCode::Right));
+        assert!(settings.edit.is_some());
+    }
+
     #[test]
     fn saves_defaults_without_persisting_overrides_and_resets() {
         let dir = tempfile::tempdir().unwrap();
@@ -552,7 +559,7 @@ mod tests {
         assert!(settings.edit.is_none());
     }
     #[test]
-    fn advanced_is_hidden_and_page_renders_in_narrow_terminal() {
+    fn all_settings_visible_and_page_renders_in_narrow_terminal() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::new(
             Config::default(),
@@ -562,9 +569,6 @@ mod tests {
         for _ in 0..3 {
             settings.key(key(KeyCode::Down));
         }
-        assert!(!settings.advanced);
-        settings.key(key(KeyCode::Enter));
-        assert!(settings.advanced);
         settings.key(key(KeyCode::Down));
         settings.key(key(KeyCode::Down));
         for (width, height) in [(30, 12), (30, 25), (50, 25), (100, 25)] {
