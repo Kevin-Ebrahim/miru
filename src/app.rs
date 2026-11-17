@@ -1774,6 +1774,7 @@ mod tests {
         for source in [
             crate::provider::Source::HiAnime,
             crate::provider::Source::AnimeGg,
+            crate::provider::Source::Kaa,
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut app = test_app(
@@ -1951,6 +1952,8 @@ mod tests {
             row: area.y,
             modifiers: KeyModifiers::NONE,
         });
+        assert_eq!(app.state.search.source, crate::provider::Source::Kaa);
+        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
         assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
         assert!(app.state.search.results().is_empty());
         app.message(Message::Search(old, Ok(vec![original.clone()])));

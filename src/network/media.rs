@@ -485,6 +485,7 @@ mod tests {
         let url = format!("http://{}/", origin.local_addr().unwrap());
         let session = Session::new(ResolvedMedia {
             stream: Stream {
+                request: None,
                 variants: vec![],
                 referer: String::new(),
                 subtitle: None,

@@ -27,6 +27,7 @@ static WORKERS: Semaphore = Semaphore::const_new(2);
 
 #[derive(Serialize, Deserialize)]
 pub(super) enum Request {
+    KaaPlayer { page: String, base: Url },
     GgSearch { page: String, base: Url },
     GgSynopsis { page: String },
     GgEpisodes { page: String, base: Url, mode: Mode },
@@ -200,6 +201,9 @@ pub fn run_helper() -> Result<bool> {
     );
     let request: Request = serde_json::from_slice(&input)?;
     let result = match request {
+        Request::KaaPlayer { page, base } => {
+            super::kaa::parse_player(&page, &base).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
         Request::GgSearch { page, base } => {
             super::animegg::search(&page, &base).and_then(|v| Ok(serde_json::to_value(v)?))
         }

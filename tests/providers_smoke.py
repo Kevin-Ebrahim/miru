@@ -80,9 +80,9 @@ def main():
             failed = invoke("--dub", "--resolve", "Probe", "-e", "1.5", success=False)
             assert not failed.stdout
             assert "animegg episode selection failed (dub)" in failed.stderr, failed.stderr
-            assert "--source hianime --list --dub <title>" in failed.stderr
+            assert "--source kaa --list --dub <title>" in failed.stderr
             failed = invoke("--resolve", "Probe", "-e", "9", success=False)
-            assert not failed.stdout and "--source hianime" in failed.stderr
+            assert not failed.stdout and "--source kaa" in failed.stderr
             requests.clear()
             failed = invoke("--source", "hianime", "--list", "Probe", success=False)
             assert not failed.stdout

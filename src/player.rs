@@ -43,9 +43,35 @@ impl Player {
         }
     }
 
+    fn validate_request(&self, stream: &Stream) -> Result<()> {
+        anyhow::ensure!(
+            !matches!(self.backend, Backend::Vlc)
+                || stream
+                    .request
+                    .as_ref()
+                    .is_none_or(|profile| profile.origin.is_none()),
+            "VLC cannot apply the required Origin header; use mpv for this stream"
+        );
+        Ok(())
+    }
+
     pub fn args(&self, stream: &Stream, quality: &str, title: &str) -> Vec<String> {
         let (variant, _) = stream.select(quality);
         let mut args = self.extra.clone();
+        if let Some(profile) = &stream.request {
+            if let Some(agent) = &profile.user_agent {
+                args.push(format!(
+                    "{}={agent}",
+                    match self.backend {
+                        Backend::Mpv => "--user-agent",
+                        Backend::Vlc => "--http-user-agent",
+                    }
+                ));
+            }
+            if let Some(origin) = &profile.origin {
+                args.push(format!("--http-header-fields=Origin: {origin}"));
+            }
+        }
         match self.backend {
             Backend::Vlc => {
                 // Delegating to a host VLC would escape network policy and cancellation.
@@ -101,6 +127,7 @@ pub async fn launch(
     log: &Log,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Child>> {
+    player.validate_request(media.stream())?;
     let output = log.writer()?;
     let executable = &player.executable;
     let mut child = media.command(executable, Tool::Player(player.backend))?
@@ -130,6 +157,7 @@ mod tests {
 
     fn stream() -> Stream {
         Stream {
+            request: None,
             variants: vec![Variant {
                 format: crate::model::MediaFormat::Hls,
                 label: None,
@@ -140,6 +168,38 @@ mod tests {
             referer: "https://example.org/".into(),
             subtitle: None,
         }
+    }
+
+    #[test]
+    fn request_profiles_apply_user_agent_and_reject_unsupported_vlc_origin() {
+        let mut stream = stream();
+        stream.request = Some(crate::model::MediaRequest {
+            origin: None,
+            user_agent: Some("Probe Agent".into()),
+        });
+        for (name, expected) in [
+            ("mpv", "--user-agent=Probe Agent"),
+            ("vlc", "--http-user-agent=Probe Agent"),
+        ] {
+            let player = Player::new(name, vec![], None);
+            assert!(player.validate_request(&stream).is_ok());
+            assert!(
+                player
+                    .args(&stream, "best", "Probe")
+                    .contains(&expected.to_owned())
+            );
+        }
+        stream.request.as_mut().unwrap().origin = Some("https://embed.example".into());
+        assert!(
+            Player::new("vlc", vec![], None)
+                .validate_request(&stream)
+                .is_err()
+        );
+        assert!(
+            Player::new("mpv", vec![], None)
+                .args(&stream, "best", "Probe")
+                .contains(&"--http-header-fields=Origin: https://embed.example".to_owned())
+        );
     }
 
     #[test]

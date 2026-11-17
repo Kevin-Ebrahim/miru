@@ -128,6 +128,7 @@ impl HiAnime {
             })
             .transpose()?;
         Ok(Stream {
+            request: None,
             variants,
             referer,
             subtitle,

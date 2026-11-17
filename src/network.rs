@@ -175,6 +175,21 @@ pub struct Http {
 
 impl Http {
     pub fn resolve_media(&self, stream: crate::model::Stream) -> Result<ResolvedMedia> {
+        reqwest::header::HeaderValue::from_str(&stream.referer).context("Invalid media referer")?;
+        if let Some(profile) = &stream.request {
+            if let Some(origin) = &profile.origin {
+                let url = http_url(origin)?;
+                ensure!(
+                    url.origin().ascii_serialization() == *origin,
+                    "Invalid media origin"
+                );
+            }
+            if let Some(agent) = &profile.user_agent {
+                ensure!(agent.len() <= 1024, "Media user agent exceeds limit");
+                reqwest::header::HeaderValue::from_str(agent)
+                    .context("Invalid media user agent")?;
+            }
+        }
         for variant in &stream.variants {
             self.validate(&variant.url)?;
             if let Some(audio) = variant.audio_url() {
@@ -222,6 +237,26 @@ impl Http {
             request = request.header(reqwest::header::REFERER, referer);
         }
 
+        self.response_bytes(request, &url, limit).await
+    }
+
+    pub async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
+        let url = self.validate(url)?;
+        self.response_bytes(self.client.post(url.clone()).json(body), &url, limit)
+            .await
+    }
+
+    async fn response_bytes(
+        &self,
+        request: reqwest::RequestBuilder,
+        url: &Url,
+        limit: usize,
+    ) -> Result<Vec<u8>> {
         let mut response = request
             .send()
             .await
@@ -266,6 +301,7 @@ mod tests {
         use crate::model::{Audio, Stream, Variant};
         let http = super::Http::new(&super::http_url("https://example.com/").unwrap()).unwrap();
         let stream = Stream {
+            request: None,
             variants: vec![Variant {
                 format: crate::model::MediaFormat::Hls,
                 label: None,
@@ -279,6 +315,24 @@ mod tests {
             referer: "https://example.com/".into(),
             subtitle: Some("https://cdn.example/subtitle".into()),
         };
+        for profile in [
+            crate::model::MediaRequest {
+                origin: Some("https://example.com/path".into()),
+                user_agent: None,
+            },
+            crate::model::MediaRequest {
+                origin: Some("https://example.com\r\nInjected: x".into()),
+                user_agent: None,
+            },
+            crate::model::MediaRequest {
+                origin: None,
+                user_agent: Some("agent\r\nInjected: x".into()),
+            },
+        ] {
+            let mut blocked = stream.clone();
+            blocked.request = Some(profile);
+            assert!(http.resolve_media(blocked).is_err());
+        }
         assert!(http.resolve_media(stream.clone()).is_ok());
         for target in 0..3 {
             let mut blocked = stream.clone();

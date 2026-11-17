@@ -185,11 +185,10 @@ impl State {
                     .map(|a| (a.anime.title.clone(), a.anime.provider.clone(), a.mode))
             });
         if let Some((title, provider, mode)) = target {
-            let source = if provider == crate::provider::Source::HiAnime.id() {
-                crate::provider::Source::AnimeGg
-            } else {
-                crate::provider::Source::HiAnime
-            };
+            let source = crate::provider::Source::from_id(&provider).map_or(
+                crate::provider::Source::HiAnime,
+                crate::provider::Source::next,
+            );
             return Some((title, source, mode));
         }
         None

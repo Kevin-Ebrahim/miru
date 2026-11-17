@@ -1,6 +1,7 @@
 mod animegg;
 mod hianime;
 mod hls;
+mod kaa;
 mod parser;
 
 pub use parser::run_helper as run_parser_helper;
@@ -12,7 +13,7 @@ use crate::{
 use anyhow::{Context, Result, bail};
 
 pub fn downloads_supported(id: &ProviderId) -> bool {
-    *id == Source::HiAnime.id()
+    *id == Source::HiAnime.id() || *id == Source::Kaa.id()
 }
 
 pub fn require_downloads(id: &ProviderId) -> Result<()> {
@@ -30,9 +31,17 @@ pub enum Source {
     HiAnime,
     #[value(name = "animegg")]
     AnimeGg,
+    #[value(name = "kaa")]
+    Kaa,
 }
 
 impl Source {
+    pub fn from_id(id: &ProviderId) -> Option<Self> {
+        [Self::HiAnime, Self::AnimeGg, Self::Kaa]
+            .into_iter()
+            .find(|source| source.id() == *id)
+    }
+
     pub fn id(self) -> ProviderId {
         self.name()
             .to_owned()
@@ -43,24 +52,28 @@ impl Source {
         match self {
             Self::HiAnime => "hianime",
             Self::AnimeGg => "animegg",
+            Self::Kaa => "kaa",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::HiAnime => "HiAnime",
             Self::AnimeGg => "AnimeGG",
+            Self::Kaa => "KAA",
         }
     }
     fn base(self) -> &'static str {
         match self {
             Self::HiAnime => "https://hianime.at/",
             Self::AnimeGg => "https://www.animegg.org/",
+            Self::Kaa => "https://kaa.lt/",
         }
     }
     pub fn next(self) -> Self {
         match self {
             Self::HiAnime => Self::AnimeGg,
-            Self::AnimeGg => Self::HiAnime,
+            Self::AnimeGg => Self::Kaa,
+            Self::Kaa => Self::HiAnime,
         }
     }
 }
@@ -69,6 +82,7 @@ impl Source {
 enum Adapter {
     HiAnime(hianime::HiAnime),
     AnimeGg(animegg::AnimeGg),
+    Kaa(kaa::Kaa),
 }
 
 #[derive(Clone)]
@@ -100,6 +114,10 @@ impl Providers {
                     Source::AnimeGg.id(),
                     Adapter::AnimeGg(animegg::AnimeGg::new(endpoint(Source::AnimeGg))?),
                 ),
+                (
+                    Source::Kaa.id(),
+                    Adapter::Kaa(kaa::Kaa::new(endpoint(Source::Kaa))?),
+                ),
             ],
         })
     }
@@ -121,6 +139,7 @@ impl Providers {
         match self.adapter(id)? {
             Adapter::HiAnime(provider) => Ok(provider.http()),
             Adapter::AnimeGg(provider) => Ok(provider.http()),
+            Adapter::Kaa(provider) => Ok(provider.http()),
         }
     }
 
@@ -129,6 +148,7 @@ impl Providers {
             match self.adapter(id)? {
                 Adapter::HiAnime(provider) => provider.search(query).await,
                 Adapter::AnimeGg(provider) => provider.search(query).await,
+                Adapter::Kaa(provider) => provider.search(query).await,
             }
         }
         .await
@@ -140,6 +160,7 @@ impl Providers {
             match self.adapter(&anime.provider)? {
                 Adapter::HiAnime(provider) => provider.synopsis(anime).await,
                 Adapter::AnimeGg(provider) => provider.synopsis(anime).await,
+                Adapter::Kaa(provider) => provider.synopsis(anime).await,
             }
         }
         .await
@@ -147,7 +168,7 @@ impl Providers {
     }
 
     pub fn mode_specific_episodes(&self, id: &ProviderId) -> bool {
-        matches!(self.adapter(id), Ok(Adapter::AnimeGg(_)))
+        matches!(self.adapter(id), Ok(Adapter::AnimeGg(_) | Adapter::Kaa(_)))
     }
 
     pub async fn episodes(&self, anime: &Anime, mode: Mode) -> Result<Vec<Episode>> {
@@ -155,6 +176,7 @@ impl Providers {
             match self.adapter(&anime.provider)? {
                 Adapter::HiAnime(provider) => provider.episodes(anime).await,
                 Adapter::AnimeGg(provider) => provider.episodes(anime, mode).await,
+                Adapter::Kaa(provider) => provider.episodes(anime, mode).await,
             }
         }
         .await
@@ -172,6 +194,10 @@ impl Providers {
                     let stream = provider.resolve(episode, mode).await?;
                     provider.http().resolve_media(stream)
                 }
+                Adapter::Kaa(provider) => {
+                    let stream = provider.resolve(episode, mode).await?;
+                    provider.http().resolve_media(stream)
+                }
             }
         }
         .await
@@ -184,10 +210,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_source_keeps_its_own_endpoint_and_cycles_once() {
+        let mut source = Source::HiAnime;
+        for expected in [Source::HiAnime, Source::AnimeGg, Source::Kaa] {
+            assert_eq!(source, expected);
+            assert_eq!(Source::from_id(&source.id()), Some(source));
+            let providers = Providers::configured(source, Some("http://127.0.0.1:9/")).unwrap();
+            assert!(
+                providers
+                    .http(&source.id())
+                    .unwrap()
+                    .validate("http://127.0.0.1/video")
+                    .is_ok()
+            );
+            assert!(
+                providers
+                    .http(&source.next().id())
+                    .unwrap()
+                    .validate("http://127.0.0.1/video")
+                    .is_err()
+            );
+            source = source.next();
+        }
+        assert_eq!(source, Source::HiAnime);
+    }
+
+    #[test]
     fn lookup_keeps_provider_network_contexts_separate() {
         let local_id: ProviderId = "second".to_owned().try_into().unwrap();
         let mut providers = Providers::new("http://127.0.0.1:9/").unwrap();
-        // Two configured contexts exercise routing before a second site adapter exists.
+        // Item identity must select the original network context.
         providers.adapters.push((
             local_id.clone(),
             Adapter::HiAnime(hianime::HiAnime::new("http://127.0.0.2:9/").unwrap()),

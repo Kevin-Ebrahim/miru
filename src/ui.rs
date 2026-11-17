@@ -2354,10 +2354,7 @@ mod tests {
         });
         for width in [40, 80, 120] {
             let text = render_text(&mut state, width, 24);
-            assert!(
-                text.contains("F3") && text.contains("Search HiAnime"),
-                "{text}"
-            );
+            assert!(text.contains("F3") && text.contains("Search KAA"), "{text}");
         }
     }
 
@@ -2401,6 +2398,7 @@ mod tests {
         for source in [
             crate::provider::Source::HiAnime,
             crate::provider::Source::AnimeGg,
+            crate::provider::Source::Kaa,
         ] {
             for screen in [Screen::Home, Screen::Search] {
                 for width in [32, 40, 80, 119, 120, 160] {

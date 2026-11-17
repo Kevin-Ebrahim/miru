@@ -283,7 +283,7 @@ async fn run() -> Result<()> {
             library?;
         }
         return result.with_context(|| format!(
-            "Search another provider with: miru --source {} --list --{} <title>. Choose the matching series and episode; history is preserved.",
+            "Search another provider with: miru --source {} --list --{} <title>. Remove any provider URL override when switching sites. Choose the matching series and episode; history is preserved.",
             cli.source.next().name(), mode.as_str()
         ));
     }

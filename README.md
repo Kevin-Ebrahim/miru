@@ -41,9 +41,9 @@ export PATH="$HOME/.cargo/bin:$PATH"
 3. Select an episode and press Enter to play it.
 
 Use Tab on Home to select audio or quality, then the arrow keys to change it.
-Press F2 or click the provider name on Home or Search to switch between HiAnime
-and AnimeGG. HiAnime remains the default. AnimeGG supports playback only;
-downloads are available through HiAnime.
+Press F2 or click the provider name on Home or Search to switch between HiAnime,
+AnimeGG and KAA. HiAnime remains the default. AnimeGG supports playback only.
+KAA requires mpv; its media hosts need headers that VLC cannot apply.
 
 | Key | Action |
 | --- | --- |

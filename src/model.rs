@@ -157,8 +157,18 @@ impl Variant {
     }
 }
 
+/// One validated header profile applies to video, external audio and subtitles.
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Stream {
+    pub request: Option<MediaRequest>,
     pub variants: Vec<Variant>,
     pub referer: String,
     pub subtitle: Option<String>,
@@ -176,12 +186,15 @@ impl Serialize for Stream {
             referer: &'a str,
             subtitle: &'a Option<String>,
             audio: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            request: &'a Option<MediaRequest>,
         }
         Export {
             variants: &self.variants,
             referer: &self.referer,
             subtitle: &self.subtitle,
             audio: self.variants.first().and_then(Variant::audio_url),
+            request: &self.request,
         }
         .serialize(serializer)
     }

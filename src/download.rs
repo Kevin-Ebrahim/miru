@@ -82,6 +82,17 @@ fn truncate(value: &str, bytes: usize) -> &str {
     value[..end].trim_end_matches(['.', ' '])
 }
 
+fn request_headers(cmd: &mut tokio::process::Command, stream: &crate::model::Stream) {
+    if let Some(profile) = &stream.request {
+        if let Some(agent) = &profile.user_agent {
+            cmd.args(["-user_agent", agent]);
+        }
+        if let Some(origin) = &profile.origin {
+            cmd.args(["-headers", &format!("Origin: {origin}\r\n")]);
+        }
+    }
+}
+
 /// Download to a unique temporary file. Cancellation removes only this task's partial output.
 /// Never clobber an existing episode, and mux separate audio/subtitles when available.
 pub async fn download(
@@ -126,11 +137,13 @@ pub async fn download(
     if variant.format == crate::model::MediaFormat::Hls {
         cmd.args(["-extension_picky", "0"]);
     }
+    request_headers(&mut cmd, stream);
     cmd.args(["-referer", &stream.referer, "-i", &variant.url]);
 
     let mut input = 1;
     let audio_index = variant.audio_url().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
+        request_headers(&mut cmd, stream);
         cmd.args([
             "-extension_picky",
             "0",
@@ -145,6 +158,7 @@ pub async fn download(
     });
     let subtitle_index = stream.subtitle.as_ref().map(|url| {
         cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
+        request_headers(&mut cmd, stream);
         cmd.args(["-referer", &stream.referer, "-i", url]);
         input
     });

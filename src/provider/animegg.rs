@@ -108,6 +108,7 @@ impl AnimeGg {
                 })
                 .await?;
                 Ok::<_, anyhow::Error>(Stream {
+                    request: None,
                     variants,
                     referer: format!("{}/", self.base.origin().ascii_serialization()),
                     subtitle: None,

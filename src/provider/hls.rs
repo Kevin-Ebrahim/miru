@@ -356,6 +356,7 @@ mod tests {
         assert_eq!(variants[1].audio_url(), variants[0].audio_url());
         assert!(variants[2].audio.is_none());
         let stream = Stream {
+            request: None,
             variants,
             subtitle: None,
             referer: String::new(),
@@ -387,6 +388,7 @@ mod tests {
         )
         .unwrap();
         let stream = Stream {
+            request: None,
             variants,
             subtitle: Some("https://cdn.example/subtitle.vtt".into()),
             referer: String::new(),
@@ -452,6 +454,7 @@ mod tests {
     fn mixed_hls_selects_video_for_best_and_worst() {
         let master = Url::parse("https://cdn.example/master.m3u8").unwrap();
         let stream = Stream {
+            request: None,
             variants: parse_playlist(
                 include_str!("../../tests/fixtures/mixed-media.m3u8"),
                 &master,
@@ -496,6 +499,7 @@ mod tests {
                 "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Main\",DEFAULT=YES,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=200000,AUDIO=\"a\"{codecs}\nvideo.m3u8\n"
             );
             let stream = Stream {
+                request: None,
                 variants: parse_playlist(&text, &master).unwrap(),
                 subtitle: None,
                 referer: String::new(),
@@ -550,6 +554,7 @@ mod tests {
                 "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Main\",AUTOSELECT=YES,{default}URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:RESOLUTION=128x96,AUDIO=\"a\"\nvideo.m3u8\n"
             );
             let stream = Stream {
+                request: None,
                 variants: parse_playlist(&text, &master).unwrap(),
                 subtitle: None,
                 referer: String::new(),
@@ -629,6 +634,7 @@ mod tests {
         assert!(variants[1].audio_url().is_none());
         assert!(variants[2].audio.is_none());
         let stream = Stream {
+            request: None,
             variants,
             subtitle: None,
             referer: String::new(),
@@ -643,6 +649,7 @@ mod tests {
             }
         }
         let embedded = Stream {
+            request: None,
             variants: vec![stream.variants[1].clone()],
             subtitle: None,
             referer: String::new(),
