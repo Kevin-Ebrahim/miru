@@ -7,10 +7,31 @@ use crate::{
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    text::Line,
-    widgets::{Paragraph, Wrap},
+    layout::{Constraint, Layout, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::path::PathBuf;
+
+fn fit_value(value: &str, width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    if value.width() <= width {
+        return value.into();
+    }
+    let mut result = String::new();
+    for grapheme in value.graphemes(true) {
+        if result.width() + grapheme.width() + 1 > width {
+            break;
+        }
+        result.push_str(grapheme);
+    }
+    if width > 0 {
+        result.push('~');
+    }
+    result
+}
 
 #[derive(Clone, Default)]
 pub struct Overrides {
@@ -31,7 +52,7 @@ pub struct Settings {
     advanced: bool,
     arguments: bool,
     argument: usize,
-    scroll: u16,
+    error: bool,
     edit: Option<Input>,
     message: String,
 }
@@ -46,7 +67,7 @@ impl Settings {
             advanced: false,
             arguments: false,
             argument: 0,
-            scroll: 0,
+            error: false,
             edit: None,
             message: String::new(),
         }
@@ -106,16 +127,33 @@ impl Settings {
         }
     }
     pub fn key(&mut self, key: KeyEvent) -> bool {
-        match key.code {
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_add(3);
+        if self.edit.is_none() {
+            let step = match key.code {
+                KeyCode::PageDown => Some(true),
+                KeyCode::PageUp => Some(false),
+                _ => None,
+            };
+            if let Some(down) = step {
+                let (selected, max) = if self.arguments {
+                    (&mut self.argument, self.saved.player_args.len())
+                } else {
+                    (&mut self.selected, if self.advanced { 5 } else { 3 })
+                };
+                *selected = if down {
+                    selected.saturating_add(3).min(max)
+                } else {
+                    selected.saturating_sub(3)
+                };
+                self.message.clear();
                 return false;
             }
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_sub(3);
-                return false;
-            }
-            _ => {}
+        }
+        if matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k')
+        ) && self.edit.is_none()
+        {
+            self.message.clear();
         }
         if let Some(edit) = &mut self.edit {
             match key.code {
@@ -174,6 +212,10 @@ impl Settings {
         }
         let mut next = self.saved.clone();
         match key.code {
+            KeyCode::Esc if self.advanced => {
+                self.advanced = false;
+                self.selected = 3;
+            }
             KeyCode::Esc | KeyCode::F(4) => self.open = false,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.selected = (self.selected + 1).min(if self.advanced { 5 } else { 3 })
@@ -236,6 +278,7 @@ impl Settings {
     fn save(&mut self, next: Config) -> bool {
         match next.save(&self.path) {
             Ok(()) => {
+                self.error = false;
                 self.saved = next;
                 self.edit = None;
                 self.message =
@@ -243,107 +286,224 @@ impl Settings {
                 true
             }
             Err(error) => {
+                self.error = true;
                 self.message = format!("{error:#}");
                 false
             }
         }
     }
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&self, frame: &mut Frame, state: &crate::state::State) {
+        let palette = if state.colorless {
+            crate::palette::Palette::terminal(true)
+        } else {
+            state.palette
+        };
+        let area = frame.area();
+        let width = area
+            .width
+            .saturating_sub(if area.width >= 40 { 4 } else { 0 })
+            .min(78);
+        let height = area
+            .height
+            .saturating_sub(u16::from(area.height >= 24) * 2)
+            .min(if self.advanced { 28 } else { 24 });
+        let modal = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        let base = Style::default().fg(palette.text).bg(palette.canvas);
+        frame.render_widget(Clear, modal);
+        let block = crate::ui::panel(
+            if self.arguments {
+                " Player arguments "
+            } else {
+                " Settings "
+            }
+            .into(),
+            state,
+            true,
+        )
+        .style(base);
+        let inner = block.inner(modal);
+        frame.render_widget(block, modal);
+        let [header, body, detail, editor, footer] = Layout::vertical([
+            Constraint::Length(u16::from(inner.height >= 12) * 2),
+            Constraint::Min(1),
+            Constraint::Length(if inner.height >= 16 { 4 } else { 2 }),
+            Constraint::Length(if self.edit.is_some() { 3 } else { 0 }),
+            Constraint::Length(if inner.width < 48 { 2 } else { 1 }),
+        ])
+        .areas(inner);
+        frame.render_widget(
+            Paragraph::new("Preferences for your next queue")
+                .style(Style::default().fg(palette.secondary)),
+            header,
+        );
         let names = [
-            "Downloads / Folder",
-            "Playback / Default audio",
-            "Playback / Video quality",
-            "Advanced / Player executable",
-            "Advanced / Player arguments",
-            "Advanced / Compatibility",
+            "Download folder",
+            "Default audio",
+            "Video quality",
+            "Player executable",
+            "Player arguments",
+            "Compatibility",
         ];
-        let mut lines = vec![
-            Line::from("Settings"),
-            Line::from("Enter Change  R Reset  Esc Back  PgUp/PgDn Scroll"),
-            Line::from(""),
-        ];
-        for (i, name) in names
-            .iter()
-            .enumerate()
-            .take(if self.advanced { 6 } else { 4 })
-        {
-            lines.push(Line::from(format!(
-                "{} {}",
-                if self.selected == i { ">" } else { " " },
-                if i == 3 && !self.advanced {
-                    "Advanced…".into()
-                } else {
-                    format!("{name}: {}", self.value(i))
-                }
-            )));
-        }
+        let mut items = Vec::new();
+        let mut selected = 0;
         if self.arguments {
-            lines.clear();
-            lines.push(Line::from("Player arguments"));
-            lines.push(Line::from("Enter Edit/Add  Delete Remove  Esc Back"));
-            for (i, argument) in self
+            for (i, value) in self
                 .saved
                 .player_args
                 .iter()
                 .map(String::as_str)
-                .chain(std::iter::once("Add argument…"))
+                .chain(std::iter::once("+ Add argument"))
                 .enumerate()
             {
-                lines.push(Line::from(format!(
-                    "{} {argument}",
-                    if i == self.argument { ">" } else { " " }
-                )));
+                items.push(ListItem::new(value.to_owned()));
+                if i == self.argument {
+                    selected = i;
+                }
+            }
+        } else {
+            for (i, name) in names
+                .iter()
+                .enumerate()
+                .take(if self.advanced { 6 } else { 4 })
+            {
+                if matches!(i, 0 | 1 | 3) {
+                    if i != 0 {
+                        items.push(ListItem::new(""));
+                    }
+                    items.push(ListItem::new(Line::styled(
+                        match i {
+                            0 => "DOWNLOADS",
+                            1 => "PLAYBACK",
+                            _ => "ADVANCED",
+                        },
+                        Style::default().fg(palette.focus).bold(),
+                    )));
+                }
+                if i == self.selected {
+                    selected = items.len();
+                }
+                let label = if i == 3 && !self.advanced {
+                    "Player options"
+                } else {
+                    *name
+                };
+                let value = if i == 3 && !self.advanced {
+                    if state.ascii { ">" } else { "›" }.into()
+                } else {
+                    self.value(i)
+                };
+                if body.width >= 48 {
+                    let available = usize::from(body.width.saturating_sub(4));
+                    let value = fit_value(&value, available.saturating_sub(label.len() + 2));
+                    let gap = available.saturating_sub(
+                        label.len() + unicode_width::UnicodeWidthStr::width(value.as_str()),
+                    );
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::raw(format!("{label}{}", " ".repeat(gap))),
+                        Span::styled(value, Style::default().bold()),
+                    ])));
+                } else {
+                    items.push(ListItem::new(vec![
+                        Line::from(label),
+                        Line::styled(format!("  {value}"), Style::default().fg(palette.secondary)),
+                    ]));
+                }
             }
         }
-        if let Some(edit) = &self.edit {
-            lines.push(Line::from(format!(
-                "Edit: {}|{}",
-                &edit.text[..edit.cursor],
-                &edit.text[edit.cursor..]
-            )));
-            lines.push(Line::from("Enter Save  Esc Cancel"));
-        }
-        lines.push(Line::from(format!(
-            "Resolved destination: {}",
-            self.download()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|e| e.to_string())
-        )));
-        let o = &self.overrides;
-        let active: Vec<_> = [
-            (o.download.is_some(), "folder"),
-            (o.audio.is_some(), "audio"),
-            (o.quality.is_some(), "quality"),
-            (o.player.is_some(), "player"),
-            (o.args.is_some(), "arguments"),
-            (o.backend.is_some(), "compatibility"),
-        ]
-        .into_iter()
-        .filter_map(|(yes, name)| yes.then_some(name))
-        .collect();
-        if !active.is_empty() {
-            lines.push(Line::from(format!(
-                "CLI overrides this run: {}",
-                active.join(", ")
-            )));
-        }
-        lines.push(Line::from(self.message.clone()));
-        let rows: usize = lines
-            .iter()
-            .map(|line| {
-                line.width()
-                    .max(1)
-                    .div_ceil(usize::from(frame.area().width.max(1)))
-            })
-            .sum();
-        let scroll = self
-            .scroll
-            .min(rows.saturating_sub(1).min(u16::MAX as usize) as u16);
+        let mut selection = ListState::default();
+        selection.select(Some(selected));
+        frame.render_stateful_widget(
+            List::new(items)
+                .style(base)
+                .highlight_style(palette.selection)
+                .highlight_symbol("> "),
+            body,
+            &mut selection,
+        );
+        let description = if !self.message.is_empty() {
+            self.message.clone()
+        } else if self.arguments {
+            "Each entry is one argument. Spaces are kept; no shell expansion.".into()
+        } else {
+            match self.selected {
+                0 => format!(
+                    "Destination: {}\nReset restores the automatic Downloads/miru folder.",
+                    self.download()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|e| e.to_string())
+                ),
+                1 => "Preferred language for new queues. Existing queues keep their audio.".into(),
+                2 => "Preferred quality; the closest available stream is used.".into(),
+                3 => if self.advanced {
+                    "Executable name or path. Defaults to mpv."
+                } else {
+                    "Configure the player, its arguments and compatibility mode."
+                }
+                .into(),
+                4 => "Add, edit or remove individual player arguments.".into(),
+                _ => "Automatic infers mpv or VLC from the executable name.".into(),
+            }
+        };
+        let overridden = match self.selected {
+            0 => self.overrides.download.is_some(),
+            1 => self.overrides.audio.is_some(),
+            2 => self.overrides.quality.is_some(),
+            3 => self.overrides.player.is_some(),
+            4 => self.overrides.args.is_some(),
+            _ => self.overrides.backend.is_some(),
+        };
+        let description = if overridden {
+            format!("CLI override active for this run. Saved default shown above.\n{description}")
+        } else {
+            description
+        };
         frame.render_widget(
-            Paragraph::new(lines)
+            Paragraph::new(description)
                 .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            frame.area(),
+                .style(Style::default().fg(if self.message.is_empty() {
+                    palette.secondary
+                } else if self.error {
+                    palette.error
+                } else {
+                    palette.success
+                })),
+            detail,
+        );
+        if let Some(edit) = &self.edit {
+            let input = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(palette.focus))
+                .title(" Edit value ");
+            let input_area = input.inner(editor);
+            frame.render_widget(input, editor);
+            let cursor = unicode_width::UnicodeWidthStr::width(&edit.text[..edit.cursor]);
+            let offset = cursor.saturating_sub(usize::from(input_area.width.saturating_sub(1)));
+            frame.render_widget(
+                Paragraph::new(edit.text.as_str())
+                    .scroll((0, offset.min(u16::MAX as usize) as u16)),
+                input_area,
+            );
+            if input_area.width > 0 && input_area.height > 0 {
+                frame.set_cursor_position((input_area.x + (cursor - offset) as u16, input_area.y));
+            }
+        }
+        let hint = if self.edit.is_some() {
+            "Enter Save   Esc Cancel"
+        } else if self.arguments {
+            "Enter Edit/Add   Del Remove   Esc Back"
+        } else {
+            "Enter Change   R Reset   Esc Back"
+        };
+        frame.render_widget(
+            Paragraph::new(hint)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(palette.focus)),
+            footer,
         );
     }
 }
@@ -405,10 +565,26 @@ mod tests {
         assert!(!settings.advanced);
         settings.key(key(KeyCode::Enter));
         assert!(settings.advanced);
-        for width in [30, 50, 100] {
+        settings.key(key(KeyCode::Down));
+        settings.key(key(KeyCode::Down));
+        for (width, height) in [(30, 12), (30, 25), (50, 25), (100, 25)] {
             let mut terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 25)).unwrap();
-            terminal.draw(|frame| settings.render(frame)).unwrap();
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    settings.render(
+                        frame,
+                        &crate::state::State::new(
+                            String::new(),
+                            Mode::Sub,
+                            "best".into(),
+                            false,
+                            false,
+                            false,
+                        ),
+                    )
+                })
+                .unwrap();
             let text: String = terminal
                 .backend()
                 .buffer()

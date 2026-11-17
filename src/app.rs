@@ -1776,10 +1776,9 @@ impl App {
                         terminal.clear()?;
                     }
                     terminal.draw(|frame| {
+                        ui::render(frame, &mut self.state, &art);
                         if let Some(s) = self.settings.as_ref().filter(|s| s.open) {
-                            s.render(frame);
-                        } else {
-                            ui::render(frame, &mut self.state, &art);
+                            s.render(frame, &self.state);
                         }
                     })?;
                     Ok(())

@@ -427,7 +427,7 @@ manually run `CodeQL weekly` once to verify analysis and result uploads.
 
 Press F4 to open Settings and Esc to return to the previous screen. Choose a row
 with the arrow keys, press Enter to change it, or R to restore its default.
-PgUp/PgDn scroll the page in short terminals. Advanced contains the player
+PgUp/PgDn move through settings in short terminals; the selected row stays visible. Advanced contains the player
 executable, compatibility mode, and an argument list; arguments are passed
 individually without shell expansion. Use Enter to add/edit an argument and
 Delete to remove it.

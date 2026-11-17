@@ -248,7 +248,7 @@ pub fn cover_area(state: &State, area: Rect) -> Rect {
     preview_regions(state, panels(state, area).1).0
 }
 
-fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
+pub(crate) fn panel(title: String, state: &State, focused: bool) -> Block<'static> {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(if state.ascii {
