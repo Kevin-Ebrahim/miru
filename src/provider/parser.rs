@@ -27,6 +27,12 @@ static WORKERS: Semaphore = Semaphore::const_new(2);
 
 #[derive(Serialize, Deserialize)]
 pub(super) enum Request {
+    GgSearch { page: String, base: Url },
+    GgSynopsis { page: String },
+    GgEpisodes { page: String, base: Url, mode: Mode },
+    GgEmbeds { page: String, base: Url, mode: Mode },
+    GgSources { page: String, base: Url },
+
     Search { page: String, base: Url },
     Synopsis { page: String },
     Episodes { page: String, slug: String },
@@ -194,6 +200,22 @@ pub fn run_helper() -> Result<bool> {
     );
     let request: Request = serde_json::from_slice(&input)?;
     let result = match request {
+        Request::GgSearch { page, base } => {
+            super::animegg::search(&page, &base).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
+        Request::GgSynopsis { page } => {
+            super::animegg::synopsis(&page).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
+        Request::GgEpisodes { page, base, mode } => {
+            super::animegg::episodes(&page, &base, mode).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
+        Request::GgEmbeds { page, base, mode } => {
+            super::animegg::embeds(&page, &base, mode).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
+        Request::GgSources { page, base } => {
+            super::animegg::sources(&page, &base).and_then(|v| Ok(serde_json::to_value(v)?))
+        }
+
         Request::Search { page, base } => {
             parse_search(&page, &base).and_then(|value| Ok(serde_json::to_value(value)?))
         }

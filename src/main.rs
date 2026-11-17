@@ -55,7 +55,7 @@ enum Images {
         "--quality sets playback/download quality and the TUI's initial quality.\n",
         "Player options apply to playback; --download-dir applies to downloads.\n",
         "Appearance options apply to the TUI. State/provider/cache options remain available.\n\n",
-        "Keys: / search, Enter select/play, s sub/dub, Q quality, ? help.\n",
+        "Keys: / search, Enter select/play, F2 provider, s sub/dub, Q quality, ? help.\n",
         "The shell ani-cli installation and history are left untouched."
     )
 )]
@@ -116,8 +116,12 @@ struct Cli {
     select_nth: usize,
     #[arg(short = 'e', long, default_value = "1", allow_hyphen_values = true)]
     episode: String,
-    #[arg(long, env = "MIRU_PROVIDER", default_value = "https://hianime.at/")]
-    provider: String,
+    /// Catalogue to search; saved items retain their own provider
+    #[arg(long, value_enum, env = "MIRU_SOURCE", default_value = "hianime")]
+    source: provider::Source,
+    /// Override the selected source's base URL for this run
+    #[arg(long, env = "MIRU_PROVIDER")]
+    provider: Option<String>,
     #[arg(long, env = "MIRU_STATE_DIR")]
     state_dir: Option<PathBuf>,
     #[arg(long, env = "MIRU_CACHE_DIR")]
@@ -137,12 +141,14 @@ impl Cli {
             cli.theme = theme::ThemeMode::from_str(value, false)
                 .map_err(|error| anyhow::anyhow!("Invalid ANI_WATCH_THEME: {error}"))?;
         }
-        if matches.value_source("provider") == Some(ValueSource::DefaultValue)
+        if cli.provider.is_none()
             && let Some(value) = std::env::var_os("ANI_WATCH_PROVIDER")
         {
-            cli.provider = value
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("ANI_WATCH_PROVIDER is not valid UTF-8"))?;
+            cli.provider = Some(
+                value
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("ANI_WATCH_PROVIDER is not valid UTF-8"))?,
+            );
         }
         cli.state_dir = cli
             .state_dir
@@ -178,7 +184,7 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
-    let provider = provider::Providers::new(&cli.provider)?;
+    let provider = provider::Providers::configured(cli.source, cli.provider.as_deref())?;
     let query = cli.query.join(" ");
     let state_dir = cli
         .state_dir
@@ -311,6 +317,7 @@ async fn run() -> Result<()> {
         cli.ascii,
         !cli.no_animation,
     );
+    state.search.source = cli.source;
     state.colorless = colorless;
     state.history.replace_entries(library.entries);
     if cli.resume {
@@ -346,7 +353,7 @@ async fn run_cli(
 ) -> Result<()> {
     let query = cli.query.join(" ");
     ensure!(!query.trim().is_empty(), "Provide a search query");
-    let mut results = provider.search(&Default::default(), &query).await?;
+    let mut results = provider.search(&cli.source.id(), &query).await?;
     if cli.exact {
         results.retain(|a| normalized(&a.title) == normalized(&query));
     }

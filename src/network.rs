@@ -267,6 +267,8 @@ mod tests {
         let http = super::Http::new(&super::http_url("https://example.com/").unwrap()).unwrap();
         let stream = Stream {
             variants: vec![Variant {
+                format: crate::model::MediaFormat::Hls,
+                label: None,
                 height: 720,
                 url: "https://cdn.example/video".into(),
                 audio: Some(Audio {

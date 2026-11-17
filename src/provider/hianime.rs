@@ -512,7 +512,13 @@ pub(super) fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
         {
             let url = http_url(master.join(line)?.as_str())?.to_string();
             reserve(url.len())?;
-            variants.push(Variant { height, url, audio });
+            variants.push(Variant {
+                format: crate::model::MediaFormat::Hls,
+                label: None,
+                height,
+                url,
+                audio,
+            });
         }
     }
     if variants.is_empty() && excluded_audio {
@@ -521,6 +527,8 @@ pub(super) fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
     if variants.is_empty() && text.contains("#EXTINF:") {
         reserve(master.as_str().len())?;
         variants.push(Variant {
+            format: crate::model::MediaFormat::Hls,
+            label: None,
             height: 0,
             url: master.to_string(),
             audio: None,

@@ -41,6 +41,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 3. Select an episode and press Enter to play it.
 
 Use Tab on Home to select audio or quality, then the arrow keys to change it.
+Press F2 or click the provider name on Home or Search to switch between HiAnime
+and AnimeGG. HiAnime remains the default.
 
 | Key | Action |
 | --- | --- |
@@ -49,6 +51,7 @@ Use Tab on Home to select audio or quality, then the arrow keys to change it.
 | `s` / Shift+Q | Change audio / quality |
 | Alt+h | Open history |
 | Space, then `d` | Mark episodes, then download them |
+| F2 | Change search provider |
 | F1 | Show all controls |
 | Ctrl+C | Quit |
 
@@ -62,6 +65,7 @@ or use `--download-dir PATH` to override it for one run.
 
 ```sh
 miru frieren
+miru --source animegg "Cowboy Bebop"
 miru --continue
 miru --play frieren -e 1-3 -q 720p
 miru --download frieren -e 1-3 --download-dir ./downloads
@@ -74,7 +78,7 @@ JSON output, configuration, history migration and development checks.
 
 - If covers render incorrectly, try `miru --images halfblocks` or `--images off`.
 - For plain output, use `miru --images off --ascii --no-animation`.
-- If a request fails, press F5 to retry. Miru is an unofficial HiAnime client;
+- If a request fails, press F5 to retry. Miru is an unofficial anime client;
   provider outages and site changes can interrupt search or playback.
 
 ## License and credits

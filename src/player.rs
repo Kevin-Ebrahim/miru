@@ -131,6 +131,8 @@ mod tests {
     fn stream() -> Stream {
         Stream {
             variants: vec![Variant {
+                format: crate::model::MediaFormat::Hls,
+                label: None,
                 height: 720,
                 url: "https://cdn.example/video.m3u8".into(),
                 audio: None,

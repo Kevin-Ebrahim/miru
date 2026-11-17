@@ -290,6 +290,7 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
     state.view.list = None;
     state.view.cover = None;
     state.view.help_area = None;
+    state.view.source_setting = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
     frame.render_widget(
@@ -574,7 +575,10 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         );
     }
     let field = Rect::new(x, y + logo_height + gap, width, box_height);
-    let block = panel(String::new(), state, state.focus != Focus::List)
+    let source = format!(" F2 {} ", state.search.source.label());
+    state.view.source_setting =
+        Some(Rect::new(field.x + 1, field.y, source.width() as u16, 1).intersection(field));
+    let block = panel(source, state, state.focus != Focus::List)
         .style(Style::default().bg(palette(state).surface));
     let inner = block.inner(field);
     frame.render_widget(block, field);
@@ -789,6 +793,12 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
             nav.push(Span::styled("History", accent(state).underlined()));
         }
     }
+    if inline_search(state, area.width) {
+        let label = format!("F2 {}  ", state.search.source.label());
+        let x = area.x + Line::from(nav.clone()).width() as u16;
+        state.view.source_setting = Some(Rect::new(x, area.y, label.width() as u16, 1));
+        nav.push(Span::styled(label, muted(state)));
+    }
     let navigation = Line::from(nav);
     let nav_width = navigation.width() as u16;
     let [left, middle, right] = Layout::horizontal([
@@ -830,11 +840,19 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     }
 }
 
-fn render_input(frame: &mut Frame, state: &State, area: Rect) {
+fn render_input(frame: &mut Frame, state: &mut State, area: Rect) {
     let title = if state.focus == Focus::Range {
         " Mark episodes / 1-3, 5 "
     } else {
         " Search "
+    };
+    let title = if state.screen == Screen::Search && !state.details {
+        let label = format!("F2 {}", state.search.source.label());
+        state.view.source_setting =
+            Some(Rect::new(area.x + 11, area.y, label.width() as u16, 1).intersection(area));
+        format!(" Search / {label} ")
+    } else {
+        title.to_owned()
     };
     let block = panel(
         format!(
@@ -2002,6 +2020,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("H", "Home"),
             ("/", "Search"),
+            ("F2", "Change search provider"),
             ("Alt+h", "History"),
             ("j/k / Up/Down", "Move or scroll"),
             ("Ctrl+n/p", "Next / previous item"),
@@ -2137,6 +2156,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
 fn render_help(frame: &mut Frame, state: &mut State) {
     state.view.list = None;
     state.view.cover = None;
+    state.view.source_setting = None;
     state.view.audio_setting = None;
     state.view.quality_setting = None;
     let area = frame.area();
@@ -2296,6 +2316,44 @@ mod tests {
         backend::{Backend, TestBackend},
     };
     use ratatui_image::picker::Picker;
+
+    #[test]
+    fn provider_selector_is_visible_and_clickable_on_compact_and_wide_search() {
+        for source in [
+            crate::provider::Source::HiAnime,
+            crate::provider::Source::AnimeGg,
+        ] {
+            for screen in [Screen::Home, Screen::Search] {
+                for width in [32, 40, 80, 119, 120, 160] {
+                    let mut state = State::new(
+                        "Probe".into(),
+                        Mode::Dub,
+                        "1080p".into(),
+                        false,
+                        false,
+                        false,
+                    );
+                    state.screen = screen;
+                    state.search.source = source;
+                    let text = render_text(&mut state, width, 24);
+                    let area = state.view.source_setting.expect("provider selector");
+                    let visible: String = text
+                        .lines()
+                        .nth(area.y as usize)
+                        .unwrap()
+                        .chars()
+                        .skip(area.x as usize)
+                        .take(area.width as usize)
+                        .collect();
+                    assert!(
+                        visible.contains(source.label()),
+                        "{width} {screen:?}: {visible:?}\n{text}"
+                    );
+                    assert!(text.contains("DUB") && text.contains("1080p"), "{text}");
+                }
+            }
+        }
+    }
 
     fn render_text(state: &mut State, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

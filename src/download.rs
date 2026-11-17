@@ -114,6 +114,7 @@ pub async fn download(
     let mut cmd = media.command("ffmpeg", Tool::Download)?;
     cmd.args([
         "-nostdin",
+        "-xerror",
         "-y",
         "-loglevel",
         "warning",
@@ -122,14 +123,10 @@ pub async fn download(
         "-nostats",
     ]);
     cmd.args(crate::network::MEDIA_INPUT_OPTIONS);
-    cmd.args([
-        "-extension_picky",
-        "0",
-        "-referer",
-        &stream.referer,
-        "-i",
-        &variant.url,
-    ]);
+    if variant.format == crate::model::MediaFormat::Hls {
+        cmd.args(["-extension_picky", "0"]);
+    }
+    cmd.args(["-referer", &stream.referer, "-i", &variant.url]);
 
     let mut input = 1;
     let audio_index = variant.audio_url().map(|url| {

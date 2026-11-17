@@ -68,6 +68,7 @@ pub enum Synopsis {
 
 #[derive(Clone, Default)]
 pub struct SearchState {
+    pub source: crate::provider::Source,
     pub query: Input,
     results: TitleList<Anime>,
     pub results_query: String,
@@ -113,6 +114,8 @@ impl HistoryState {
 
 #[derive(Clone, Default)]
 pub struct EpisodesState {
+    pub mode: Option<Mode>,
+    pub pending_number: Option<String>,
     pub anime: Option<Anime>,
     pub items: Vec<Episode>,
     pub selected: usize,

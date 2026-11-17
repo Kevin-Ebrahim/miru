@@ -163,10 +163,17 @@ async fn run(
     };
 
     let (variant, fallback) = resolved.stream().select(&request.quality);
+    let label = variant.label.clone().unwrap_or_else(|| {
+        if variant.height == 0 {
+            "unknown quality".into()
+        } else {
+            format!("{}p", variant.height)
+        }
+    });
     let quality_note = if fallback {
-        format!("{}p ({} unavailable)", variant.height, request.quality)
+        format!("{label} ({} unavailable)", request.quality)
     } else {
-        format!("{}p", variant.height)
+        label
     };
 
     let _ = notify.send(Event {

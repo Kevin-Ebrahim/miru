@@ -142,11 +142,12 @@ impl App {
 
         let generation = self.state.search_generation;
         let query = self.state.search.query.text.clone();
+        let source = self.state.search.source;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
 
         self.search_task = Some(tokio::spawn(async move {
-            let result = provider.search(&Default::default(), &query).await;
+            let result = provider.search(&source.id(), &query).await;
             let _ = tx.send(Message::Search(generation, result));
         }));
     }
@@ -217,7 +218,16 @@ impl App {
             && self.state.search.results_query != self.state.search.query.text
         {
             self.search();
-        } else if screen == Screen::Episodes && self.state.episodes.items.is_empty() {
+        } else if screen == Screen::Episodes
+            && (self.state.episodes.items.is_empty()
+                || (self
+                    .state
+                    .episodes
+                    .anime
+                    .as_ref()
+                    .is_some_and(|a| self.provider.mode_specific_episodes(&a.provider))
+                    && self.state.episodes.mode != Some(self.state.mode)))
+        {
             self.load_episodes();
         }
     }
@@ -273,6 +283,8 @@ impl App {
             self.state.episodes.marked.clear();
         }
         if !same_series {
+            self.state.episodes.mode = None;
+            self.state.episodes.pending_number = None;
             self.state.episodes.items.clear();
             self.state.episodes.selected = 0;
             self.state.view.list_offsets[Screen::Episodes as usize] = 0;
@@ -320,6 +332,18 @@ impl App {
         let Some(anime) = self.state.episodes.anime.clone() else {
             return;
         };
+        if self.provider.mode_specific_episodes(&anime.provider)
+            && self.state.episodes.mode != Some(self.state.mode)
+        {
+            if let Some(episode) = self.state.episodes.items.get(self.state.episodes.selected) {
+                self.state.episodes.pending_number = Some(episode.number.clone());
+            }
+            self.state.episodes.items.clear();
+            self.state.episodes.marked.clear();
+            self.state.episodes.range.set(String::new());
+            self.state.episodes.selected = 0;
+        }
+        self.state.episodes.mode = Some(self.state.mode);
         abort(&mut self.episode_task);
         self.state.episode_generation += 1;
 
@@ -586,7 +610,7 @@ impl App {
                             .episodes
                             .items
                             .get(self.state.episodes.selected)
-                            .map(Episode::source_id);
+                            .map(|e| (e.source_id(), e.number.clone()));
 
                         self.state.episodes.items = episodes;
                         self.state.episodes.marked = self
@@ -599,15 +623,31 @@ impl App {
                             .map(|(i, _)| i)
                             .collect();
                         self.state.episodes.selected = selected
-                            .and_then(|id| {
+                            .and_then(|(id, number)| {
                                 self.state
                                     .episodes
                                     .items
                                     .iter()
                                     .position(|e| e.source_id() == id)
+                                    .or_else(|| {
+                                        self.state
+                                            .episodes
+                                            .items
+                                            .iter()
+                                            .position(|e| e.number == number)
+                                    })
                             })
                             .unwrap_or(0);
 
+                        if let Some(number) = self.state.episodes.pending_number.take() {
+                            self.state.episodes.selected = self
+                                .state
+                                .episodes
+                                .items
+                                .iter()
+                                .position(|e| e.number == number)
+                                .unwrap_or(0);
+                        }
                         self.state.request_error = None;
                         self.state.message("", false);
                         self.select_continuation();
@@ -731,6 +771,16 @@ impl App {
                 self.last_click = None;
                 self.state.cover_view = self.state.selected_anime().cloned();
                 self.state.view.text_selection = None;
+                return None;
+            }
+            if self
+                .state
+                .view
+                .source_setting
+                .is_some_and(|area| area.contains(position))
+            {
+                self.last_click = None;
+                self.cycle_source();
                 return None;
             }
             if self
@@ -910,9 +960,41 @@ impl App {
         self.state.help_query.set(String::new());
     }
 
+    fn cycle_source(&mut self) {
+        if self.state.help
+            || self.state.details
+            || !matches!(self.state.screen, Screen::Home | Screen::Search)
+        {
+            return;
+        }
+        self.state.search.source = self.state.search.source.next();
+        abort(&mut self.search_task);
+        self.cancel_synopsis();
+        self.search_due = None;
+        self.state.invalidate_search();
+        self.state.search.replace_results(vec![]);
+        self.state.search.results_query.clear();
+        if self.state.screen == Screen::Search {
+            self.search();
+        } else {
+            self.state.loading = false;
+        }
+    }
+
     fn toggle_audio(&mut self) {
         self.state.mode.toggle();
         self.settings();
+        if self.state.screen == Screen::Episodes
+            && self
+                .state
+                .episodes
+                .anime
+                .as_ref()
+                .is_some_and(|a| self.provider.mode_specific_episodes(&a.provider))
+        {
+            self.state.episodes.continuation = None;
+            self.load_episodes();
+        }
         self.state.message("", false);
     }
 
@@ -1027,6 +1109,11 @@ impl App {
                 KeyCode::F(5) => self.state.art_revision += 1,
                 _ => {}
             }
+            return;
+        }
+
+        if key.code == KeyCode::F(2) && !self.state.help && !self.state.details {
+            self.cycle_source();
             return;
         }
 
@@ -1640,6 +1727,104 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn changing_source_discards_stale_results_and_preserves_existing_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State::new(
+            "Probe".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        state.screen = Screen::Home;
+        let original = anime("probe", "Probe");
+        let episode = Episode {
+            id: "1".into(),
+            provider: original.provider.clone(),
+            number: "1".into(),
+            title: String::new(),
+        };
+        state.activity = Some(Activity {
+            anime: original.clone(),
+            episodes: vec![episode],
+            index: 0,
+            remaining: VecDeque::new(),
+            mode: Mode::Sub,
+            quality: "best".into(),
+            quality_note: String::new(),
+            kind: JobKind::Playback,
+            phase: JobPhase::Running,
+            message: String::new(),
+        });
+        state.search.replace_results(vec![original.clone()]);
+        let mut app = test_app(state, dir.path());
+        let old = app.state.search_generation;
+        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
+        render_mouse_view(&mut app, 80, 24);
+        let area = app.state.view.source_setting.unwrap();
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x + 1,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        assert!(app.state.search.results().is_empty());
+        app.message(Message::Search(old, Ok(vec![original.clone()])));
+        assert!(app.state.search.results().is_empty());
+        assert_eq!(app.state.activity.as_ref().unwrap().anime, original);
+        assert_eq!(
+            app.state.activity.as_ref().unwrap().phase,
+            JobPhase::Running
+        );
+        app.back_stack.push(Visit::Search(Box::default(), 0));
+        app.back();
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        app.jobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_animegg_audio_clears_old_rows_and_restores_actual_episode_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        let mut app = test_app(state, dir.path());
+        let source = crate::provider::Source::AnimeGg;
+        app.provider = Providers::configured(source, Some("http://127.0.0.1:9/")).unwrap();
+        app.state.screen = Screen::Episodes;
+        let mut series = anime("probe", "Probe");
+        series.provider = source.id();
+        app.state.episodes.anime = Some(series);
+        app.state.episodes.mode = Some(Mode::Sub);
+        let episode = Episode {
+            id: "sub-special".into(),
+            provider: source.id(),
+            number: "1.5".into(),
+            title: "Special".into(),
+        };
+        app.state.episodes.items = vec![episode.clone()];
+        app.state.episodes.marked.insert(0);
+        app.toggle_audio();
+        assert!(app.state.episodes.items.is_empty());
+        assert!(app.state.episodes.marked.is_empty());
+        app.start([0].into(), JobKind::Playback);
+        assert!(app.state.activity.is_none());
+        let mut first = episode.clone();
+        first.id = "dub-first".into();
+        first.number = "1".into();
+        let mut special = episode;
+        special.id = "dub-special".into();
+        app.message(Message::Episodes(
+            app.state.episode_generation,
+            Ok(vec![first, special]),
+        ));
+        assert_eq!(app.state.episodes.selected, 1);
+        assert_eq!(app.state.mode, Mode::Dub);
+        app.jobs.shutdown().await.unwrap();
+    }
 
     fn source(id: &str) -> SourceId {
         SourceId {

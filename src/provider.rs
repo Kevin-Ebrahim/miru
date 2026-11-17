@@ -1,3 +1,4 @@
+mod animegg;
 mod hianime;
 mod parser;
 
@@ -9,9 +10,52 @@ use crate::{
 };
 use anyhow::{Result, bail};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Source {
+    #[default]
+    #[value(name = "hianime")]
+    HiAnime,
+    #[value(name = "animegg")]
+    AnimeGg,
+}
+
+impl Source {
+    pub fn id(self) -> ProviderId {
+        self.name()
+            .to_owned()
+            .try_into()
+            .expect("built-in provider ID")
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::HiAnime => "hianime",
+            Self::AnimeGg => "animegg",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::HiAnime => "HiAnime",
+            Self::AnimeGg => "AnimeGG",
+        }
+    }
+    fn base(self) -> &'static str {
+        match self {
+            Self::HiAnime => "https://hianime.at/",
+            Self::AnimeGg => "https://www.animegg.org/",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::HiAnime => Self::AnimeGg,
+            Self::AnimeGg => Self::HiAnime,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Adapter {
     HiAnime(hianime::HiAnime),
+    AnimeGg(animegg::AnimeGg),
 }
 
 #[derive(Clone)]
@@ -20,12 +64,30 @@ pub struct Providers {
 }
 
 impl Providers {
+    #[cfg(test)]
     pub fn new(base: &str) -> Result<Self> {
+        Self::configured(Source::HiAnime, Some(base))
+    }
+
+    pub fn configured(source: Source, base: Option<&str>) -> Result<Self> {
+        let endpoint = |kind: Source| {
+            if kind == source {
+                base.unwrap_or(kind.base())
+            } else {
+                kind.base()
+            }
+        };
         Ok(Self {
-            adapters: vec![(
-                ProviderId::default(),
-                Adapter::HiAnime(hianime::HiAnime::new(base)?),
-            )],
+            adapters: vec![
+                (
+                    Source::HiAnime.id(),
+                    Adapter::HiAnime(hianime::HiAnime::new(endpoint(Source::HiAnime))?),
+                ),
+                (
+                    Source::AnimeGg.id(),
+                    Adapter::AnimeGg(animegg::AnimeGg::new(endpoint(Source::AnimeGg))?),
+                ),
+            ],
         })
     }
 
@@ -45,30 +107,42 @@ impl Providers {
     pub fn http(&self, id: &ProviderId) -> Result<Http> {
         match self.adapter(id)? {
             Adapter::HiAnime(provider) => Ok(provider.http()),
+            Adapter::AnimeGg(provider) => Ok(provider.http()),
         }
     }
 
     pub async fn search(&self, id: &ProviderId, query: &str) -> Result<Vec<Anime>> {
         match self.adapter(id)? {
             Adapter::HiAnime(provider) => provider.search(query).await,
+            Adapter::AnimeGg(provider) => provider.search(query).await,
         }
     }
 
     pub async fn synopsis(&self, anime: &Anime) -> Result<String> {
         match self.adapter(&anime.provider)? {
             Adapter::HiAnime(provider) => provider.synopsis(anime).await,
+            Adapter::AnimeGg(provider) => provider.synopsis(anime).await,
         }
     }
 
-    pub async fn episodes(&self, anime: &Anime, _mode: Mode) -> Result<Vec<Episode>> {
+    pub fn mode_specific_episodes(&self, id: &ProviderId) -> bool {
+        matches!(self.adapter(id), Ok(Adapter::AnimeGg(_)))
+    }
+
+    pub async fn episodes(&self, anime: &Anime, mode: Mode) -> Result<Vec<Episode>> {
         match self.adapter(&anime.provider)? {
             Adapter::HiAnime(provider) => provider.episodes(anime).await,
+            Adapter::AnimeGg(provider) => provider.episodes(anime, mode).await,
         }
     }
 
     pub async fn resolve(&self, episode: &Episode, mode: Mode) -> Result<ResolvedMedia> {
         match self.adapter(&episode.provider)? {
             Adapter::HiAnime(provider) => {
+                let stream = provider.resolve(episode, mode).await?;
+                provider.http().resolve_media(stream)
+            }
+            Adapter::AnimeGg(provider) => {
                 let stream = provider.resolve(episode, mode).await?;
                 provider.http().resolve_media(stream)
             }
