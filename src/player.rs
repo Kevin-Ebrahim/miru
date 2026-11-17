@@ -7,7 +7,10 @@ use anyhow::{Context, Result};
 use std::{path::Path, process::Stdio};
 use tokio::{process::Child, sync::oneshot};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     Mpv,
     Vlc,

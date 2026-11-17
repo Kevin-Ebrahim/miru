@@ -159,7 +159,7 @@ while not (root / token).exists():
         config = config_home / "miru/config.json"
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({"download_dir": str(root / "downloads")}))
-        saved_config = config.read_bytes()
+        saved_download_dir = json.loads(config.read_text())["download_dir"]
         environment = {**os.environ, "XDG_CONFIG_HOME": str(config_home)}
         environment.pop("NO_COLOR", None)
         process = subprocess.Popen([
@@ -234,13 +234,13 @@ while not (root / token).exists():
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
             click_audio = pointer(0, 108, 1) + pointer(0, 108, 1, release=True)
             send(click_audio)
-            wait_for(lambda: json.loads((root / "library.json").read_text())["mode"] == "dub")
+            wait_for(lambda: json.loads(config.read_text())["audio"] == "dub")
             send(click_audio)
-            wait_for(lambda: json.loads((root / "library.json").read_text())["mode"] == "sub")
+            wait_for(lambda: json.loads(config.read_text())["audio"] == "sub")
             send(pointer(0, 116, 1) + pointer(0, 116, 1, release=True))
-            wait_for(lambda: json.loads((root / "library.json").read_text())["quality"] == "1080p")
+            wait_for(lambda: json.loads(config.read_text())["quality"] == "1080p")
             send(b"QQQQQ")
-            wait_for(lambda: json.loads((root / "library.json").read_text())["quality"] == "best")
+            wait_for(lambda: json.loads(config.read_text())["quality"] == "best")
             copied = copied_text(b"jy")
             assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
             copied = copied_text(b"yk")
@@ -381,7 +381,7 @@ while not (root / token).exists():
             assert sum("episodeId=11" in url for url in requests) == first_requests
             assert any("episodeId=13" in url for url in requests)
             assert (root / "downloads" / "Original Series _ Episode 1 SUB.mkv").stat().st_mtime_ns == saved.st_mtime_ns
-            assert config.read_bytes() == saved_config, "TUI preference changes rewrote the download config"
+            assert json.loads(config.read_text())["download_dir"] == saved_download_dir, "Playback preference changes rewrote the download folder"
             send(b"\x03")
             assert process.wait(timeout=3) == 0
             print("PASS: enlarged cached cover viewer, clickable persisted settings, click/double-click activation, narrow-list mouse navigation, keyboard/mouse copy ordering, wheel navigation, details/help/resize selection, synopsis/cache/retry, navigation, queue ownership, fixed settings, history, stop, cached refresh failure, partial download recovery without repeating saved episodes")

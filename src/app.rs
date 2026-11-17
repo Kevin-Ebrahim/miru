@@ -55,6 +55,8 @@ enum Visit {
 }
 
 pub struct App {
+    settings: Option<crate::settings::Settings>,
+    queue_execution: Option<(Player, PathBuf)>,
     pub state: State,
     provider: Providers,
     options: Options,
@@ -85,6 +87,11 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
 }
 
 impl App {
+    pub fn with_settings(mut self, settings: crate::settings::Settings) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
     pub fn new(state: State, provider: Providers, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (writer, library_rx) =
@@ -104,6 +111,8 @@ impl App {
             },
         );
         Self {
+            settings: None,
+            queue_execution: None,
             state,
             provider,
             options,
@@ -158,11 +167,43 @@ impl App {
         }
     }
 
-    fn settings(&self) {
-        self.persist(crate::persistence::Change::Settings {
-            mode: self.state.mode,
-            quality: self.state.quality.clone(),
-        });
+    fn settings(&mut self, audio: bool) -> bool {
+        if let Some(settings) = &mut self.settings {
+            let mut next = settings.saved.clone();
+            if audio {
+                next.audio = Some(self.state.mode);
+            } else {
+                next.quality = Some(self.state.quality.clone());
+            }
+            match next.save(
+                &settings.path,
+                &settings.saved,
+                if audio {
+                    crate::config::Setting::Audio
+                } else {
+                    crate::config::Setting::Quality
+                },
+            ) {
+                Ok(saved) => {
+                    settings.saved = saved;
+                    self.options.player = settings.player();
+                    if let Ok(path) = settings.download() {
+                        self.options.download_dir = path;
+                    }
+                }
+                Err(error) => {
+                    self.state
+                        .message(format!("Preferences were not saved: {error:#}"), true);
+                    return false;
+                }
+            }
+        } else {
+            self.persist(crate::persistence::Change::Settings {
+                mode: self.state.mode,
+                quality: self.state.quality.clone(),
+            });
+        }
+        true
     }
 
     fn navigate(&mut self, screen: Screen) {
@@ -480,6 +521,10 @@ impl App {
         };
 
         self.stop();
+        self.queue_execution = Some((
+            self.options.player.clone(),
+            self.options.download_dir.clone(),
+        ));
         self.state.activity = Some(Activity {
             anime,
             episodes: self.state.episodes.items.clone(),
@@ -524,6 +569,7 @@ impl App {
         }
 
         self.jobs.start(jobs::Request {
+            execution: self.queue_execution.clone(),
             id: self.job,
             episode,
             anime: activity.anime.clone(),
@@ -739,6 +785,9 @@ impl App {
     }
 
     fn mouse(&mut self, event: MouseEvent) -> Option<String> {
+        if self.settings.as_ref().is_some_and(|s| s.open) {
+            return None;
+        }
         let position = Position::new(event.column, event.row);
         if self.state.cover_view.is_some() {
             self.last_click = None;
@@ -912,6 +961,12 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
+        if let Some(s) = &mut self.settings
+            && s.open
+        {
+            s.paste(text);
+            return;
+        }
         self.last_click = None;
         if self.state.cover_view.is_some() {
             return;
@@ -1018,8 +1073,12 @@ impl App {
     }
 
     fn toggle_audio(&mut self) {
+        let previous = self.state.mode;
         self.state.mode.toggle();
-        self.settings();
+        if !self.settings(true) {
+            self.state.mode = previous;
+            return;
+        }
         if self.state.screen == Screen::Episodes
             && self
                 .state
@@ -1035,15 +1094,19 @@ impl App {
     }
 
     fn cycle_quality(&mut self, backwards: bool) {
-        let choices = ["best", "1080p", "720p", "480p", "360p", "worst"];
+        let choices = crate::config::QUALITIES;
         let index = choices
             .iter()
             .position(|q| *q == self.state.quality)
             .unwrap_or(0);
         let step = if backwards { choices.len() - 1 } else { 1 };
 
+        let previous = self.state.quality.clone();
         self.state.quality = choices[(index + step) % choices.len()].into();
-        self.settings();
+        if !self.settings(false) {
+            self.state.quality = previous;
+            return;
+        }
         self.state.message(
             if self.state.activity.as_ref().is_some_and(Activity::active) {
                 "Quality applies to the next queue."
@@ -1139,6 +1202,45 @@ impl App {
             return;
         }
 
+        if let Some(s) = &mut self.settings {
+            if s.open {
+                let previous_mode = self.state.mode;
+                if s.key(key) {
+                    self.options.player = s.player();
+                    if let Ok(path) = s.download() {
+                        self.options.download_dir = path;
+                    }
+                    if s.selected == 1 {
+                        self.state.mode = s.overrides.audio.or(s.saved.audio).unwrap_or_default();
+                    }
+                    if s.selected == 2 {
+                        self.state.quality = s
+                            .overrides
+                            .quality
+                            .clone()
+                            .or(s.saved.quality.clone())
+                            .unwrap_or_else(|| "best".into());
+                    }
+                }
+                if previous_mode != self.state.mode
+                    && self.state.screen == Screen::Episodes
+                    && self
+                        .state
+                        .episodes
+                        .anime
+                        .as_ref()
+                        .is_some_and(|a| self.provider.mode_specific_episodes(&a.provider))
+                {
+                    self.state.episodes.continuation = None;
+                    self.load_episodes();
+                }
+                return;
+            }
+            if key.code == KeyCode::F(4) {
+                s.open = true;
+                return;
+            }
+        }
         if self.state.cover_view.is_some() {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.state.cover_view = None,
@@ -1671,7 +1773,10 @@ impl App {
                     .map(|anime| anime.provider.clone())
                     .unwrap_or_default();
                 let context = self.provider.http(&source);
-                let url = if self.state.help || context.is_err() {
+                let url = if self.settings.as_ref().is_some_and(|s| s.open)
+                    || self.state.help
+                    || context.is_err()
+                {
                     None
                 } else {
                     anime.and_then(|a| a.cover.as_deref())
@@ -1688,7 +1793,14 @@ impl App {
                         art.clear_graphics()?;
                         terminal.clear()?;
                     }
-                    terminal.draw(|frame| ui::render(frame, &mut self.state, &art))?;
+                    terminal.draw(|frame| {
+                        self.state.hide_input_cursor =
+                            self.settings.as_ref().is_some_and(|s| s.open);
+                        ui::render(frame, &mut self.state, &art);
+                        if let Some(s) = self.settings.as_ref().filter(|s| s.open) {
+                            s.render(frame, &self.state);
+                        }
+                    })?;
                     Ok(())
                 })??;
                 if previous_list != self.state.view.list {
@@ -1768,6 +1880,118 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn merged_folder_updates_future_jobs_but_preserves_override_and_queue() {
+        for override_folder in [false, true] {
+            for popup in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("config.json");
+                let old = dir.path().join("old");
+                let updated = dir.path().join("updated");
+                let temporary = dir.path().join("temporary");
+                let saved = crate::config::Config {
+                    download_dir: Some(old.clone()),
+                    ..Default::default()
+                };
+                let overrides = crate::settings::Overrides {
+                    download: override_folder.then(|| temporary.clone()),
+                    ..Default::default()
+                };
+                let mut app = test_app(
+                    State::new(String::new(), Mode::Sub, "best".into(), false, false, false),
+                    dir.path(),
+                )
+                .with_settings(crate::settings::Settings::new(
+                    saved,
+                    overrides,
+                    path.clone(),
+                ));
+                app.queue_execution = Some((app.options.player.clone(), old.clone()));
+                std::fs::write(
+                    &path,
+                    serde_json::json!({"download_dir": updated, "player_args": ["--volume=42"]})
+                        .to_string(),
+                )
+                .unwrap();
+                if popup {
+                    app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                } else {
+                    app.toggle_audio();
+                }
+                let expected = if override_folder { temporary } else { updated };
+                let stream = crate::model::Stream {
+                    request: None,
+                    referer: String::new(),
+                    subtitle: None,
+                    variants: vec![crate::model::Variant {
+                        format: crate::model::MediaFormat::Hls,
+                        label: None,
+                        height: 720,
+                        url: "https://example.org/video.m3u8".into(),
+                        audio: None,
+                    }],
+                };
+                assert!(
+                    app.options
+                        .player
+                        .args(&stream, "best", "test")
+                        .contains(&"--volume=42".into())
+                );
+                assert!(
+                    !app.queue_execution
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .args(&stream, "best", "test")
+                        .contains(&"--volume=42".into())
+                );
+                assert_eq!(app.options.download_dir, expected);
+                assert_eq!(app.settings.as_ref().unwrap().download().unwrap(), expected);
+                assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
+                app.jobs.shutdown().await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn settings_preserve_browsing_and_queue_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(
+            "query".into(),
+            Mode::Sub,
+            "best".into(),
+            false,
+            false,
+            false,
+        );
+        let mut app = test_app(state, dir.path()).with_settings(crate::settings::Settings::new(
+            crate::config::Config::default(),
+            crate::settings::Overrides::default(),
+            dir.path().join("config.json"),
+        ));
+        app.state.mode = Mode::Dub;
+        app.state.quality = "1440p".into();
+        app.state.screen = Screen::Search;
+        app.state.search.selected = 3;
+        let old = dir.path().join("old");
+        app.queue_execution = Some((app.options.player.clone(), old.clone()));
+        app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.paste(dir.path().join("new").to_str().unwrap());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.options.download_dir, dir.path().join("new"));
+        assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.quality, "1440p");
+        assert_eq!(app.state.screen, Screen::Search);
+        assert_eq!(app.state.search.query.text, "query");
+        assert_eq!(app.state.search.selected, 3);
+        app.jobs.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn recovery_search_preserves_failed_activity_and_back_navigation() {
