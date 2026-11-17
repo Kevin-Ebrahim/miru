@@ -31,7 +31,7 @@ def main():
         requests = []
         media_failure = [False]
         final_failure = [False]
-        faults = {"repeat": False, "wrong": False, "no_servers": False}
+        faults = {"repeat": False, "wrong": False, "no_servers": False, "movie": False, "empty": False}
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_): pass
             def reply(self, data, status=200):
@@ -42,9 +42,9 @@ def main():
                 self.wfile.write(data)
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                assert body == {"page": 1, "query": "Probe"}
-                self.reply({"result": [{"slug": "probe", "title": "Probe", "synopsis": "Story",
-                    "poster": {"hq": "probe-hq"}}]})
+                assert body["query"] == "Probe" and body["page"] in (1, 2)
+                self.reply({"maxPage": 2, "result": [{"slug": "probe", "title": "Probe", "synopsis": "Story",
+                    "poster": {"hq": "probe-hq"}}] + ([{"slug": "second", "title": "Second"}] if body["page"] == 2 else [])})
             def do_GET(self):
                 path = urllib.parse.urlparse(self.path)
                 query = urllib.parse.parse_qs(path.query)
@@ -52,6 +52,14 @@ def main():
                 if path.path == "/api/show/probe":
                     self.reply({"slug": "probe", "title": "Probe", "synopsis": "Story"})
                 elif path.path == "/api/show/probe/episodes":
+                    if faults["empty"]:
+                        return self.reply({"current_page": 0, "pages": []})
+                    if faults["movie"]:
+                        data = {"current_page": 1 if query["ep"] == ["0"] else 0,
+                            "pages": [{"number": 1, "eps": ["0"]}]}
+                        if query["ep"] == ["0"]:
+                            data["result"] = [{"slug": "ja-JP", "episode_string": "0"}]
+                        return self.reply(data)
                     first = query["ep"] == ["1"]
                     lang = query["lang"][0]
                     number = "1" if first else "1.5"
@@ -59,7 +67,7 @@ def main():
                         "result": [{"slug": lang, "episode_string": number, "title": "Episode"}]})
                 elif path.path.startswith("/api/show/probe/episode/"):
                     route = path.path.rsplit("/", 1)[-1]
-                    number = "1.5" if route.startswith("ep-1.5-") else "1"
+                    number = "0" if route.startswith("ep-0-") else "1.5" if route.startswith("ep-1.5-") else "1"
                     lang = "en-US" if route.endswith("en-US") else "ja-JP"
                     self.reply({"show_slug": "wrong" if faults["wrong"] else "probe",
                         "slug": lang, "episode_string": number, "language": lang,
@@ -94,7 +102,16 @@ def main():
             assert (p.returncode == 0) == success, (args, p.stderr, [p.read_text() for p in (root / "state/logs").glob("*")])
             return p
         try:
-            assert json.loads(invoke("--list", "Probe").stdout)[0]["provider"] == "kaa"
+            listed = json.loads(invoke("--list", "Probe").stdout)
+            assert [item["id"] for item in listed] == ["probe", "second"]
+            faults["movie"] = True
+            invoke("--sub", "--resolve", "Probe", "-e", "0")
+            assert any("ep=0&" in path for path, _, _ in requests)
+            faults["movie"] = False
+            faults["empty"] = True
+            failed = invoke("--dub", "--resolve", "Probe", success=False)
+            assert "no episodes in dub" in failed.stderr and "Invalid KAA response" not in failed.stderr
+            faults["empty"] = False
             for mode, track in [("sub", "ja"), ("dub", "en")]:
                 requests.clear()
                 result = [json.loads(line) for line in invoke("--" + mode, "--resolve", "Probe", "-e", "1,1.5").stdout.splitlines()]
@@ -122,7 +139,7 @@ def main():
             assert not any("/episode/ep-1.5-" in path for path, _, _ in requests), "Queue advanced after an incomplete download"
             assert not list((root / "truncated").iterdir()), "Truncated download was published"
             final_failure[0] = False
-            for fault in faults:
+            for fault in ["repeat", "wrong", "no_servers"]:
                 faults[fault] = True
                 failed = invoke("--resolve", "Probe", "-e", "1", success=False)
                 assert not failed.stdout and "kaa" in failed.stderr

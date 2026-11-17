@@ -45,22 +45,37 @@ impl Kaa {
 
     pub async fn search(&self, query: &str) -> Result<Vec<Anime>> {
         let url = self.base.join("/api/fsearch")?;
-        let bytes = self
-            .http
-            .post_json(
-                url.as_str(),
-                &serde_json::json!({
-                    "page": 1, "query": query.trim()
-                }),
-                parser::BODY_LIMIT,
-            )
-            .await?;
-        let data: Search = serde_json::from_slice(&bytes).context("Invalid KAA search response")?;
-        ensure!(data.result.len() <= 500, "KAA search exceeds result limit");
-        data.result
-            .into_iter()
-            .map(|show| show.anime(&self.base))
-            .collect()
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+        let mut page = 1;
+        loop {
+            let bytes = self
+                .http
+                .post_json(
+                    url.as_str(),
+                    &serde_json::json!({"page": page, "query": query.trim()}),
+                    parser::BODY_LIMIT,
+                )
+                .await?;
+            let data: Search =
+                serde_json::from_slice(&bytes).context("Invalid KAA search response")?;
+            ensure!(
+                data.max_page <= MAX_PAGES,
+                "KAA search pagination exceeds limit"
+            );
+            for show in data.result {
+                let anime = show.anime(&self.base)?;
+                if seen.insert(anime.id.clone()) {
+                    results.push(anime);
+                }
+            }
+            ensure!(results.len() <= 500, "KAA search exceeds result limit");
+            if page >= data.max_page {
+                break;
+            }
+            page += 1;
+        }
+        Ok(results)
     }
 
     pub async fn synopsis(&self, anime: &Anime) -> Result<String> {
@@ -74,37 +89,56 @@ impl Kaa {
         segment(&anime.id)?;
         let locale = locale(mode);
         let path = format!("/api/show/{}/episodes", anime.id);
-        let first: EpisodePage = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
+        let mut first: EpisodePage = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
         ensure!(
             first.pages.len() <= MAX_PAGES,
             "KAA episode pagination exceeds limit"
         );
+        if first.pages.is_empty() && first.current_page == 0 && first.result.is_none() {
+            bail!(
+                "KAA has no episodes in {}. Try switching audio language",
+                mode.as_str()
+            );
+        }
         ensure!(
-            first.current_page == 1
-                && first
-                    .pages
-                    .iter()
-                    .enumerate()
-                    .all(|(i, page)| page.number == i + 1),
+            first
+                .pages
+                .iter()
+                .enumerate()
+                .all(|(i, page)| page.number == i + 1),
             "KAA returned inconsistent episode pagination"
         );
-        let pages = first
+        let starts = first
             .pages
             .iter()
-            .skip(1)
             .map(|page| {
                 let number = page
                     .eps
                     .first()
                     .context("KAA page has no starting episode")?;
-                let text = number.to_string();
+                let text = match number {
+                    PageEpisode::Number(number) => number.to_string(),
+                    PageEpisode::Text(text) => text.clone(),
+                };
                 episode_number(&text)?;
                 Ok(text)
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut rows = first.result;
-        let mut visited = HashSet::from(["1".to_owned()]);
-        for (index, page) in pages.into_iter().enumerate() {
+        let start = starts
+            .first()
+            .context("KAA episode pagination has no first page")?;
+        if first.current_page != 1 {
+            first = self
+                .json(&format!("{path}?ep={start}&lang={locale}"))
+                .await?;
+        }
+        ensure!(
+            first.current_page == 1,
+            "KAA returned the wrong first episode page"
+        );
+        let mut rows = first.result.context("KAA episode page has no result")?;
+        let mut visited = HashSet::from([start.clone()]);
+        for (index, page) in starts.into_iter().skip(1).enumerate() {
             ensure!(visited.insert(page.clone()), "KAA repeated an episode page");
             let data: EpisodePage = self
                 .json(&format!("{path}?ep={page}&lang={locale}"))
@@ -113,7 +147,7 @@ impl Kaa {
                 data.current_page == index + 2,
                 "KAA returned the wrong episode page"
             );
-            rows.extend(data.result);
+            rows.extend(data.result.context("KAA episode page has no result")?);
             ensure!(
                 rows.len() <= MAX_EPISODES,
                 "KAA episode count exceeds limit"
@@ -309,8 +343,14 @@ pub(super) fn parse_player(page: &str, base: &Url) -> Result<PlayerConfig> {
 
 #[derive(Deserialize)]
 struct Search {
+    #[serde(rename = "maxPage", default = "first_page")]
+    max_page: usize,
     result: Vec<Show>,
 }
+fn first_page() -> usize {
+    1
+}
+
 #[derive(Deserialize)]
 struct Show {
     slug: String,
@@ -358,13 +398,20 @@ impl Show {
 struct EpisodePage {
     current_page: usize,
     pages: Vec<Page>,
-    result: Vec<Row>,
+    result: Option<Vec<Row>>,
 }
 #[derive(Deserialize)]
 struct Page {
     number: usize,
-    eps: Vec<serde_json::Number>,
+    eps: Vec<PageEpisode>,
 }
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PageEpisode {
+    Number(serde_json::Number),
+    Text(String),
+}
+
 #[derive(Deserialize)]
 struct Row {
     slug: String,
