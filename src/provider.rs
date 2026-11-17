@@ -1,5 +1,6 @@
 mod animegg;
 mod hianime;
+mod hls;
 mod parser;
 
 pub use parser::run_helper as run_parser_helper;

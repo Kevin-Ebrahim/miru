@@ -1,0 +1,8 @@
+#EXTM3U
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="English 5.1 Surround",LANGUAGE="English",CHANNELS="2",URI="audio-en/playlist.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="stereo",NAME="Japanese 5.1 Surround",LANGUAGE="Japanese",CHANNELS="2",URI="audio-ja/playlist.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=27040685,CODECS="avc1.4D4C32,mp4a.40.2",RESOLUTION=1920x1432,AUDIO="stereo"
+video-high/playlist.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=3317511,CODECS="avc1.4D401E,mp4a.40.2",RESOLUTION=640x478,AUDIO="stereo"
+video-low/playlist.m3u8
