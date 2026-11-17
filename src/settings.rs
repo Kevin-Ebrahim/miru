@@ -386,8 +386,7 @@ impl Settings {
                 }
                 let label = *name;
                 let value = match i {
-                    0 | 3 => format!("{}  [Edit]", self.value(i)),
-                    4 => format!("{}  [Manage]", self.value(i)),
+                    0 | 3 | 4 => self.value(i),
                     _ => format!("< {} >", self.value(i)),
                 };
                 if body.width >= 48 {
