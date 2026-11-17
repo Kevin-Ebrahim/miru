@@ -1,4 +1,4 @@
-use super::{parse_episodes, parse_search, parse_server, parse_synopsis};
+use super::hianime::{parse_episodes, parse_search, parse_server, parse_synopsis};
 use crate::model::Mode;
 use anyhow::{Context, Result, bail, ensure};
 use scraper::Html;

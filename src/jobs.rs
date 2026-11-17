@@ -5,7 +5,7 @@ use crate::{
     download,
     model::{Anime, Episode, Mode},
     player,
-    provider::Provider,
+    provider::Providers,
 };
 use anyhow::Result;
 use std::{path::PathBuf, process::ExitStatus};
@@ -65,7 +65,7 @@ pub struct Jobs {
 }
 
 impl Jobs {
-    pub fn new(provider: Provider, options: Options) -> Self {
+    pub fn new(provider: Providers, options: Options) -> Self {
         let (requests, mut incoming) = watch::channel::<Option<Request>>(None);
         let (notify, events) = mpsc::unbounded_channel();
         let worker = tokio::spawn(async move {
@@ -150,19 +150,19 @@ impl Jobs {
 
 // Cancelled work emits no completion event, so it cannot advance a queue.
 async fn run(
-    provider: &Provider,
+    provider: &Providers,
     options: &Options,
     request: Request,
     notify: &mpsc::UnboundedSender<Event>,
     cancel: &mut oneshot::Receiver<()>,
 ) -> Result<Option<Output>> {
-    let stream = tokio::select! {
+    let resolved = tokio::select! {
         biased;
         _ = &mut *cancel => return Ok(None),
         result = provider.resolve(&request.episode, request.mode) => result?,
     };
 
-    let (variant, fallback) = stream.select(&request.quality);
+    let (variant, fallback) = resolved.stream().select(&request.quality);
     let quality_note = if fallback {
         format!("{}p ({} unavailable)", variant.height, request.quality)
     } else {
@@ -174,7 +174,7 @@ async fn run(
         update: Update::Resolved(quality_note),
     });
 
-    let media = crate::network::Session::new(stream, provider.http())?;
+    let media = crate::network::Session::new(resolved)?;
     let log = Log::new(&options.state_dir, request.kind)?;
 
     if request.kind == JobKind::Download {

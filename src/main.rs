@@ -178,7 +178,7 @@ fn main() -> Result<()> {
 async fn run() -> Result<()> {
     network::run_helper().await?;
     let cli = Cli::parse_with_legacy_env()?;
-    let provider = provider::Provider::new(&cli.provider)?;
+    let provider = provider::Providers::new(&cli.provider)?;
     let query = cli.query.join(" ");
     let state_dir = cli
         .state_dir
@@ -339,14 +339,14 @@ async fn run() -> Result<()> {
 
 async fn run_cli(
     cli: &Cli,
-    provider: &provider::Provider,
+    provider: &provider::Providers,
     mode: Mode,
     quality: &str,
     runner: &mut jobs::Jobs,
 ) -> Result<()> {
     let query = cli.query.join(" ");
     ensure!(!query.trim().is_empty(), "Provide a search query");
-    let mut results = provider.search(&query).await?;
+    let mut results = provider.search(&Default::default(), &query).await?;
     if cli.exact {
         results.retain(|a| normalized(&a.title) == normalized(&query));
     }
@@ -359,13 +359,13 @@ async fn run_cli(
         .checked_sub(1)
         .and_then(|i| results.get(i))
         .context("Selected result does not exist (--select-nth is 1-based)")?;
-    let episodes = provider.episodes(anime).await?;
+    let episodes = provider.episodes(anime, mode).await?;
     let indices = model::episode_range(&cli.episode, &episodes)?;
     for (id, i) in indices.into_iter().enumerate() {
         if cli.resolve {
             output::line(format_args!(
                 "{}",
-                serde_json::to_string(&provider.resolve(&episodes[i], mode).await?)?
+                serde_json::to_string(provider.resolve(&episodes[i], mode).await?.stream())?
             ))?;
             continue;
         }

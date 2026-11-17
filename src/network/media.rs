@@ -1,4 +1,4 @@
-use super::{Http, Policy, http_url};
+use super::{Policy, ResolvedMedia, http_url};
 use crate::{model::Stream, player::Backend};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -40,7 +40,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(stream: Stream, http: Http) -> Result<Self> {
+    pub fn new(media: ResolvedMedia) -> Result<Self> {
+        let ResolvedMedia { stream, http } = media;
         let directory = tempfile::Builder::new().prefix("miru-media-").tempdir()?;
         let listener = UnixListener::bind(directory.path().join("proxy.sock"))?;
         let ready = UnixDatagram::bind(directory.path().join("proxy.ready"))?;
@@ -482,14 +483,14 @@ mod tests {
             .await
             .unwrap();
         let url = format!("http://{}/", origin.local_addr().unwrap());
-        let session = Session::new(
-            Stream {
+        let session = Session::new(ResolvedMedia {
+            stream: Stream {
                 variants: vec![],
                 referer: String::new(),
                 subtitle: None,
             },
-            Http::new(&http_url(&url).unwrap()).unwrap(),
-        )
+            http: super::super::Http::new(&http_url(&url).unwrap()).unwrap(),
+        })
         .unwrap();
         let socket = session.directory.path().join("proxy.sock");
         let mut client = UnixStream::connect(&socket).await.unwrap();

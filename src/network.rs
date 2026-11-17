@@ -10,6 +10,18 @@ use url::{Host, Url};
 mod media;
 pub use media::{Session, Tool, run_helper};
 
+/// Media and the network context that validated it travel together.
+pub struct ResolvedMedia {
+    stream: crate::model::Stream,
+    http: Http,
+}
+
+impl ResolvedMedia {
+    pub fn stream(&self) -> &crate::model::Stream {
+        &self.stream
+    }
+}
+
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 pub const MEDIA_PROTOCOLS: &str = "http,https,tcp,tls,crypto,httpproxy,data";
 pub const MEDIA_INPUT_OPTIONS: [&str; 4] = [
@@ -162,6 +174,22 @@ pub struct Http {
 }
 
 impl Http {
+    pub fn resolve_media(&self, stream: crate::model::Stream) -> Result<ResolvedMedia> {
+        for variant in &stream.variants {
+            self.validate(&variant.url)?;
+            if let Some(audio) = variant.audio_url() {
+                self.validate(audio)?;
+            }
+        }
+        if let Some(url) = &stream.subtitle {
+            self.validate(url)?;
+        }
+        Ok(ResolvedMedia {
+            stream,
+            http: self.clone(),
+        })
+    }
+
     pub fn new(base: &Url) -> Result<Self> {
         let policy = Policy::new(base);
         let redirects = policy.clone();
@@ -233,6 +261,35 @@ impl Http {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_binding_checks_video_audio_and_subtitle_destinations() {
+        use crate::model::{Audio, Stream, Variant};
+        let http = super::Http::new(&super::http_url("https://example.com/").unwrap()).unwrap();
+        let stream = Stream {
+            variants: vec![Variant {
+                height: 720,
+                url: "https://cdn.example/video".into(),
+                audio: Some(Audio {
+                    group: "audio".into(),
+                    url: Some("https://cdn.example/audio".into()),
+                }),
+            }],
+            referer: "https://example.com/".into(),
+            subtitle: Some("https://cdn.example/subtitle".into()),
+        };
+        assert!(http.resolve_media(stream.clone()).is_ok());
+        for target in 0..3 {
+            let mut blocked = stream.clone();
+            let url = "http://127.0.0.1/private".to_owned();
+            match target {
+                0 => blocked.variants[0].url = url,
+                1 => blocked.variants[0].audio.as_mut().unwrap().url = Some(url),
+                _ => blocked.subtitle = Some(url),
+            }
+            assert!(http.resolve_media(blocked).is_err());
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -8,7 +8,7 @@ use crate::{
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
     player::Player,
-    provider::Provider,
+    provider::Providers,
     state::{
         Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
     },
@@ -56,7 +56,7 @@ enum Visit {
 
 pub struct App {
     pub state: State,
-    provider: Provider,
+    provider: Providers,
     options: Options,
     tx: mpsc::UnboundedSender<Message>,
     rx: mpsc::UnboundedReceiver<Message>,
@@ -85,7 +85,7 @@ fn abort(task: &mut Option<JoinHandle<()>>) {
 }
 
 impl App {
-    pub fn new(state: State, provider: Provider, options: Options) -> Self {
+    pub fn new(state: State, provider: Providers, options: Options) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (writer, library_rx) =
             crate::persistence::Writer::new(crate::persistence::Store::new(&options.state_dir));
@@ -146,7 +146,7 @@ impl App {
         let tx = self.tx.clone();
 
         self.search_task = Some(tokio::spawn(async move {
-            let result = provider.search(&query).await;
+            let result = provider.search(&Default::default(), &query).await;
             let _ = tx.send(Message::Search(generation, result));
         }));
     }
@@ -329,8 +329,9 @@ impl App {
         let generation = self.state.episode_generation;
         let provider = self.provider.clone();
         let tx = self.tx.clone();
+        let mode = self.state.mode;
         self.episode_task = Some(tokio::spawn(async move {
-            let result = provider.episodes(&anime).await;
+            let result = provider.episodes(&anime, mode).await;
             let _ = tx.send(Message::Episodes(generation, result));
         }));
     }
@@ -1533,20 +1534,26 @@ impl App {
                 let size = terminal.size()?;
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
                 let cover = ui::cover_area(&self.state, area);
-                let url = if self.state.help {
+                let anime = self
+                    .state
+                    .cover_view
+                    .as_ref()
+                    .or_else(|| self.state.selected_anime());
+                let source = anime
+                    .map(|anime| anime.provider.clone())
+                    .unwrap_or_default();
+                let context = self.provider.http(&source);
+                let url = if self.state.help || context.is_err() {
                     None
                 } else {
-                    self.state
-                        .cover_view
-                        .as_ref()
-                        .or_else(|| self.state.selected_anime())
-                        .and_then(|a| a.cover.as_deref())
+                    anime.and_then(|a| a.cover.as_deref())
                 };
+                let http = context.or_else(|_| self.provider.http(&Default::default()))?;
                 if art_revision != self.state.art_revision {
-                    art.request(None, cover.as_size(), self.provider.http(), art_tx.clone());
+                    art.request(None, cover.as_size(), http.clone(), art_tx.clone());
                     art_revision = self.state.art_revision;
                 }
-                art.request(url, cover.as_size(), self.provider.http(), art_tx.clone());
+                art.request(url, cover.as_size(), http, art_tx.clone());
                 let previous_list = self.state.view.list.clone();
                 std::io::stdout().sync_update(|_| -> Result<()> {
                     if art.clear {
@@ -1652,7 +1659,7 @@ mod tests {
     fn test_app(state: State, dir: &std::path::Path) -> App {
         App::new(
             state,
-            Provider::new("http://127.0.0.1:9").unwrap(),
+            Providers::new("http://127.0.0.1:9").unwrap(),
             Options {
                 player: Player::new("does-not-exist", vec![], None),
                 cache: dir.join("cache"),
@@ -2617,7 +2624,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         app.state.screen = Screen::Episodes;
         app.state.focus = Focus::List;
         app.state.focus = Focus::List;
@@ -2679,7 +2690,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(
             app.state
@@ -2714,7 +2729,11 @@ mod tests {
             images: false,
             download_dir: dir.path().join("downloads"),
         };
-        let mut app = App::new(state, Provider::new("http://127.0.0.1:9").unwrap(), options);
+        let mut app = App::new(
+            state,
+            Providers::new("http://127.0.0.1:9").unwrap(),
+            options,
+        );
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let back = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.key(enter);
