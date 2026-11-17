@@ -31,7 +31,7 @@ def main():
         requests = []
         media_failure = [False]
         final_failure = [False]
-        faults = {"repeat": False, "wrong": False, "no_servers": False, "movie": False, "empty": False}
+        faults = {"repeat": False, "wrong": False, "no_servers": False, "movie": False, "empty": False, "chinese": False}
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_): pass
             def reply(self, data, status=200):
@@ -50,9 +50,9 @@ def main():
                 query = urllib.parse.parse_qs(path.query)
                 requests.append((self.path, self.headers.get("Referer"), self.headers.get("User-Agent")))
                 if path.path == "/api/show/probe":
-                    self.reply({"slug": "probe", "title": "Probe", "synopsis": "Story"})
+                    self.reply({"slug": "probe", "title": "Probe", "synopsis": "Story", "locales": ["zh-CN"]})
                 elif path.path == "/api/show/probe/episodes":
-                    if faults["empty"]:
+                    if faults["empty"] or (faults["chinese"] and query["lang"] == ["ja-JP"]):
                         return self.reply({"current_page": 0, "pages": []})
                     if faults["movie"]:
                         data = {"current_page": 1 if query["ep"] == ["0"] else 0,
@@ -68,7 +68,7 @@ def main():
                 elif path.path.startswith("/api/show/probe/episode/"):
                     route = path.path.rsplit("/", 1)[-1]
                     number = "0" if route.startswith("ep-0-") else "1.5" if route.startswith("ep-1.5-") else "1"
-                    lang = "en-US" if route.endswith("en-US") else "ja-JP"
+                    lang = "en-US" if route.endswith("en-US") else "zh-CN" if route.endswith("zh-CN") else "ja-JP"
                     self.reply({"show_slug": "wrong" if faults["wrong"] else "probe",
                         "slug": lang, "episode_string": number, "language": lang,
                         "servers": [] if lang == "en-US" or faults["no_servers"] else [
@@ -88,6 +88,8 @@ def main():
                         return self.reply(b"Final segment unavailable", 403)
                     if media_failure[0] and path.path.endswith(".ts"):
                         return self.reply(b"Segment unavailable", 403)
+                    if faults["chinese"] and path.path == "/master.m3u8":
+                        return self.reply((root / "master.m3u8").read_bytes().replace(b'LANGUAGE="Japanese"', b'LANGUAGE="zho"'))
                     file = root / path.path.lstrip("/")
                     self.reply(file.read_bytes() if file.is_file() else b"missing",
                         200 if file.is_file() else 404)
@@ -105,9 +107,13 @@ def main():
             listed = json.loads(invoke("--list", "Probe").stdout)
             assert [item["id"] for item in listed] == ["probe", "second"]
             faults["movie"] = True
-            invoke("--sub", "--resolve", "Probe", "-e", "0")
+            invoke("--sub", "--resolve", "Probe")
             assert any("ep=0&" in path for path, _, _ in requests)
             faults["movie"] = False
+            faults["chinese"] = True
+            result = json.loads(invoke("--sub", "--resolve", "Probe").stdout)
+            assert result["audio"] == base + "ja.m3u8"
+            faults["chinese"] = False
             faults["empty"] = True
             failed = invoke("--dub", "--resolve", "Probe", success=False)
             assert "no episodes in dub" in failed.stderr and "Invalid KAA response" not in failed.stderr

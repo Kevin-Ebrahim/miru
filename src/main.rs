@@ -115,7 +115,7 @@ struct Cli {
     play: bool,
     #[arg(short = 'S', long, default_value_t = 1)]
     select_nth: usize,
-    #[arg(short = 'e', long, default_value = "1", allow_hyphen_values = true)]
+    #[arg(short = 'e', long, default_value = "0", allow_hyphen_values = true)]
     episode: String,
     /// Catalogue to search; saved items retain their own provider
     #[arg(long, value_enum, env = "MIRU_SOURCE", default_value = "hianime")]

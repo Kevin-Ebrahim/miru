@@ -87,9 +87,17 @@ impl Kaa {
 
     pub async fn episodes(&self, anime: &Anime, mode: Mode) -> Result<Vec<Episode>> {
         segment(&anime.id)?;
-        let locale = locale(mode);
+        let mut locale = locale(mode);
         let path = format!("/api/show/{}/episodes", anime.id);
         let mut first: EpisodePage = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
+        if mode == Mode::Sub && first.pages.is_empty() && first.current_page == 0 {
+            let show: Show = self.json(&format!("/api/show/{}", anime.id)).await?;
+            ensure!(show.slug == anime.id, "KAA returned a different series");
+            if show.locales.iter().any(|locale| locale == "zh-CN") {
+                locale = "zh-CN";
+                first = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
+            }
+        }
         ensure!(
             first.pages.len() <= MAX_PAGES,
             "KAA episode pagination exceeds limit"
@@ -198,6 +206,13 @@ impl Kaa {
                 "KAA returned a different alternate episode"
             );
         }
+        let language = match mode {
+            Mode::Dub => hls::Language::English,
+            Mode::Sub => match hls::language(&data.language) {
+                Some(language @ (hls::Language::Japanese | hls::Language::Chinese)) => language,
+                _ => bail!("KAA returned an unsupported original audio language"),
+            },
+        };
         let mut errors = Vec::new();
         for server in data.servers.into_iter().take(4) {
             let result = async {
@@ -222,7 +237,7 @@ impl Kaa {
                     .bytes(master.as_str(), Some(&referer), parser::BODY_LIMIT)
                     .await?;
                 let text = std::str::from_utf8(&bytes).context("Invalid KAA playlist text")?;
-                let variants = hls::parse_playlist(text, &master, Some(mode))?;
+                let variants = hls::parse_playlist_language(text, &master, Some(language))?;
                 Ok::<_, anyhow::Error>(Stream {
                     request: Some(crate::model::MediaRequest {
                         origin: Some(referer.trim_end_matches('/').into()),
@@ -353,6 +368,8 @@ fn first_page() -> usize {
 
 #[derive(Deserialize)]
 struct Show {
+    #[serde(default)]
+    locales: Vec<String>,
     slug: String,
     title: String,
     #[serde(default)]
