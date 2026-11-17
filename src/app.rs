@@ -10,7 +10,8 @@ use crate::{
     player::Player,
     provider::Providers,
     state::{
-        Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
+        Activity, EpisodesState, Focus, HistoryRemoval, JobKind, JobPhase, Screen, SearchState,
+        State, Synopsis,
     },
     ui,
 };
@@ -725,6 +726,36 @@ impl App {
                         .map(|e| (e.anime.source_id(), e.mode));
 
                     self.state.history.replace_entries(library.entries);
+                    if let Some(removal) = self.state.history_removal.take() {
+                        let newly_removed = matches!(removal, HistoryRemoval::Removing(_));
+                        let (entry, restoring) = match removal {
+                            HistoryRemoval::Removing(e) | HistoryRemoval::Removed(e) => (e, false),
+                            HistoryRemoval::Restoring(e) => (e, true),
+                        };
+                        let present = self
+                            .state
+                            .history
+                            .entries()
+                            .iter()
+                            .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode);
+                        if restoring && present {
+                            self.state.message("History entry restored.", false);
+                        } else if !restoring && !present {
+                            if newly_removed && self.state.screen == Screen::History {
+                                self.state.message(
+                                    format!("Removed {} / u Undo", entry.anime.title),
+                                    false,
+                                );
+                            }
+                            self.state.history_removal = Some(HistoryRemoval::Removed(entry));
+                        } else {
+                            self.state.history_removal = Some(if restoring {
+                                HistoryRemoval::Restoring(entry)
+                            } else {
+                                HistoryRemoval::Removing(entry)
+                            });
+                        }
+                    }
                     self.state.history.selected = key
                         .and_then(|(id, mode)| {
                             self.state.visible_history().iter().position(|i| {
@@ -738,9 +769,19 @@ impl App {
                             previous.min(self.state.visible_history().len().saturating_sub(1))
                         });
                 }
-                Err(err) => self
-                    .state
-                    .message(format!("History was not saved: {err:#}"), true),
+                Err(err) => {
+                    self.state.history_removal = match self.state.history_removal.take() {
+                        Some(HistoryRemoval::Restoring(entry)) => {
+                            Some(HistoryRemoval::Removed(entry))
+                        }
+                        Some(HistoryRemoval::Removing(entry) | HistoryRemoval::Removed(entry)) => {
+                            Some(HistoryRemoval::Removed(entry))
+                        }
+                        _ => None,
+                    };
+                    self.state
+                        .message(format!("History was not saved: {err:#}"), true);
+                }
             },
             _ => {}
         }
@@ -1557,11 +1598,32 @@ impl App {
                 self.load_synopsis(false);
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
-                if let Some(entry) = self.state.selected_history() {
+                if let Some(entry) = self.state.selected_history().cloned() {
                     self.persist(crate::persistence::Change::Remove {
                         source: entry.anime.source_id(),
                         mode: entry.mode,
                     });
+                    self.state
+                        .message(format!("Removing {}...", entry.anime.title), false);
+                    self.state.history_removal = Some(HistoryRemoval::Removing(entry));
+                }
+            }
+            KeyCode::Char('u') if self.state.screen == Screen::History => {
+                if let Some(removal) = self.state.history_removal.take() {
+                    let entry = match removal {
+                        HistoryRemoval::Removed(entry) => entry,
+                        HistoryRemoval::Removing(entry) => {
+                            self.state.history_removal = Some(HistoryRemoval::Removing(entry));
+                            return;
+                        }
+                        HistoryRemoval::Restoring(entry) => {
+                            self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
+                            return;
+                        }
+                    };
+                    self.persist(crate::persistence::Change::Restore(entry.clone()));
+                    self.state.message("Restoring history entry...", false);
+                    self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
                 }
             }
             KeyCode::Char(':') if self.state.screen == Screen::Episodes => {
@@ -1880,6 +1942,53 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn history_undo_restores_the_saved_entry_and_keeps_filter_typing_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::persistence::Entry {
+            anime: anime("series", "Series"),
+            episode: "4".into(),
+            mode: Mode::Sub,
+            watched_at: 10,
+        };
+        let store = crate::persistence::Store::new(dir.path());
+        store
+            .update(crate::persistence::Change::Import(vec![entry.clone()]))
+            .unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(vec![entry]);
+        let mut app = test_app(state, dir.path());
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(result));
+        assert!(app.state.history.entries().is_empty());
+        assert!(app.state.status.contains("Removed Series"));
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(app.state.history.query.text, "u");
+        assert!(matches!(
+            app.state.history_removal,
+            Some(HistoryRemoval::Removed(_))
+        ));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(result));
+        assert!(app.state.history_removal.is_none());
+        let saved = store.load().unwrap();
+        assert_eq!(saved.entries[0].episode, "4");
+        assert_eq!(saved.entries[0].watched_at, 10);
+        assert_eq!(app.state.status, "History entry restored.");
+    }
 
     #[tokio::test]
     async fn merged_folder_updates_future_jobs_but_preserves_override_and_queue() {

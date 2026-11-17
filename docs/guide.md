@@ -24,6 +24,7 @@ See the [README](../README.md) for installation and first use.
 | `x` | Stop the current player or download queue, or dismiss its result |
 | F5 / F6 | Retry the current view / retry a failed queue |
 | Delete in History | Remove the highlighted history entry |
+| `u` in History | Undo the last removal during this session |
 | `?` / F1 | Open help; `/` filters help by key or action |
 | `q` | Close Help or Details |
 | Ctrl+C | Quit from anywhere and stop owned jobs |

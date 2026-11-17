@@ -324,7 +324,8 @@ impl Settings {
             height,
         );
         let base = Style::default().fg(palette.text).bg(palette.canvas);
-        frame.render_widget(Clear, modal);
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(base), area);
         let block = crate::ui::panel(
             if self.arguments {
                 " Player arguments "
@@ -396,7 +397,14 @@ impl Settings {
                 let label = *name;
                 let value = match i {
                     0 | 3 | 4 => self.value(i),
-                    _ => format!("< {} >", self.value(i)),
+                    _ => format!(
+                        "< {} >",
+                        if i == 2 && self.value(i) == "best" {
+                            "Best".into()
+                        } else {
+                            self.value(i)
+                        }
+                    ),
                 };
                 if body.width >= 48 {
                     let available = usize::from(body.width.saturating_sub(4));
@@ -416,6 +424,7 @@ impl Settings {
                 }
             }
         }
+        let content_height: usize = items.iter().map(ListItem::height).sum();
         let mut selection = ListState::default();
         selection.select(Some(selected));
         frame.render_stateful_widget(
@@ -426,6 +435,30 @@ impl Settings {
             body,
             &mut selection,
         );
+        if content_height > usize::from(body.height) && body.width >= 10 {
+            let indicator = format!(
+                " {}/{} ",
+                if self.arguments {
+                    self.argument + 1
+                } else {
+                    self.selected + 1
+                },
+                if self.arguments {
+                    self.saved.player_args.len() + 1
+                } else {
+                    6
+                }
+            );
+            frame.render_widget(
+                Paragraph::new(indicator.clone()).style(Style::default().fg(palette.secondary)),
+                Rect::new(
+                    modal.right().saturating_sub(indicator.len() as u16 + 2),
+                    modal.y,
+                    indicator.len() as u16,
+                    1,
+                ),
+            );
+        }
         let description = if !self.message.is_empty() {
             self.message.clone()
         } else if self.arguments {

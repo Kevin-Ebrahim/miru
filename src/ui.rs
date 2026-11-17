@@ -645,7 +645,7 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         quality_width,
         1,
     ));
-    let mut hint = Line::default();
+    let mut hint = shortcut(state, "Enter", "Search");
     if matches!(state.focus, Focus::Audio | Focus::Quality) {
         hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
     }
@@ -700,14 +700,18 @@ fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
             Screen::Episodes => "Episodes",
         }
     };
-    let settings = format!("{} / {}", state.mode.as_str().to_uppercase(), state.quality);
+    let settings = format!(
+        "{} / {}",
+        state.mode.as_str().to_uppercase(),
+        state.quality_label()
+    );
     let context = format!("   {location}   {settings}");
-    let compact = " ani / watch".width() + context.width() > usize::from(header.width);
+    let compact = " Miru".width() + context.width() > usize::from(header.width);
     let settings_x = header.x
         + if compact {
             format!(" {location}   ").width() as u16
         } else {
-            format!(" ani / watch   {location}   ").width() as u16
+            format!(" Miru   {location}   ").width() as u16
         };
     state.view.audio_setting = Some(Rect::new(settings_x, header.y, 3, 1).intersection(header));
     state.view.quality_setting = Some(
@@ -719,10 +723,7 @@ fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
             Span::raw(format!("   {settings}")),
         ]
     } else {
-        vec![
-            Span::styled(" ani / watch", accent(state)),
-            Span::raw(context),
-        ]
+        vec![Span::styled(" Miru", accent(state)), Span::raw(context)]
     })];
     frame.render_widget(
         Paragraph::new(heading).style(Style::default().bold()),
@@ -737,7 +738,7 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     let settings = if shortcuts {
         let mut spans = shortcut(state, "s", &state.mode.as_str().to_uppercase()).spans;
         spans.push(Span::raw("   "));
-        spans.extend(shortcut(state, "Q", &state.quality).spans);
+        spans.extend(shortcut(state, "Q", state.quality_label()).spans);
         spans.push(Span::raw(" "));
         Line::from(spans)
     } else {
@@ -745,7 +746,7 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
             format!(
                 "{} / {} ",
                 state.mode.as_str().to_uppercase(),
-                state.quality
+                state.quality_label()
             ),
             muted(state),
         )
@@ -905,6 +906,8 @@ enum HintAction {
     Download,
     Details,
     RemoveHistory,
+    UndoHistory,
+    Submit,
     Help,
     ActivityControl,
     Audio,
@@ -934,6 +937,8 @@ impl KeyHint {
             HintAction::Download => "d",
             HintAction::Details => "i",
             HintAction::RemoveHistory => "Delete",
+            HintAction::UndoHistory => "u",
+            HintAction::Submit => "Enter",
             HintAction::Help => "F1",
             HintAction::ActivityControl => "x",
             HintAction::Audio => "s",
@@ -984,7 +989,10 @@ fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
         return if state.screen == Screen::History {
             vec![]
         } else {
-            vec![KeyHint::new(HintAction::ExactSearch, "Exact")]
+            vec![
+                KeyHint::new(HintAction::Submit, "Search"),
+                KeyHint::new(HintAction::ExactSearch, "Exact"),
+            ]
         };
     }
 
@@ -1024,6 +1032,7 @@ fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
             "Download".into()
         };
         let mut hints = vec![
+            KeyHint::new(HintAction::Submit, "Play"),
             KeyHint::new(HintAction::MarkEpisode, "Mark"),
             KeyHint::new(HintAction::EnterRange, "Range"),
         ];
@@ -1044,7 +1053,16 @@ fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
         hints.push(KeyHint::new(HintAction::Search, search));
     }
     if state.selected_anime().is_some() {
+        hints.insert(0, KeyHint::new(HintAction::Submit, "Open"));
         hints.push(KeyHint::new(HintAction::Details, "Details"));
+    }
+    if state.screen == Screen::History
+        && matches!(
+            state.history_removal,
+            Some(crate::state::HistoryRemoval::Removed(_))
+        )
+    {
+        hints.insert(0, KeyHint::new(HintAction::UndoHistory, "Undo remove"));
     }
     if state.screen == Screen::History && !state.history.entries().is_empty() {
         hints.push(KeyHint::new(HintAction::RemoveHistory, "Remove"));
@@ -1173,7 +1191,20 @@ fn key_hints(state: &State, width: usize, copy_available: bool) -> Vec<Line<'sta
     let compact = width < 72;
     let primary = primary_hints(state, compact);
     let global = global_hints(state, compact, copy_available);
-    layout_key_hints(state, width, primary, global)
+    let mut lines = layout_key_hints(state, width, primary, global);
+    if !state.details && !state.downloads_supported() {
+        lines.push(Line::styled(
+            if state.recovery_search().is_none() {
+                " Playback only with this provider"
+            } else if width < 44 {
+                " Playback only / F3 Alternatives"
+            } else {
+                " Playback only / F3 Search another provider"
+            },
+            muted(state),
+        ));
+    }
+    lines
 }
 
 fn layout_key_hints(
@@ -1211,7 +1242,7 @@ fn layout_key_hints(
             let (marking, mut actions): (Vec<_>, Vec<_>) = primary.into_iter().partition(|hint| {
                 matches!(
                     hint.action,
-                    HintAction::MarkEpisode | HintAction::EnterRange
+                    HintAction::Submit | HintAction::MarkEpisode | HintAction::EnterRange
                 )
             });
             actions.push(help);
@@ -1282,7 +1313,11 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             state.visible_history().len(),
             state.history.selected,
         ),
-        Screen::Episodes => ("List", state.episodes.items.len(), state.episodes.selected),
+        Screen::Episodes => (
+            "Episodes",
+            state.episodes.items.len(),
+            state.episodes.selected,
+        ),
     };
 
     let mut title = if state.episodes.marked.is_empty() || state.screen != Screen::Episodes {
@@ -1344,12 +1379,15 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
             }
         } else if state.screen == Screen::History {
             if state.history.entries().is_empty() {
-                ("No history", "")
+                ("No history yet", "H Home / Play to add history")
             } else {
-                ("No matches", "")
+                ("No matches", "/ Edit filter, Ctrl+u Clear")
             }
         } else if state.screen == Screen::Episodes {
-            ("No episodes", "")
+            (
+                "No episodes available",
+                "F5 Retry / F3 Try another provider",
+            )
         } else if state.search.query.text.trim().is_empty() {
             ("Enter a title", "")
         } else {
@@ -1422,7 +1460,17 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(indicator, Style::default().fg(palette(state).success)),
-                    Span::raw(format!(" {:>4}  {}", ep.number, ep.title)),
+                    Span::raw({
+                        let prefix = format!(" {:>4}  ", ep.number);
+                        format!(
+                            "{prefix}{}",
+                            ellipsize(
+                                &ep.title,
+                                item_width.saturating_sub(1 + prefix.width()),
+                                state
+                            )
+                        )
+                    }),
                 ]))
             })
             .collect(),
@@ -1526,7 +1574,21 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         area,
     );
 
-    let (cover, metadata) = preview_regions(state, area);
+    let (cover, metadata) = if art.enabled {
+        preview_regions(state, area)
+    } else {
+        let inner = area.inner(Margin::new(2, 1));
+        let width = inner.width.min(72);
+        (
+            Rect::default(),
+            Rect::new(
+                inner.x + (inner.width - width) / 2,
+                inner.y,
+                width,
+                inner.height,
+            ),
+        )
+    };
     let Some(anime) = state.selected_anime() else {
         state.view.text_view = None;
         state.view.text_selection = None;
@@ -2021,7 +2083,18 @@ fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
         used += grapheme.width();
         start = i;
     }
-    format!("{marker}{}", &text[start..])
+    let suffix = &text[start..];
+    let suffix = if start > 0
+        && !text[..start].ends_with(char::is_whitespace)
+        && !suffix.starts_with(char::is_whitespace)
+    {
+        suffix
+            .split_once(char::is_whitespace)
+            .map_or(suffix, |(_, rest)| rest)
+    } else {
+        suffix.trim_start()
+    };
+    format!("{marker}{suffix}")
 }
 
 const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
@@ -2054,6 +2127,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Esc / h / Left", "Back (Esc leaves text input)"),
             ("Alt+e", "Toggle exact search"),
             ("Delete", "Remove highlighted history entry"),
+            ("u", "Undo last history removal (in History)"),
             ("Click cover", "Enlarge cover; Esc / click closes"),
             ("Click / double-click", "Select item / open or play"),
             ("Mouse wheel", "Move list selection / scroll text"),
@@ -2174,6 +2248,10 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
                 );
             }
         }
+    }
+    if !state.downloads_supported() && help_matches(&query, "downloads playback only provider F3") {
+        lines.push(Line::default());
+        lines.extend(wrap_prose("Playback only with this provider. Downloads are unavailable; F3 searches another provider.", width).into_iter().map(|line| Line::styled(line, muted(state))));
     }
     if lines.is_empty() {
         lines.push(Line::styled("No matching shortcuts", muted(state)));
@@ -2347,6 +2425,41 @@ mod tests {
     use ratatui_image::picker::Picker;
 
     #[test]
+    fn disabled_covers_reclaim_space_and_primary_actions_stay_visible() {
+        for (width, height) in [(32, 12), (40, 16), (80, 24), (120, 40)] {
+            let mut state = State::new(
+                "series".into(),
+                Mode::Sub,
+                "best".into(),
+                false,
+                false,
+                false,
+            );
+            state.accept_search(
+                0,
+                Ok(vec![Anime {
+                    id: "series".into(),
+                    title: "A series".into(),
+                    description: "A synopsis".into(),
+                    ..Default::default()
+                }]),
+            );
+            state.focus = Focus::List;
+            let text = render_text(&mut state, width, height);
+            assert!(text.contains("Enter Open"), "{text}");
+            state.details = true;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+            terminal.draw(|f| render(f, &mut state, &art)).unwrap();
+            let view = state.view.text_view.as_ref().unwrap();
+            let body = panels(&state, Rect::new(0, 0, width, height)).1;
+            assert_eq!(view.area.y, body.y + 1);
+            assert_eq!(view.area.width, body.width.saturating_sub(4).min(72));
+            assert!(state.view.cover.is_none());
+        }
+    }
+
+    #[test]
     fn recovery_hint_names_destination_at_all_layout_widths() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
@@ -2378,9 +2491,16 @@ mod tests {
             number: "1".into(),
             title: "One".into(),
         }];
-        for width in [40, 80, 120] {
+        for width in [32, 40, 80, 120] {
             let text = render_text(&mut state, width, 24);
             assert!(!text.contains("Download"), "{text}");
+            assert!(text.contains("Playback only"), "{text}");
+            assert!(text.contains("Enter Play"), "{text}");
+            assert!(
+                key_hints(&state, width as usize, false)
+                    .iter()
+                    .all(|line| line.width() <= width as usize)
+            );
         }
         assert!(
             !help_lines(&state, 80)
@@ -2438,7 +2558,7 @@ mod tests {
 
     fn render_text(state: &mut State, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
+        let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), true);
         terminal.draw(|f| render(f, state, &art)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
@@ -2574,7 +2694,7 @@ mod tests {
             .map(|s| footer.find(s).unwrap())
             .collect();
         assert!(positions.windows(2).all(|p| p[0] < p[1]));
-        assert!(!footer.contains("Enter Play") && !footer.contains("Esc Back"));
+        assert!(footer.contains("Enter Play") && !footer.contains("Esc Back"));
     }
 
     #[test]
@@ -3321,7 +3441,7 @@ mod tests {
             for hint in ["F1 Help", "d Download", "Space Mark", ": Range"] {
                 assert!(text.contains(hint), "{width} missing {hint}: {text}");
             }
-            assert!(!text.contains("Enter Play") && !text.contains("Esc Back"));
+            assert!(text.contains("Enter Play") && !text.contains("Esc Back"));
             assert!(!text.contains("Finished"), "{text}");
             assert!(!text.contains("x Dismiss"), "{text}");
             assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[4].height, 0);
@@ -3351,15 +3471,15 @@ mod tests {
         let text = render_text(&mut state, 120, 30);
         let top = text.lines().next().unwrap();
         assert!(
-            top.contains("[EXACT]") && top.contains("SUB / best"),
+            top.contains("[EXACT]") && top.contains("SUB / Best"),
             "{text}"
         );
-        assert!(!top.contains("H Home") && !top.contains("Q best"));
+        assert!(!top.contains("H Home") && !top.contains("Q Best"));
         assert!(!text.contains("Enter Results") && !text.contains("Esc Done"));
         state.focus = Focus::List;
         let text = render_text(&mut state, 120, 30);
         let top = text.lines().next().unwrap();
-        assert!(!top.contains("H Home") && top.contains("s SUB") && top.contains("Q best"));
+        assert!(!top.contains("H Home") && top.contains("s SUB") && top.contains("Q Best"));
     }
 
     #[test]
@@ -3382,7 +3502,7 @@ mod tests {
                         text.lines()
                             .next()
                             .unwrap()
-                            .contains(&format!("DUB / {quality}")),
+                            .contains(&format!("DUB / {}", state.quality_label())),
                         "{screen:?}, {details}: {text}"
                     );
                 }

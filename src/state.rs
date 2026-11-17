@@ -124,11 +124,18 @@ pub struct EpisodesState {
     pub(crate) continuation: Option<crate::persistence::Entry>,
 }
 
+pub enum HistoryRemoval {
+    Removing(crate::persistence::Entry),
+    Removed(crate::persistence::Entry),
+    Restoring(crate::persistence::Entry),
+}
+
 pub struct State {
     pub screen: Screen,
     pub focus: Focus,
     pub search: SearchState,
     pub history: HistoryState,
+    pub history_removal: Option<HistoryRemoval>,
     pub episodes: EpisodesState,
     pub view: crate::view::Geometry,
     pub art_revision: u64,
@@ -195,6 +202,14 @@ impl State {
         None
     }
 
+    pub fn quality_label(&self) -> &str {
+        if self.quality == "best" {
+            "Best"
+        } else {
+            &self.quality
+        }
+    }
+
     pub fn downloads_supported(&self) -> bool {
         let source = self
             .selected_anime()
@@ -232,6 +247,7 @@ impl State {
                 ..Default::default()
             },
             history: HistoryState::default(),
+            history_removal: None,
             episodes: EpisodesState::default(),
             view: crate::view::Geometry::default(),
             art_revision: 0,

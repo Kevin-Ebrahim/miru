@@ -110,6 +110,7 @@ pub enum Change {
         quality: String,
     },
     Import(Vec<Entry>),
+    Restore(Entry),
     Remove {
         source: SourceId,
         mode: Mode,
@@ -261,6 +262,21 @@ impl Store {
                         }
                     }
                 }
+                Change::Restore(entry) => {
+                    // Never replace progress recorded after the removal.
+                    if !library
+                        .entries
+                        .iter()
+                        .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode)
+                    {
+                        let index = library
+                            .entries
+                            .iter()
+                            .position(|e| e.watched_at < entry.watched_at)
+                            .unwrap_or(library.entries.len());
+                        library.entries.insert(index, entry);
+                    }
+                }
                 Change::Remove { source, mode } => library.entries.retain(|e| {
                     (e.anime.provider != source.provider || e.anime.id != source.id)
                         || e.mode != mode
@@ -327,6 +343,52 @@ pub fn next_episode(entry: &Entry, episodes: &[Episode]) -> Option<usize> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn restore_preserves_timestamp_order_and_never_overwrites_new_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        let entry = Entry {
+            anime: Anime {
+                id: "series".into(),
+                title: "Series".into(),
+                ..Default::default()
+            },
+            episode: "4".into(),
+            mode: Mode::Sub,
+            watched_at: 10,
+        };
+        let newer = Entry {
+            anime: Anime {
+                id: "other".into(),
+                ..Default::default()
+            },
+            watched_at: 20,
+            ..entry.clone()
+        };
+        store
+            .update(Change::Import(vec![newer, entry.clone()]))
+            .unwrap();
+        store
+            .update(Change::Remove {
+                source: entry.anime.source_id(),
+                mode: entry.mode,
+            })
+            .unwrap();
+        let restored = store.update(Change::Restore(entry.clone())).unwrap();
+        assert_eq!(restored.entries[1].episode, "4");
+        assert_eq!(restored.entries[1].watched_at, 10);
+        store
+            .update(Change::Record {
+                anime: entry.anime.clone(),
+                episode: "5".into(),
+                mode: entry.mode,
+            })
+            .unwrap();
+        let restored = store.update(Change::Restore(entry)).unwrap();
+        assert_eq!(restored.entries.len(), 2);
+        assert_eq!(restored.entries[0].episode, "5");
+    }
 
     #[test]
     fn regular_symlinks_support_reading_migration_and_atomic_saves() {
