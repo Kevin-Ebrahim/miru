@@ -7,7 +7,7 @@ use crate::{
     player,
     provider::Providers,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{path::PathBuf, process::ExitStatus};
 use tokio::{
     process::Child,
@@ -240,22 +240,37 @@ async fn run(
     else {
         return Ok(None);
     };
-    if let Err(error) = options.history.submit(crate::persistence::Change::Record {
-        anime: request.anime,
-        episode: request.episode.number,
-        mode: request.mode,
-    }) {
-        child.kill().await?;
-        return Err(error);
-    }
+    let record = || {
+        options.history.submit(crate::persistence::Change::Record {
+            anime: request.anime.clone(),
+            episode: request.episode.number.clone(),
+            mode: request.mode,
+        })
+    };
+    let marker = options.player.playback_marker(&log);
+    let loaded = player::wait_loaded(&log, marker.as_deref());
+    tokio::pin!(loaded);
+    let mut recorded = false;
 
     let _ = notify.send(Event {
         id: request.id,
         update: Update::Started,
     });
 
-    let Some(status) = wait_child(&mut child, cancel).await? else {
-        return Ok(None);
+    let status = loop {
+        tokio::select! {
+            result = &mut loaded, if !recorded => {
+                if let Err(error) = result.and_then(|()| record()) {
+                    child.kill().await?;
+                    return Err(error);
+                }
+                recorded = true;
+            }
+            result = wait_child(&mut child, cancel) => {
+                let Some(status) = result? else { return Ok(None); };
+                break status;
+            }
+        }
     };
     media.check()?;
     anyhow::ensure!(
@@ -264,6 +279,17 @@ async fn run(
         log.path().display()
     );
 
+    if !recorded {
+        if options.player.requires_playback_marker() {
+            let marker = marker.as_deref().context("Missing mpv playback marker")?;
+            anyhow::ensure!(
+                player::has_started(&log, marker).await?,
+                "Player closed before playback started; history and remaining queue were preserved"
+            );
+        }
+        // VLC and custom wrappers may not emit mpv's playback-start notification.
+        record()?;
+    }
     Ok(Some(Output::Playback))
 }
 

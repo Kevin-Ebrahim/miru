@@ -70,7 +70,37 @@ fn audio_only_codecs(codecs: &str) -> bool {
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Language {
+    Japanese,
+    English,
+    Chinese,
+}
+impl Language {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Japanese => "Japanese",
+            Self::English => "English",
+            Self::Chinese => "Chinese",
+        }
+    }
+}
 pub(super) fn parse_playlist(text: &str, master: &Url, mode: Option<Mode>) -> Result<Vec<Variant>> {
+    parse_playlist_language(
+        text,
+        master,
+        mode.map(|mode| match mode {
+            Mode::Sub => Language::Japanese,
+            Mode::Dub => Language::English,
+        }),
+    )
+}
+
+pub(super) fn parse_playlist_language(
+    text: &str,
+    master: &Url,
+    mode: Option<Language>,
+) -> Result<Vec<Variant>> {
     ensure!(
         text.trim_start().starts_with("#EXTM3U"),
         "Stream host did not return an HLS playlist"
@@ -80,7 +110,7 @@ pub(super) fn parse_playlist(text: &str, master: &Url, mode: Option<Mode>) -> Re
         "HLS playlist exceeds size limit"
     );
     struct Rendition {
-        language: Option<Mode>,
+        language: Option<Language>,
         is_default: bool,
         autoselect: bool,
         url: Option<String>,
@@ -259,11 +289,12 @@ pub(super) fn parse_playlist(text: &str, master: &Url, mode: Option<Mode>) -> Re
     Ok(variants)
 }
 
-fn language(value: &str) -> Option<Mode> {
+pub(super) fn language(value: &str) -> Option<Language> {
     let value = value.trim().to_ascii_lowercase().replace('_', "-");
     match value.split('-').next()? {
-        "ja" | "jpn" | "japanese" => Some(Mode::Sub),
-        "en" | "eng" | "english" => Some(Mode::Dub),
+        "ja" | "jpn" | "japanese" => Some(Language::Japanese),
+        "en" | "eng" | "english" => Some(Language::English),
+        "zh" | "zho" | "chi" | "chinese" | "mandarin" => Some(Language::Chinese),
         _ => None,
     }
 }

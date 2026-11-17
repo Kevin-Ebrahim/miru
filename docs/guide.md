@@ -172,6 +172,11 @@ path atomically, leaving an original symlink target unchanged. Startup and offli
 commands retain normal signal termination until Miru starts work that needs
 coordinated shutdown.
 
+With mpv, history updates when playback starts, not when the player process launches.
+Failed loads leave the previous entry unchanged. VLC and custom wrappers that do
+not emit mpv's start notification update history only after a successful exit;
+cancelling those players does not advance history.
+
 History entries are retained until explicitly removed. Importing history and
 recording new playback do not prune older entries.
 
@@ -325,6 +330,7 @@ when switching to another site.
 
 Miru's HTTP client accepts HTTP(S), rejects URL credentials and HTTPS downgrades,
 checks redirects, and rejects local or reserved destinations, including DNS answers.
+Provider requests ignore ambient proxy settings so destination DNS checks cannot be bypassed.
 An explicitly configured local provider permits requests to that provider's host,
 so local fixtures and self-hosted compatible providers continue to work.
 

@@ -46,6 +46,22 @@ impl Player {
         }
     }
 
+    pub fn requires_playback_marker(&self) -> bool {
+        self.backend == Backend::Mpv
+            && Path::new(&self.executable)
+                .file_name()
+                .is_some_and(|name| name == "mpv")
+    }
+
+    pub fn playback_marker(&self, log: &Log) -> Option<String> {
+        matches!(self.backend, Backend::Mpv).then(|| {
+            format!(
+                "MIRU_PLAYBACK_STARTED_{}",
+                log.path().file_stem().unwrap().to_string_lossy()
+            )
+        })
+    }
+
     fn validate_request(&self, stream: &Stream) -> Result<()> {
         anyhow::ensure!(
             !matches!(self.backend, Backend::Vlc)
@@ -96,11 +112,21 @@ impl Player {
                 }
             }
             Backend::Mpv => {
+                if self.requires_playback_marker() {
+                    // The private job log must retain playback notifications even with quiet config.
+                    args.extend([
+                        "--really-quiet=no".into(),
+                        "--msg-level=cplayer=info".into(),
+                    ]);
+                }
                 // Custom player executables use mpv's argument contract (no shell evaluation).
                 args.extend([
                     format!("--referrer={}", stream.referer),
                     format!("--force-media-title={title}"),
                     "--terminal=yes".into(),
+                    "--msg-module=no".into(),
+                    "--msg-time=no".into(),
+                    "--msg-color=no".into(),
                     "--input-terminal=no".into(),
                     "--network-timeout=20".into(),
                     format!(
@@ -135,6 +161,7 @@ pub async fn launch(
     let executable = &player.executable;
     let mut child = media.command(executable, Tool::Player(player.backend))?
         .args(player.args(media.stream(), quality, title))
+        .args(player.playback_marker(log).map(|marker| format!("--term-playing-msg={marker}")))
         .stdin(Stdio::null())
         .stdout(output.try_clone().context("Could not capture player stdout")?)
         .stderr(output)
@@ -153,10 +180,79 @@ pub async fn launch(
     Ok(Some(child))
 }
 
+/// Check through EOF so a short playback's marker is not lost when exit wins the race.
+pub async fn has_started(log: &Log, marker: &str) -> Result<bool> {
+    let mut file = tokio::fs::File::open(log.path()).await?;
+    scan_marker(&mut file, marker.as_bytes(), &mut Vec::new()).await
+}
+
+async fn scan_marker(
+    file: &mut tokio::fs::File,
+    marker: &[u8],
+    tail: &mut Vec<u8>,
+) -> Result<bool> {
+    use tokio::io::AsyncReadExt;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            return Ok(false);
+        }
+        for &byte in &buffer[..count] {
+            if byte == b'\n' {
+                let line = tail.strip_suffix(b"\r").unwrap_or(tail);
+                if line == marker {
+                    return Ok(true);
+                }
+                tail.clear();
+            } else if tail.len() <= marker.len() + 1 {
+                // Keep an oversized-line sentinel until newline; never match a truncated suffix.
+                tail.push(byte);
+            }
+        }
+    }
+}
+
+/// Tail the owned diagnostic file without buffering arbitrarily long player output.
+pub async fn wait_loaded(log: &Log, marker: Option<&str>) -> Result<()> {
+    let Some(marker) = marker else {
+        return std::future::pending().await;
+    };
+    let mut file = tokio::fs::File::open(log.path()).await?;
+    let mut tail = Vec::new();
+    while !scan_marker(&mut file, marker.as_bytes(), &mut tail).await? {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Variant;
+
+    #[tokio::test]
+    async fn notifications_require_complete_lines_across_reads() {
+        use std::io::Write;
+        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let marker = b"MIRU_PLAYBACK_STARTED_test";
+        writeln!(
+            log,
+            "+ exec mpv --term-playing-msg={}",
+            std::str::from_utf8(marker).unwrap()
+        )
+        .unwrap();
+        log.write_all(&vec![b'x'; 20_000]).unwrap();
+        log.write_all(marker).unwrap();
+        log.write_all(b"\nMIRU_PLAYBACK_").unwrap();
+        log.flush().unwrap();
+        let mut reader = tokio::fs::File::open(log.path()).await.unwrap();
+        let mut tail = Vec::new();
+        assert!(!scan_marker(&mut reader, marker, &mut tail).await.unwrap());
+        log.write_all(b"STARTED_test\r\n").unwrap();
+        log.flush().unwrap();
+        assert!(scan_marker(&mut reader, marker, &mut tail).await.unwrap());
+    }
 
     fn stream() -> Stream {
         Stream {

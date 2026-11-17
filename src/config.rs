@@ -129,7 +129,16 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path, previous: &Self, edited: Setting) -> Result<Self> {
-        self.validate()?;
+        let mut changed = Self::default();
+        match edited {
+            Setting::DownloadFolder => changed.download_dir = self.download_dir.clone(),
+            Setting::Audio => changed.audio = self.audio,
+            Setting::Quality => changed.quality = self.quality.clone(),
+            Setting::Player => changed.player = self.player.clone(),
+            Setting::PlayerArguments => changed.player_args = self.player_args.clone(),
+            Setting::PlayerBackend => changed.player_backend = self.player_backend,
+        }
+        changed.validate()?;
         let parent = path.parent().context("Missing config directory")?;
         std::fs::create_dir_all(parent)?;
         let lock = std::fs::OpenOptions::new()
@@ -178,6 +187,31 @@ pub fn automatic_download_dir() -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn unrelated_invalid_settings_do_not_block_audio_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let blocked = dir.path().join("file");
+        fs::write(&blocked, "file").unwrap();
+        let previous = Config {
+            player: Some("/nonexistent/miru-player".into()),
+            download_dir: Some(blocked),
+            ..Default::default()
+        };
+        fs::write(&path, serde_json::to_vec(&previous).unwrap()).unwrap();
+        let mut next = previous.clone();
+        next.audio = Some(Mode::Dub);
+        let saved = next.save(&path, &previous, Setting::Audio).unwrap();
+        assert_eq!(saved.audio, Some(Mode::Dub));
+        assert_eq!(saved.player, previous.player);
+        assert_eq!(saved.download_dir, previous.download_dir);
+        assert!(next.save(&path, &previous, Setting::Player).is_err());
+        assert!(
+            next.save(&path, &previous, Setting::DownloadFolder)
+                .is_err()
+        );
+    }
 
     #[test]
     fn concurrent_edits_merge_and_preserve_legacy_quality() {
