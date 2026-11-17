@@ -6,21 +6,22 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.parse
 
 def main():
-    binary = pathlib.Path("target/debug/miru").resolve()
+    binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
     with tempfile.TemporaryDirectory(prefix="miru-kaa-") as tmp:
         root = pathlib.Path(tmp)
         for name, frequency in [("en", 440), ("ja", 880)]:
             subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-                f"sine=frequency={frequency}:duration=2", "-c:a", "aac", "-f", "hls",
-                "-hls_time", "1", str(root / f"{name}.m3u8")], check=True)
+                f"sine=frequency={frequency}:duration=6", "-c:a", "aac", "-f", "hls",
+                "-hls_time", "1", "-hls_list_size", "0", str(root / f"{name}.m3u8")], check=True)
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
-            "color=size=64x64:rate=10:duration=2", "-an", "-c:v", "libx264",
-            "-f", "hls", "-hls_time", "1", str(root / "video.m3u8")], check=True)
+            "color=size=64x64:rate=10:duration=6", "-an", "-c:v", "libx264", "-g", "10",
+            "-f", "hls", "-hls_time", "1", "-hls_list_size", "0", str(root / "video.m3u8")], check=True)
         (root / "master.m3u8").write_text(
             '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="English",LANGUAGE="English",URI="en.m3u8"\n'
             '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Japanese",LANGUAGE="Japanese",URI="ja.m3u8"\n'
@@ -29,6 +30,7 @@ def main():
         (root / "sub.vtt").write_text("WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n")
         requests = []
         media_failure = [False]
+        final_failure = [False]
         faults = {"repeat": False, "wrong": False, "no_servers": False}
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_): pass
@@ -74,6 +76,8 @@ def main():
                         return self.reply(b"Missing user agent", 403)
                     if path.path != "/master.m3u8" and self.headers.get("Origin") != base.rstrip("/"):
                         return self.reply(b"Missing origin", 403)
+                    if final_failure[0] and path.path == "/video5.ts":
+                        return self.reply(b"Final segment unavailable", 403)
                     if media_failure[0] and path.path.endswith(".ts"):
                         return self.reply(b"Segment unavailable", 403)
                     file = root / path.path.lstrip("/")
@@ -111,6 +115,13 @@ def main():
             invoke("--sub", "--download", "Probe", "-e", "1", "--download-dir", str(root / "failed"), success=False)
             assert not list((root / "failed").iterdir()), "Failed download left partial output"
             media_failure[0] = False
+            requests.clear()
+            final_failure[0] = True
+            failed = invoke("--sub", "--download", "Probe", "-e", "1,1.5", "--download-dir", str(root / "truncated"), success=False)
+            assert "Saved" not in failed.stdout
+            assert not any("/episode/ep-1.5-" in path for path, _, _ in requests), "Queue advanced after an incomplete download"
+            assert not list((root / "truncated").iterdir()), "Truncated download was published"
+            final_failure[0] = False
             for fault in faults:
                 faults[fault] = True
                 failed = invoke("--resolve", "Probe", "-e", "1", success=False)

@@ -128,7 +128,7 @@ pub async fn download(
         "-xerror",
         "-y",
         "-loglevel",
-        "warning",
+        "level+warning",
         "-progress",
         "pipe:1",
         "-nostats",
@@ -232,12 +232,43 @@ pub async fn download(
         log.path().display()
     );
 
+    verify_transfer_log(log.path()).await?;
+
     temporary.as_file().sync_all()?;
     temporary
         .persist_noclobber(&destination)
         .context("Could not save download; destination may already exist")?;
 
     Ok(Some(destination))
+}
+
+async fn verify_transfer_log(path: &Path) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buffer = vec![0u8; 8192];
+    let mut carry = Vec::new();
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        carry.extend_from_slice(&buffer[..count]);
+        for marker in [
+            b"[error]".as_slice(),
+            b"[fatal]",
+            b"failed too many times, skipping",
+        ] {
+            ensure!(
+                !carry.windows(marker.len()).any(|part| part == marker),
+                "Download incomplete: ffmpeg reported damaged or missing media. See {}",
+                path.display()
+            );
+        }
+        if carry.len() > 128 {
+            carry.drain(..carry.len() - 128);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

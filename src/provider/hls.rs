@@ -168,6 +168,22 @@ pub(super) fn parse_playlist(text: &str, master: &Url, mode: Option<Mode>) -> Re
                 pending = None;
                 continue;
             }
+            if mode.is_some() {
+                let eligible = match attributes.get("AUDIO") {
+                    Some(group) => groups
+                        .get(group)
+                        .with_context(|| {
+                            format!("HLS variant references missing audio group {group:?}")
+                        })?
+                        .as_ref()
+                        .is_some_and(|r| r.url.is_some()),
+                    None => false,
+                };
+                if !eligible {
+                    pending = None;
+                    continue;
+                }
+            }
             let audio = attributes
                 .get("AUDIO")
                 .map(|&group| -> Result<Audio> {
@@ -259,6 +275,21 @@ mod tests {
 
     fn parse_playlist(text: &str, master: &Url) -> Result<Vec<Variant>> {
         super::parse_playlist(text, master, None)
+    }
+
+    #[test]
+    fn mixed_language_masters_keep_only_supported_variants() {
+        let base = Url::parse("https://cdn.example/master.m3u8").unwrap();
+        let fixture = include_str!("../../tests/fixtures/multilingual.m3u8");
+        let text = format!(
+            "{fixture}\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"embedded\",LANGUAGE=\"Japanese\"\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080,AUDIO=\"embedded\"\nembedded.m3u8\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080\nunknown.m3u8\n"
+        );
+        for mode in [Mode::Sub, Mode::Dub] {
+            let variants = super::parse_playlist(&text, &base, Some(mode)).unwrap();
+            assert_eq!(variants.len(), 2);
+            assert!(variants.iter().all(|v| v.audio_url().is_some()));
+        }
+        assert_eq!(parse_playlist(&text, &base).unwrap().len(), 4);
     }
 
     #[test]
