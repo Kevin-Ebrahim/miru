@@ -95,7 +95,7 @@ impl Kaa {
             ensure!(show.slug == anime.id, "KAA returned a different series");
             ensure!(
                 !show.locales.is_empty(),
-                "KAA lists this title but has no playable episodes in any language. Search another provider"
+                "This title isn't available to watch on KAA. Try another provider."
             );
             if mode == Mode::Sub && show.locales.iter().any(|locale| locale == "zh-CN") {
                 locale = "zh-CN";

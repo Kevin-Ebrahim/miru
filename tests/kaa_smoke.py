@@ -121,7 +121,7 @@ def main():
             faults["unavailable"] = True
             for mode in ["sub", "dub"]:
                 failed = invoke("--" + mode, "--resolve", "Probe", success=False)
-                assert "no playable episodes in any language" in failed.stderr
+                assert "This title isn't available to watch on KAA. Try another provider." in failed.stderr
                 assert "Try switching audio language" not in failed.stderr
             faults["unavailable"] = False
             for mode, track in [("sub", "ja"), ("dub", "en")]:
