@@ -31,7 +31,7 @@ def main():
         requests = []
         media_failure = [False]
         final_failure = [False]
-        faults = {"repeat": False, "wrong": False, "no_servers": False, "movie": False, "empty": False, "chinese": False}
+        faults = {"repeat": False, "wrong": False, "no_servers": False, "movie": False, "empty": False, "chinese": False, "unavailable": False}
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_): pass
             def reply(self, data, status=200):
@@ -50,9 +50,9 @@ def main():
                 query = urllib.parse.parse_qs(path.query)
                 requests.append((self.path, self.headers.get("Referer"), self.headers.get("User-Agent")))
                 if path.path == "/api/show/probe":
-                    self.reply({"slug": "probe", "title": "Probe", "synopsis": "Story", "locales": ["zh-CN"]})
+                    self.reply({"slug": "probe", "title": "Probe", "synopsis": "Story", "locales": [] if faults["unavailable"] else ["zh-CN"]})
                 elif path.path == "/api/show/probe/episodes":
-                    if faults["empty"] or (faults["chinese"] and query["lang"] == ["ja-JP"]):
+                    if faults["empty"] or faults["unavailable"] or (faults["chinese"] and query["lang"] == ["ja-JP"]):
                         return self.reply({"current_page": 0, "pages": []})
                     if faults["movie"]:
                         data = {"current_page": 1 if query["ep"] == ["0"] else 0,
@@ -118,6 +118,12 @@ def main():
             failed = invoke("--dub", "--resolve", "Probe", success=False)
             assert "no episodes in dub" in failed.stderr and "Invalid KAA response" not in failed.stderr
             faults["empty"] = False
+            faults["unavailable"] = True
+            for mode in ["sub", "dub"]:
+                failed = invoke("--" + mode, "--resolve", "Probe", success=False)
+                assert "no playable episodes in any language" in failed.stderr
+                assert "Try switching audio language" not in failed.stderr
+            faults["unavailable"] = False
             for mode, track in [("sub", "ja"), ("dub", "en")]:
                 requests.clear()
                 result = [json.loads(line) for line in invoke("--" + mode, "--resolve", "Probe", "-e", "1,1.5").stdout.splitlines()]

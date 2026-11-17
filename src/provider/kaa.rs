@@ -90,10 +90,14 @@ impl Kaa {
         let mut locale = locale(mode);
         let path = format!("/api/show/{}/episodes", anime.id);
         let mut first: EpisodePage = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
-        if mode == Mode::Sub && first.pages.is_empty() && first.current_page == 0 {
+        if first.pages.is_empty() && first.current_page == 0 {
             let show: Show = self.json(&format!("/api/show/{}", anime.id)).await?;
             ensure!(show.slug == anime.id, "KAA returned a different series");
-            if show.locales.iter().any(|locale| locale == "zh-CN") {
+            ensure!(
+                !show.locales.is_empty(),
+                "KAA lists this title but has no playable episodes in any language. Search another provider"
+            );
+            if mode == Mode::Sub && show.locales.iter().any(|locale| locale == "zh-CN") {
                 locale = "zh-CN";
                 first = self.json(&format!("{path}?ep=1&lang={locale}")).await?;
             }
