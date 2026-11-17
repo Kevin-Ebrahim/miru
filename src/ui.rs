@@ -895,6 +895,7 @@ enum HintAction {
     MarkRange,
     Cancel,
     RetryRequest,
+    SearchElsewhere,
     Search,
     MarkEpisode,
     EnterRange,
@@ -923,6 +924,7 @@ impl KeyHint {
             HintAction::ExactSearch => "Alt+e",
             HintAction::MarkRange => "Enter",
             HintAction::RetryRequest => "F5",
+            HintAction::SearchElsewhere => "F3",
             HintAction::Search => "/",
             HintAction::MarkEpisode => "Space",
             HintAction::EnterRange => ":",
@@ -1075,6 +1077,16 @@ fn global_hints(state: &State, compact: bool, copy_available: bool) -> Vec<KeyHi
     if state.activity.as_ref().is_some_and(Activity::retryable) {
         let action = if compact { "Retry" } else { "Retry remaining" };
         hints.insert(0, KeyHint::new(HintAction::RetryActivity, action));
+    }
+
+    if let Some((_, source, _)) = state.recovery_search() {
+        hints.insert(
+            0,
+            KeyHint::new(
+                HintAction::SearchElsewhere,
+                format!("Search {}", source.label()),
+            ),
+        );
     }
 
     if copy_available {
@@ -2024,6 +2036,10 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("H", "Home"),
             ("/", "Search"),
             ("F2", "Change search provider"),
+            (
+                "F3",
+                "Search this title on another provider; choose series and episode",
+            ),
             ("Alt+h", "History"),
             ("j/k / Up/Down", "Move or scroll"),
             ("Ctrl+n/p", "Next / previous item"),
@@ -2325,6 +2341,25 @@ mod tests {
         backend::{Backend, TestBackend},
     };
     use ratatui_image::picker::Picker;
+
+    #[test]
+    fn recovery_hint_names_destination_at_all_layout_widths() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::Episodes;
+        state.focus = Focus::List;
+        state.episodes.anime = Some(Anime {
+            provider: crate::provider::Source::AnimeGg.id(),
+            title: "Probe".into(),
+            ..Default::default()
+        });
+        for width in [40, 80, 120] {
+            let text = render_text(&mut state, width, 24);
+            assert!(
+                text.contains("F3") && text.contains("Search HiAnime"),
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn download_actions_follow_episode_provider_not_search_source() {

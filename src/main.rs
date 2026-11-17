@@ -282,7 +282,10 @@ async fn run() -> Result<()> {
         while let Ok(library) = library_rx.try_recv() {
             library?;
         }
-        return result;
+        return result.with_context(|| format!(
+            "Search another provider with: miru --source {} --list --{} <title>. Choose the matching series and episode; history is preserved.",
+            cli.source.next().name(), mode.as_str()
+        ));
     }
 
     ensure!(
@@ -370,7 +373,13 @@ async fn run_cli(
         .and_then(|i| results.get(i))
         .context("Selected result does not exist (--select-nth is 1-based)")?;
     let episodes = provider.episodes(anime, mode).await?;
-    let indices = model::episode_range(&cli.episode, &episodes)?;
+    let indices = model::episode_range(&cli.episode, &episodes).with_context(|| {
+        format!(
+            "{} episode selection failed ({})",
+            anime.provider,
+            mode.as_str()
+        )
+    })?;
     for (id, i) in indices.into_iter().enumerate() {
         if cli.resolve {
             output::line(format_args!(
@@ -413,7 +422,13 @@ async fn run_cli(
             match event.update {
                 jobs::Update::Progress(text) => eprintln!("{text}"),
                 jobs::Update::Finished(result) => {
-                    if let jobs::Output::Download(path) = result? {
+                    if let jobs::Output::Download(path) = result.with_context(|| {
+                        format!(
+                            "{} {} failed",
+                            anime.provider,
+                            if cli.download { "download" } else { "playback" }
+                        )
+                    })? {
                         output::line(format_args!("Saved {}", path.display()))?;
                     }
                     break;

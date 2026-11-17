@@ -563,8 +563,15 @@ impl App {
                 }
             }
             Err(err) => {
+                let stage = if activity.phase == JobPhase::Resolving {
+                    "resolution/startup"
+                } else if activity.kind == JobKind::Download {
+                    "download"
+                } else {
+                    "playback"
+                };
+                activity.message = format!("{} {stage} failed: {err:#}", activity.anime.provider);
                 activity.phase = JobPhase::Failed;
-                activity.message = format!("{err:#}");
             }
         }
     }
@@ -966,6 +973,29 @@ impl App {
         self.state.help_query.set(String::new());
     }
 
+    fn search_elsewhere(&mut self) {
+        let Some((title, source, mode)) = self.state.recovery_search() else {
+            return;
+        };
+        if self.state.screen == Screen::Search {
+            self.back_stack.push(Visit::Search(
+                Box::new(self.state.search.clone()),
+                self.state.view.list_offsets[Screen::Search as usize],
+            ));
+        }
+        self.navigate(Screen::Search);
+        abort(&mut self.search_task);
+        self.cancel_synopsis();
+        self.state.search.source = source;
+        self.state.search.query.set(title);
+        self.state.search.exact = false;
+        self.state.search.replace_results(vec![]);
+        self.state.search.results_query.clear();
+        self.state.mode = mode;
+        self.state.invalidate_search();
+        self.search();
+    }
+
     fn cycle_source(&mut self) {
         if self.state.help
             || self.state.details
@@ -1115,6 +1145,11 @@ impl App {
                 KeyCode::F(5) => self.state.art_revision += 1,
                 _ => {}
             }
+            return;
+        }
+
+        if key.code == KeyCode::F(3) && !self.state.help {
+            self.search_elsewhere();
             return;
         }
 
@@ -1733,6 +1768,106 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_search_preserves_failed_activity_and_back_navigation() {
+        for source in [
+            crate::provider::Source::HiAnime,
+            crate::provider::Source::AnimeGg,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = test_app(
+                State::new(String::new(), Mode::Dub, "best".into(), false, false, false),
+                dir.path(),
+            );
+            // No real provider is contacted: the spawned search is aborted before yielding.
+            app.state.screen = Screen::Episodes;
+            let mut series = anime("original", "Probe Season 2");
+            series.provider = source.id();
+            let episode = Episode {
+                provider: source.id(),
+                id: "special".into(),
+                number: "1.5".into(),
+                title: "Special".into(),
+            };
+            app.state.episodes.anime = Some(series.clone());
+            app.state.episodes.items = vec![episode.clone()];
+            app.state.episodes.mode = Some(Mode::Dub);
+            app.state.episodes.marked.insert(0);
+            app.state.activity = Some(Activity {
+                anime: series.clone(),
+                episodes: vec![episode],
+                index: 0,
+                remaining: VecDeque::new(),
+                mode: Mode::Dub,
+                quality: "best".into(),
+                quality_note: String::new(),
+                kind: JobKind::Playback,
+                phase: JobPhase::Failed,
+                message: "Resolution unavailable".into(),
+            });
+            let job = app.job;
+            app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+            abort(&mut app.search_task);
+            assert_eq!(app.state.screen, Screen::Search);
+            assert_eq!(app.state.search.source, source.next());
+            assert_eq!(app.state.search.query.text, "Probe Season 2");
+            assert_eq!(app.state.mode, Mode::Dub);
+            assert_eq!(app.job, job);
+            assert_eq!(
+                app.state.activity.as_ref().unwrap().message,
+                "Resolution unavailable"
+            );
+            let generation = app.state.search_generation;
+            app.message(Message::Search(
+                generation,
+                Ok(vec![
+                    anime("ambiguous-a", "Probe Season 2"),
+                    anime("ambiguous-b", "Probe Season 2"),
+                ]),
+            ));
+            assert_eq!(app.state.search.results().len(), 2);
+            assert_eq!(app.job, job);
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.state.screen, Screen::Episodes);
+            assert_eq!(app.state.episodes.anime.as_ref(), Some(&series));
+            assert_eq!(app.state.episodes.items[0].number, "1.5");
+            assert!(app.state.episodes.marked.contains(&0));
+            assert_eq!(app.state.activity.as_ref().unwrap().phase, JobPhase::Failed);
+            app.jobs.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_catalogue_recovery_retains_query_and_ignores_old_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(
+            State::new(
+                "Missing title".into(),
+                Mode::Sub,
+                "best".into(),
+                false,
+                false,
+                false,
+            ),
+            dir.path(),
+        );
+        app.state.screen = Screen::Search;
+        app.state.request_error = Some("Offline".into());
+        let old = app.state.search_generation;
+        app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        abort(&mut app.search_task);
+        assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
+        assert_eq!(app.state.search.query.text, "Missing title");
+        app.message(Message::Search(old, Ok(vec![anime("stale", "Wrong show")])));
+        assert!(app.state.search.results().is_empty());
+        assert!(app.state.activity.is_none());
+        app.back();
+        abort(&mut app.search_task);
+        assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
+        assert_eq!(app.state.search.query.text, "Missing title");
+        app.jobs.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn animegg_download_shortcut_does_not_replace_playback() {

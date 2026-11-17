@@ -255,7 +255,8 @@ entries are treated as SUB.
 Miru supports HiAnime (the default) and AnimeGG. AnimeGG downloads are disabled
 because sustained transfers have been unreliable. Its episode view hides the
 download action, and `--source animegg --download` fails before network access.
-HiAnime downloads remain available, regardless of the current search source. Select a source with F2 or by
+HiAnime downloads remain available, regardless of the current search source.
+Select a source with F2 or by
 clicking its name on Home or Search. From the CLI:
 
 ```sh
@@ -287,6 +288,20 @@ supported. Site challenges, missing language sources and changed markup can stil
 interrupt playback. Short playback tests do not establish full-episode reliability.
 Errors appear in the affected view, and F5 retries it. Check state-directory logs
 for player failures.
+
+### Search another provider
+
+Press F3 on a series, in its episode view, or after a failed search to search
+the same title on the other provider. The footer names the destination provider.
+The requested SUB/DUB mode is retained. Choose the matching series or season and
+then the episode yourself; Miru does not match episodes across providers.
+Esc returns to the previous view.
+
+Searching does not replace active or failed playback, change its queue, or merge
+history. Starting a replacement uses the normal stop-and-replace behavior and
+records the new provider separately. CLI failures identify the provider and stage,
+and suggest a `--source` search command. Replace `<title>` in that example with
+your quoted search text.
 
 ### Network policy
 

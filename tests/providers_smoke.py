@@ -77,9 +77,17 @@ def main():
             invoke("--dub", "--resolve", "Probe", "-e", "1")
             assert any(path == "/embed/22" for path, _ in requests)
             assert not any(path == "/embed/11" for path, _ in requests)
-            invoke("--dub", "--resolve", "Probe", "-e", "1.5", success=False)
+            failed = invoke("--dub", "--resolve", "Probe", "-e", "1.5", success=False)
+            assert not failed.stdout
+            assert "animegg episode selection failed (dub)" in failed.stderr, failed.stderr
+            assert "--source hianime --list --dub <title>" in failed.stderr
+            failed = invoke("--resolve", "Probe", "-e", "9", success=False)
+            assert not failed.stdout and "--source hianime" in failed.stderr
             requests.clear()
-            invoke("--source", "hianime", "--list", "Probe", success=False)
+            failed = invoke("--source", "hianime", "--list", "Probe", success=False)
+            assert not failed.stdout
+            assert "hianime catalogue search failed" in failed.stderr
+            assert "--source animegg --list --sub <title>" in failed.stderr
             assert requests and requests[0][0].startswith("/search?keyword="), requests
             requests.clear()
             invoke("--source", "unknown", "--list", "Probe", success=False)

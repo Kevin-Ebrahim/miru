@@ -8,7 +8,7 @@ use crate::{
     model::{Anime, Episode, Mode, ProviderId},
     network::{Http, ResolvedMedia},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 pub fn downloads_supported(id: &ProviderId) -> bool {
     *id == Source::HiAnime.id()
@@ -124,17 +124,25 @@ impl Providers {
     }
 
     pub async fn search(&self, id: &ProviderId, query: &str) -> Result<Vec<Anime>> {
-        match self.adapter(id)? {
-            Adapter::HiAnime(provider) => provider.search(query).await,
-            Adapter::AnimeGg(provider) => provider.search(query).await,
+        async {
+            match self.adapter(id)? {
+                Adapter::HiAnime(provider) => provider.search(query).await,
+                Adapter::AnimeGg(provider) => provider.search(query).await,
+            }
         }
+        .await
+        .with_context(|| format!("{} catalogue search failed", id))
     }
 
     pub async fn synopsis(&self, anime: &Anime) -> Result<String> {
-        match self.adapter(&anime.provider)? {
-            Adapter::HiAnime(provider) => provider.synopsis(anime).await,
-            Adapter::AnimeGg(provider) => provider.synopsis(anime).await,
+        async {
+            match self.adapter(&anime.provider)? {
+                Adapter::HiAnime(provider) => provider.synopsis(anime).await,
+                Adapter::AnimeGg(provider) => provider.synopsis(anime).await,
+            }
         }
+        .await
+        .with_context(|| format!("{} details failed", anime.provider))
     }
 
     pub fn mode_specific_episodes(&self, id: &ProviderId) -> bool {
@@ -142,23 +150,31 @@ impl Providers {
     }
 
     pub async fn episodes(&self, anime: &Anime, mode: Mode) -> Result<Vec<Episode>> {
-        match self.adapter(&anime.provider)? {
-            Adapter::HiAnime(provider) => provider.episodes(anime).await,
-            Adapter::AnimeGg(provider) => provider.episodes(anime, mode).await,
+        async {
+            match self.adapter(&anime.provider)? {
+                Adapter::HiAnime(provider) => provider.episodes(anime).await,
+                Adapter::AnimeGg(provider) => provider.episodes(anime, mode).await,
+            }
         }
+        .await
+        .with_context(|| format!("{} episode listing failed", anime.provider))
     }
 
     pub async fn resolve(&self, episode: &Episode, mode: Mode) -> Result<ResolvedMedia> {
-        match self.adapter(&episode.provider)? {
-            Adapter::HiAnime(provider) => {
-                let stream = provider.resolve(episode, mode).await?;
-                provider.http().resolve_media(stream)
-            }
-            Adapter::AnimeGg(provider) => {
-                let stream = provider.resolve(episode, mode).await?;
-                provider.http().resolve_media(stream)
+        async {
+            match self.adapter(&episode.provider)? {
+                Adapter::HiAnime(provider) => {
+                    let stream = provider.resolve(episode, mode).await?;
+                    provider.http().resolve_media(stream)
+                }
+                Adapter::AnimeGg(provider) => {
+                    let stream = provider.resolve(episode, mode).await?;
+                    provider.http().resolve_media(stream)
+                }
             }
         }
+        .await
+        .with_context(|| format!("{} resolution failed", episode.provider))
     }
 }
 
@@ -211,7 +227,7 @@ mod tests {
             providers.resolve(&episode, Mode::Sub).await.err().unwrap(),
             providers.http(&foreign).err().unwrap(),
         ] {
-            assert!(error.to_string().contains("Provider other is unavailable"));
+            assert!(format!("{error:#}").contains("Provider other is unavailable"));
         }
     }
 }
