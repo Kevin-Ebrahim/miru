@@ -175,8 +175,22 @@ impl App {
             } else {
                 next.quality = Some(self.state.quality.clone());
             }
-            match next.save(&settings.path, &settings.saved) {
-                Ok(saved) => settings.saved = saved,
+            match next.save(
+                &settings.path,
+                &settings.saved,
+                if audio {
+                    crate::config::Setting::Audio
+                } else {
+                    crate::config::Setting::Quality
+                },
+            ) {
+                Ok(saved) => {
+                    settings.saved = saved;
+                    self.options.player = settings.player();
+                    if let Ok(path) = settings.download() {
+                        self.options.download_dir = path;
+                    }
+                }
                 Err(error) => {
                     self.state
                         .message(format!("Preferences were not saved: {error:#}"), true);
@@ -1192,12 +1206,8 @@ impl App {
             if s.open {
                 let previous_mode = self.state.mode;
                 if s.key(key) {
-                    if matches!(s.selected, 3..=5) {
-                        self.options.player = s.player();
-                    }
-                    if s.selected == 0
-                        && let Ok(path) = s.download()
-                    {
+                    self.options.player = s.player();
+                    if let Ok(path) = s.download() {
                         self.options.download_dir = path;
                     }
                     if s.selected == 1 {
@@ -1870,6 +1880,81 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn merged_folder_updates_future_jobs_but_preserves_override_and_queue() {
+        for override_folder in [false, true] {
+            for popup in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("config.json");
+                let old = dir.path().join("old");
+                let updated = dir.path().join("updated");
+                let temporary = dir.path().join("temporary");
+                let saved = crate::config::Config {
+                    download_dir: Some(old.clone()),
+                    ..Default::default()
+                };
+                let overrides = crate::settings::Overrides {
+                    download: override_folder.then(|| temporary.clone()),
+                    ..Default::default()
+                };
+                let mut app = test_app(
+                    State::new(String::new(), Mode::Sub, "best".into(), false, false, false),
+                    dir.path(),
+                )
+                .with_settings(crate::settings::Settings::new(
+                    saved,
+                    overrides,
+                    path.clone(),
+                ));
+                app.queue_execution = Some((app.options.player.clone(), old.clone()));
+                std::fs::write(
+                    &path,
+                    serde_json::json!({"download_dir": updated, "player_args": ["--volume=42"]})
+                        .to_string(),
+                )
+                .unwrap();
+                if popup {
+                    app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+                } else {
+                    app.toggle_audio();
+                }
+                let expected = if override_folder { temporary } else { updated };
+                let stream = crate::model::Stream {
+                    request: None,
+                    referer: String::new(),
+                    subtitle: None,
+                    variants: vec![crate::model::Variant {
+                        format: crate::model::MediaFormat::Hls,
+                        label: None,
+                        height: 720,
+                        url: "https://example.org/video.m3u8".into(),
+                        audio: None,
+                    }],
+                };
+                assert!(
+                    app.options
+                        .player
+                        .args(&stream, "best", "test")
+                        .contains(&"--volume=42".into())
+                );
+                assert!(
+                    !app.queue_execution
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .args(&stream, "best", "test")
+                        .contains(&"--volume=42".into())
+                );
+                assert_eq!(app.options.download_dir, expected);
+                assert_eq!(app.settings.as_ref().unwrap().download().unwrap(), expected);
+                assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
+                app.jobs.shutdown().await.unwrap();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn settings_preserve_browsing_and_queue_destination() {

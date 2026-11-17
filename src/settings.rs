@@ -277,7 +277,16 @@ impl Settings {
         false
     }
     fn save(&mut self, next: Config) -> bool {
-        match next.save(&self.path, &self.saved) {
+        use crate::config::Setting;
+        let edited = match self.selected {
+            0 => Setting::DownloadFolder,
+            1 => Setting::Audio,
+            2 => Setting::Quality,
+            3 => Setting::Player,
+            4 => Setting::PlayerArguments,
+            _ => Setting::PlayerBackend,
+        };
+        match next.save(&self.path, &self.saved, edited) {
             Ok(saved) => {
                 self.error = false;
                 self.saved = saved;
@@ -508,6 +517,24 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
+    #[test]
+    fn explicit_reset_overrides_concurrent_folder_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut settings = Settings::new(Config::default(), Overrides::default(), path.clone());
+        std::fs::write(
+            &path,
+            serde_json::json!({"download_dir": dir.path().join("other"), "quality": "720p"})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(settings.key(key(KeyCode::Char('r'))));
+        let saved = Config::load(&path).unwrap();
+        assert!(saved.download_dir.is_none());
+        assert!(settings.saved.download_dir.is_none());
+        assert_eq!(saved.quality.as_deref(), Some("720p"));
+    }
+
     #[test]
     fn arrows_cycle_both_directions_and_open_editors() {
         let dir = tempfile::tempdir().unwrap();

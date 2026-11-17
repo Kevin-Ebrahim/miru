@@ -6,6 +6,16 @@ use std::path::{Path, PathBuf};
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
+#[derive(Clone, Copy)]
+pub enum Setting {
+    DownloadFolder,
+    Audio,
+    Quality,
+    Player,
+    PlayerArguments,
+    PlayerBackend,
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -118,7 +128,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn save(&self, path: &Path, previous: &Self) -> Result<Self> {
+    pub fn save(&self, path: &Path, previous: &Self, edited: Setting) -> Result<Self> {
         self.validate()?;
         let parent = path.parent().context("Missing config directory")?;
         std::fs::create_dir_all(parent)?;
@@ -134,17 +144,14 @@ impl Config {
         // Migrate legacy defaults only when no other instance has saved them.
         latest.audio = latest.audio.or(previous.audio);
         latest.quality = latest.quality.or_else(|| previous.quality.clone());
-        macro_rules! merge {
-            ($($field:ident),+) => { $(if self.$field != previous.$field { latest.$field = self.$field.clone(); })+ };
+        match edited {
+            Setting::DownloadFolder => latest.download_dir = self.download_dir.clone(),
+            Setting::Audio => latest.audio = self.audio,
+            Setting::Quality => latest.quality = self.quality.clone(),
+            Setting::Player => latest.player = self.player.clone(),
+            Setting::PlayerArguments => latest.player_args = self.player_args.clone(),
+            Setting::PlayerBackend => latest.player_backend = self.player_backend,
         }
-        merge!(
-            download_dir,
-            audio,
-            quality,
-            player,
-            player_args,
-            player_backend
-        );
         let bytes = serde_json::to_vec_pretty(&latest)?;
         ensure!(
             bytes.len() as u64 <= MAX_CONFIG_BYTES,
@@ -184,10 +191,12 @@ mod tests {
             };
             let mut first = previous.clone();
             first.download_dir = Some(dir.path().join("downloads"));
-            first.save(&path, &previous).unwrap();
+            first
+                .save(&path, &previous, Setting::DownloadFolder)
+                .unwrap();
             let mut second = previous.clone();
             second.audio = Some(Mode::Dub);
-            let saved = second.save(&path, &previous).unwrap();
+            let saved = second.save(&path, &previous, Setting::Audio).unwrap();
             assert_eq!(saved.download_dir, first.download_dir);
             assert_eq!(saved.audio, Some(Mode::Dub));
             assert_eq!(saved.quality.as_deref(), Some(quality));
