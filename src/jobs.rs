@@ -7,7 +7,7 @@ use crate::{
     player,
     provider::Providers,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{path::PathBuf, process::ExitStatus};
 use tokio::{
     process::Child,
@@ -279,8 +279,15 @@ async fn run(
         log.path().display()
     );
 
-    // VLC and custom wrappers may not emit mpv's playback-start notification.
     if !recorded {
+        if options.player.requires_playback_marker() {
+            let marker = marker.as_deref().context("Missing mpv playback marker")?;
+            anyhow::ensure!(
+                player::has_started(&log, marker).await?,
+                "Player closed before playback started; history and remaining queue were preserved"
+            );
+        }
+        // VLC and custom wrappers may not emit mpv's playback-start notification.
         record()?;
     }
     Ok(Some(Output::Playback))

@@ -330,6 +330,7 @@ when switching to another site.
 
 Miru's HTTP client accepts HTTP(S), rejects URL credentials and HTTPS downgrades,
 checks redirects, and rejects local or reserved destinations, including DNS answers.
+Provider requests ignore ambient proxy settings so destination DNS checks cannot be bypassed.
 An explicitly configured local provider permits requests to that provider's host,
 so local fixtures and self-hosted compatible providers continue to work.
 

@@ -46,6 +46,13 @@ impl Player {
         }
     }
 
+    pub fn requires_playback_marker(&self) -> bool {
+        self.backend == Backend::Mpv
+            && Path::new(&self.executable)
+                .file_name()
+                .is_some_and(|name| name == "mpv")
+    }
+
     pub fn playback_marker(&self, log: &Log) -> Option<String> {
         matches!(self.backend, Backend::Mpv).then(|| {
             format!(
@@ -105,6 +112,13 @@ impl Player {
                 }
             }
             Backend::Mpv => {
+                if self.requires_playback_marker() {
+                    // The private job log must retain playback notifications even with quiet config.
+                    args.extend([
+                        "--really-quiet=no".into(),
+                        "--msg-level=cplayer=info".into(),
+                    ]);
+                }
                 // Custom player executables use mpv's argument contract (no shell evaluation).
                 args.extend([
                     format!("--referrer={}", stream.referer),
@@ -163,30 +177,45 @@ pub async fn launch(
     Ok(Some(child))
 }
 
-/// Tail the owned diagnostic file without buffering arbitrarily long player output.
-pub async fn wait_loaded(log: &Log, marker: Option<&str>) -> Result<()> {
-    use tokio::io::AsyncReadExt;
-    let Some(marker) = marker else {
-        return std::future::pending().await;
-    };
-    let marker = marker.as_bytes();
+/// Check through EOF so a short playback's marker is not lost when exit wins the race.
+pub async fn has_started(log: &Log, marker: &str) -> Result<bool> {
     let mut file = tokio::fs::File::open(log.path()).await?;
+    scan_marker(&mut file, marker.as_bytes(), &mut Vec::new()).await
+}
+
+async fn scan_marker(
+    file: &mut tokio::fs::File,
+    marker: &[u8],
+    tail: &mut Vec<u8>,
+) -> Result<bool> {
+    use tokio::io::AsyncReadExt;
     let mut buffer = [0u8; 8192];
-    let mut tail = Vec::new();
     loop {
         let count = file.read(&mut buffer).await?;
         if count == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            continue;
+            return Ok(false);
         }
         tail.extend_from_slice(&buffer[..count]);
         if tail.windows(marker.len()).any(|bytes| bytes == marker) {
-            return Ok(());
+            return Ok(true);
         }
         if tail.len() >= marker.len() {
             tail.drain(..tail.len() - (marker.len() - 1));
         }
     }
+}
+
+/// Tail the owned diagnostic file without buffering arbitrarily long player output.
+pub async fn wait_loaded(log: &Log, marker: Option<&str>) -> Result<()> {
+    let Some(marker) = marker else {
+        return std::future::pending().await;
+    };
+    let mut file = tokio::fs::File::open(log.path()).await?;
+    let mut tail = Vec::new();
+    while !scan_marker(&mut file, marker.as_bytes(), &mut tail).await? {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

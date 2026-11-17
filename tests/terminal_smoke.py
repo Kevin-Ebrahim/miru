@@ -4,6 +4,7 @@
 This emulates cursor replies; it does NOT replace visual Kitty/Herdr testing.
 """
 import fcntl
+import json
 import os
 import pathlib
 import resource
@@ -24,11 +25,18 @@ def check(binary, exit_method, animate=False, locked=False):
         if locked:
             held_lock = open(pathlib.Path(directory) / "library.lock", "w")
             fcntl.flock(held_lock, fcntl.LOCK_EX)
+            (pathlib.Path(directory) / "library.json").write_text(json.dumps({
+                "version": 2, "mode": "sub", "quality": "best", "entries": [{
+                    "anime": {"id": "probe-1", "title": "Probe", "cover": None},
+                    "episode": "1", "mode": "sub", "watched_at": 1,
+                }],
+            }))
         master, slave = os.openpty()
         before = termios.tcgetattr(slave)
         os.set_blocking(master, False)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 960, 800))
-        command = [str(binary), "--images", "off", "--state-dir", directory]
+        command = [str(binary), "--images", "off", "--state-dir", directory,
+                   "--provider", "http://127.0.0.1:9/"]
         if not animate:
             command.append("--no-animation")
 
@@ -114,7 +122,7 @@ def check(binary, exit_method, animate=False, locked=False):
                 assert status == 0, f"Closing the terminal exited with {status}"
                 return
             if locked:
-                os.write(master, b"\t\x1b[C")  # Change audio and queue a save.
+                os.write(master, b"\x1bh\x1b[3~")  # Open History and delete an entry under the held lock.
                 pump(0.1)
             if exit_method == "q":
                 os.write(master, b"\x1b")
