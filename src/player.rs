@@ -124,6 +124,9 @@ impl Player {
                     format!("--referrer={}", stream.referer),
                     format!("--force-media-title={title}"),
                     "--terminal=yes".into(),
+                    "--msg-module=no".into(),
+                    "--msg-time=no".into(),
+                    "--msg-color=no".into(),
                     "--input-terminal=no".into(),
                     "--network-timeout=20".into(),
                     format!(
@@ -195,12 +198,17 @@ async fn scan_marker(
         if count == 0 {
             return Ok(false);
         }
-        tail.extend_from_slice(&buffer[..count]);
-        if tail.windows(marker.len()).any(|bytes| bytes == marker) {
-            return Ok(true);
-        }
-        if tail.len() >= marker.len() {
-            tail.drain(..tail.len() - (marker.len() - 1));
+        for &byte in &buffer[..count] {
+            if byte == b'\n' {
+                let line = tail.strip_suffix(b"\r").unwrap_or(tail);
+                if line == marker {
+                    return Ok(true);
+                }
+                tail.clear();
+            } else if tail.len() <= marker.len() + 1 {
+                // Keep an oversized-line sentinel until newline; never match a truncated suffix.
+                tail.push(byte);
+            }
         }
     }
 }
@@ -222,6 +230,29 @@ pub async fn wait_loaded(log: &Log, marker: Option<&str>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::Variant;
+
+    #[tokio::test]
+    async fn notifications_require_complete_lines_across_reads() {
+        use std::io::Write;
+        let mut log = tempfile::NamedTempFile::new().unwrap();
+        let marker = b"MIRU_PLAYBACK_STARTED_test";
+        writeln!(
+            log,
+            "+ exec mpv --term-playing-msg={}",
+            std::str::from_utf8(marker).unwrap()
+        )
+        .unwrap();
+        log.write_all(&vec![b'x'; 20_000]).unwrap();
+        log.write_all(marker).unwrap();
+        log.write_all(b"\nMIRU_PLAYBACK_").unwrap();
+        log.flush().unwrap();
+        let mut reader = tokio::fs::File::open(log.path()).await.unwrap();
+        let mut tail = Vec::new();
+        assert!(!scan_marker(&mut reader, marker, &mut tail).await.unwrap());
+        log.write_all(b"STARTED_test\r\n").unwrap();
+        log.flush().unwrap();
+        assert!(scan_marker(&mut reader, marker, &mut tail).await.unwrap());
+    }
 
     fn stream() -> Stream {
         Stream {

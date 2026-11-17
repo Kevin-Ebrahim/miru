@@ -5,6 +5,8 @@ import json
 import os
 import pathlib
 import socket
+import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -86,6 +88,15 @@ def main():
                 failed = subprocess.run(common + extra, env=env, capture_output=True, text=True, timeout=20)
                 assert failed.returncode != 0, failed
                 assert library.read_bytes() == original, "Failed playback changed existing history"
+            wrapper = root / "traced-player"
+            wrapper.write_text('#!/bin/sh\nset -x\nexec ' + shlex.quote(shutil.which("mpv")) + ' "$@"\n')
+            wrapper.chmod(0o700)
+            traced = common.copy()
+            traced[traced.index("--player") + 1] = str(wrapper)
+            failed = subprocess.run(traced, env=env, capture_output=True, text=True, timeout=20)
+            assert failed.returncode != 0, failed.stderr
+            assert library.read_bytes() == original, "Echoed player arguments advanced history"
+            print("PASS: traced wrapper arguments do not count as playback", flush=True)
             server.available = True
             process = subprocess.Popen(common, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
@@ -103,7 +114,9 @@ def main():
                 process.communicate(timeout=10)
             assert json.loads(library.read_text())["entries"][0]["episode"] == "1"
             common[common.index("-e") + 1] = "2"
-            for quiet in [[], ["--player-arg=--really-quiet"], ["--player-arg=--msg-level=all=no"]]:
+            for quiet in [[], ["--player-arg=--really-quiet"], ["--player-arg=--msg-level=all=no"],
+                          ["--player-arg=--msg-module=yes", "--player-arg=--msg-time=yes",
+                           "--player-arg=--msg-color=yes"]]:
                 library.write_bytes(original)
                 completed = subprocess.run(common + ["--player-arg=--length=0.3"] + quiet,
                                            env=env, capture_output=True, text=True, timeout=20)
