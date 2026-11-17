@@ -84,7 +84,8 @@ impl Config {
         }
         if let Some(quality) = &self.quality {
             ensure!(
-                QUALITIES.contains(&quality.as_str()),
+                QUALITIES.contains(&quality.as_str())
+                    || quality.trim_end_matches('p').parse::<u32>().is_ok(),
                 "Choose a listed video quality"
             );
         }
@@ -117,7 +118,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
+    pub fn save(&self, path: &Path, previous: &Self) -> Result<Self> {
         self.validate()?;
         let parent = path.parent().context("Missing config directory")?;
         std::fs::create_dir_all(parent)?;
@@ -129,8 +130,22 @@ impl Config {
         lock.try_lock()
             .context("Settings are being saved by another process; retry shortly")?;
         // Reject malformed existing configuration instead of silently replacing it.
-        Self::load(path)?;
-        let bytes = serde_json::to_vec_pretty(self)?;
+        let mut latest = Self::load(path)?;
+        // Migrate legacy defaults only when no other instance has saved them.
+        latest.audio = latest.audio.or(previous.audio);
+        latest.quality = latest.quality.or_else(|| previous.quality.clone());
+        macro_rules! merge {
+            ($($field:ident),+) => { $(if self.$field != previous.$field { latest.$field = self.$field.clone(); })+ };
+        }
+        merge!(
+            download_dir,
+            audio,
+            quality,
+            player,
+            player_args,
+            player_backend
+        );
+        let bytes = serde_json::to_vec_pretty(&latest)?;
         ensure!(
             bytes.len() as u64 <= MAX_CONFIG_BYTES,
             "Settings exceed the size limit"
@@ -139,7 +154,7 @@ impl Config {
         file.write_all(&bytes)?;
         file.as_file().sync_all()?;
         file.persist(path).context("Could not save settings")?;
-        Ok(())
+        Ok(latest)
     }
 }
 
@@ -156,6 +171,29 @@ pub fn automatic_download_dir() -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn concurrent_edits_merge_and_preserve_legacy_quality() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for quality in ["720", "1440p"] {
+            let previous = Config {
+                quality: Some(quality.into()),
+                audio: Some(Mode::Sub),
+                ..Default::default()
+            };
+            let mut first = previous.clone();
+            first.download_dir = Some(dir.path().join("downloads"));
+            first.save(&path, &previous).unwrap();
+            let mut second = previous.clone();
+            second.audio = Some(Mode::Dub);
+            let saved = second.save(&path, &previous).unwrap();
+            assert_eq!(saved.download_dir, first.download_dir);
+            assert_eq!(saved.audio, Some(Mode::Dub));
+            assert_eq!(saved.quality.as_deref(), Some(quality));
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
 
     #[test]
     fn optional_config_and_saved_absolute_download_folder() {

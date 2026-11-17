@@ -175,8 +175,8 @@ impl App {
             } else {
                 next.quality = Some(self.state.quality.clone());
             }
-            match next.save(&settings.path) {
-                Ok(()) => settings.saved = next,
+            match next.save(&settings.path, &settings.saved) {
+                Ok(saved) => settings.saved = saved,
                 Err(error) => {
                     self.state
                         .message(format!("Preferences were not saved: {error:#}"), true);
@@ -1192,17 +1192,25 @@ impl App {
             if s.open {
                 let previous_mode = self.state.mode;
                 if s.key(key) {
-                    self.options.player = s.player();
-                    if let Ok(path) = s.download() {
+                    if matches!(s.selected, 3..=5) {
+                        self.options.player = s.player();
+                    }
+                    if s.selected == 0
+                        && let Ok(path) = s.download()
+                    {
                         self.options.download_dir = path;
                     }
-                    self.state.mode = s.overrides.audio.or(s.saved.audio).unwrap_or_default();
-                    self.state.quality = s
-                        .overrides
-                        .quality
-                        .clone()
-                        .or(s.saved.quality.clone())
-                        .unwrap_or_else(|| "best".into());
+                    if s.selected == 1 {
+                        self.state.mode = s.overrides.audio.or(s.saved.audio).unwrap_or_default();
+                    }
+                    if s.selected == 2 {
+                        self.state.quality = s
+                            .overrides
+                            .quality
+                            .clone()
+                            .or(s.saved.quality.clone())
+                            .unwrap_or_else(|| "best".into());
+                    }
                 }
                 if previous_mode != self.state.mode
                     && self.state.screen == Screen::Episodes
@@ -1879,6 +1887,8 @@ mod tests {
             crate::settings::Overrides::default(),
             dir.path().join("config.json"),
         ));
+        app.state.mode = Mode::Dub;
+        app.state.quality = "1440p".into();
         app.state.screen = Screen::Search;
         app.state.search.selected = 3;
         let old = dir.path().join("old");
@@ -1890,6 +1900,8 @@ mod tests {
         assert_eq!(app.options.download_dir, dir.path().join("new"));
         assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.quality, "1440p");
         assert_eq!(app.state.screen, Screen::Search);
         assert_eq!(app.state.search.query.text, "query");
         assert_eq!(app.state.search.selected, 3);

@@ -48,7 +48,7 @@ pub struct Settings {
     pub overrides: Overrides,
     pub path: PathBuf,
     pub open: bool,
-    selected: usize,
+    pub(crate) selected: usize,
     arguments: bool,
     argument: usize,
     error: bool,
@@ -277,10 +277,10 @@ impl Settings {
         false
     }
     fn save(&mut self, next: Config) -> bool {
-        match next.save(&self.path) {
-            Ok(()) => {
+        match next.save(&self.path, &self.saved) {
+            Ok(saved) => {
                 self.error = false;
-                self.saved = next;
+                self.saved = saved;
                 self.edit = None;
                 self.message =
                     "Saved. Applies to the next queue; CLI overrides still apply.".into();

@@ -226,7 +226,16 @@ async fn run() -> Result<()> {
     }
 
     let config_path = config::path()?;
-    let mut saved = config::Config::load(&config_path)?;
+    let mut saved = match config::Config::load(&config_path) {
+        Ok(saved) => saved,
+        Err(error) if cli.download_dir.is_some() => {
+            eprintln!(
+                "Warning: {error:#}; using defaults with --download-dir. Configuration was not changed."
+            );
+            config::Config::default()
+        }
+        Err(error) => return Err(error),
+    };
     saved.inherit(&library);
     let preferences = settings::Settings::new(
         saved,
