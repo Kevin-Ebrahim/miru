@@ -438,7 +438,17 @@ fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
     let hint_width = (hint.width() as u16).min(area.width);
     if let Some(controls) = download_hints(state, area.width) {
         frame.render_widget(Paragraph::new(controls), area);
-    } else if state.screen != Screen::Home && !state.details && !state.downloads_supported() {
+    } else if state.screen == Screen::History
+        && state.focus == Focus::List
+        && !state.details
+        && !state.help
+        && state.selected_history().is_some()
+    {
+        frame.render_widget(Paragraph::new(shortcut(state, "Delete", "Remove")), area);
+    } else if matches!(state.screen, Screen::Episodes | Screen::Search)
+        && !state.details
+        && !state.downloads_supported()
+    {
         let width = area.width.saturating_sub(hint_width + 1);
         frame.render_widget(
             Paragraph::new("Playback only").style(muted(state)),
@@ -920,17 +930,10 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         title.push_str("/ Cached ");
     }
 
-    let mut block = panel(title, state, state.focus == Focus::List);
-    if state.screen == Screen::History
-        && state.focus == Focus::List
-        && selected < count
-        && !state.help
-    {
-        let mut hint = Line::from(" ");
-        hint.spans.extend(shortcut(state, "Delete", "Remove").spans);
-        hint.push_span(" ");
-        block = block.title_bottom(hint.right_aligned());
+    if state.screen == Screen::History && selected < count && !state.downloads_supported() {
+        title.push_str("/ Playback only ");
     }
+    let block = panel(title, state, state.focus == Focus::List);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2065,6 +2068,10 @@ mod tests {
             let text = render_text(&mut state, width, 12);
             assert!(text.contains("Mushi-Shi"), "{text}");
             assert_eq!(text.matches("Delete Remove").count(), 1, "{text}");
+            assert!(
+                text.lines().last().unwrap().starts_with("Delete Remove"),
+                "{text}"
+            );
             assert!(
                 text.contains("Playback only") && text.ends_with("? Help"),
                 "{text}"
