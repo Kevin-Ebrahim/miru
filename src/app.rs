@@ -5,12 +5,14 @@ use crate::view::TextSelection;
 use crate::view::TextView;
 use crate::{
     artwork::Artwork,
+    input::Shortcut,
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
     player::Player,
     provider::Providers,
     state::{
-        Activity, EpisodesState, Focus, JobKind, JobPhase, Screen, SearchState, State, Synopsis,
+        Activity, EpisodesState, Focus, HistoryRemoval, JobKind, JobPhase, Screen, SearchState,
+        State, Synopsis,
     },
     ui,
 };
@@ -36,7 +38,7 @@ enum Message {
     Synopsis(u64, SourceId, Result<String>),
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
-    Library(Result<crate::persistence::Library>),
+    Library(crate::persistence::WriteResult),
 }
 
 pub struct Options {
@@ -77,7 +79,8 @@ pub struct App {
     last_click: Option<(Screen, usize, Position, Instant)>,
     back_stack: Vec<Visit>,
     writer: crate::persistence::Writer,
-    library_rx: mpsc::UnboundedReceiver<Result<crate::persistence::Library>>,
+    history_operation: u64,
+    library_rx: mpsc::UnboundedReceiver<crate::persistence::WriteResult>,
 }
 
 fn abort(task: &mut Option<JoinHandle<()>>) {
@@ -133,6 +136,7 @@ impl App {
             last_click: None,
             back_stack: vec![],
             writer,
+            history_operation: 0,
             library_rx,
         }
     }
@@ -161,10 +165,13 @@ impl App {
         }));
     }
 
-    fn persist(&self, change: crate::persistence::Change) {
+    fn persist(&mut self, change: crate::persistence::Change) -> bool {
         if let Err(error) = self.writer.submit(change) {
-            let _ = self.tx.send(Message::Library(Err(error)));
+            self.state
+                .message(format!("History was not saved: {error:#}"), true);
+            return false;
         }
+        true
     }
 
     fn settings(&mut self, audio: bool) -> bool {
@@ -244,6 +251,7 @@ impl App {
         self.state.episode_generation += 1;
 
         self.state.screen = screen;
+        self.state.history.notice = None;
         self.state.focus = if screen == Screen::Home {
             Focus::Search
         } else {
@@ -716,32 +724,68 @@ impl App {
                     }
                 }
             }
-            Message::Library(result) => match result {
-                Ok(library) => {
-                    let previous = self.state.history.selected;
-                    let key = self
-                        .state
-                        .selected_history()
-                        .map(|e| (e.anime.source_id(), e.mode));
+            Message::Library((operation, result)) => {
+                let current = operation == Some(self.history_operation);
+                match result {
+                    Ok((library, removed)) => {
+                        let previous = self.state.history.selected;
+                        let key = self
+                            .state
+                            .selected_history()
+                            .map(|e| (e.anime.source_id(), e.mode));
 
-                    self.state.history.replace_entries(library.entries);
-                    self.state.history.selected = key
-                        .and_then(|(id, mode)| {
-                            self.state.visible_history().iter().position(|i| {
-                                let e = &self.state.history.entries()[*i];
-                                e.anime.provider == id.provider
-                                    && e.anime.id == id.id
-                                    && e.mode == mode
+                        self.state.history.replace_entries(library.entries);
+                        if let Some(removed) = removed {
+                            self.state
+                                .confirm_history_change("Removed", &removed.anime.title);
+                            self.state.last_removed = Some(*removed);
+                        }
+                        if let Some(prior) = &self.state.last_removed
+                            && self
+                                .state
+                                .history
+                                .entries()
+                                .iter()
+                                .any(|e| e.anime.same_source(&prior.anime) && e.mode == prior.mode)
+                        {
+                            let prior = self.state.last_removed.take().unwrap();
+                            self.state.history.notice = None;
+                            if current
+                                && matches!(
+                                    self.state.history_removal,
+                                    Some(HistoryRemoval::Restoring)
+                                )
+                            {
+                                self.state
+                                    .confirm_history_change("Restored", &prior.anime.title);
+                            }
+                        }
+                        if current {
+                            self.state.history_removal = None;
+                        }
+                        self.state.history.selected = key
+                            .and_then(|(id, mode)| {
+                                self.state.visible_history().iter().position(|i| {
+                                    let e = &self.state.history.entries()[*i];
+                                    e.anime.provider == id.provider
+                                        && e.anime.id == id.id
+                                        && e.mode == mode
+                                })
                             })
-                        })
-                        .unwrap_or_else(|| {
-                            previous.min(self.state.visible_history().len().saturating_sub(1))
-                        });
+                            .unwrap_or_else(|| {
+                                previous.min(self.state.visible_history().len().saturating_sub(1))
+                            });
+                    }
+                    Err(err) => {
+                        if current {
+                            self.state.history.notice = None;
+                            self.state.history_removal = None;
+                        }
+                        self.state
+                            .message(format!("History was not saved: {err:#}"), true);
+                    }
                 }
-                Err(err) => self
-                    .state
-                    .message(format!("History was not saved: {err:#}"), true),
-            },
+            }
             _ => {}
         }
     }
@@ -971,12 +1015,7 @@ impl App {
         if self.state.cover_view.is_some() {
             return;
         }
-        if self.state.help && !self.state.help_filtering {
-            return;
-        }
-        if !self.state.help
-            && (self.state.details || !matches!(self.state.focus, Focus::Search | Focus::Range))
-        {
+        if !self.state.typing() {
             return;
         }
 
@@ -1117,7 +1156,7 @@ impl App {
         );
     }
 
-    fn home_key(&mut self, mut key: KeyEvent) -> bool {
+    fn home_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('h') {
             self.history();
             return true;
@@ -1126,18 +1165,6 @@ impl App {
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('e') {
             self.state.search.exact = !self.state.search.exact;
             return true;
-        }
-
-        if key.code == KeyCode::F(5) || key.code == KeyCode::F(6) {
-            return false;
-        }
-
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
         }
 
         match key.code {
@@ -1166,23 +1193,11 @@ impl App {
                 self.state.search.query.edit(key);
             }
             _ if matches!(self.state.focus, Focus::Audio | Focus::Quality) => {
-                if key.modifiers.is_empty()
-                    && matches!(
-                        key.code,
-                        KeyCode::Left
-                            | KeyCode::Right
-                            | KeyCode::Up
-                            | KeyCode::Down
-                            | KeyCode::Char('h' | 'j' | 'k' | 'l')
-                    )
-                {
+                if key.modifiers.is_empty() && matches!(key.code, KeyCode::Left | KeyCode::Right) {
                     if self.state.focus == Focus::Audio {
                         self.toggle_audio();
                     } else {
-                        self.cycle_quality(matches!(
-                            key.code,
-                            KeyCode::Left | KeyCode::Up | KeyCode::Char('h' | 'k')
-                        ));
+                        self.cycle_quality(key.code == KeyCode::Left);
                     }
                 }
             }
@@ -1202,6 +1217,7 @@ impl App {
             return;
         }
 
+        let shortcut = Shortcut::from_key(key, self.state.typing());
         if let Some(s) = &mut self.settings {
             if s.open {
                 let previous_mode = self.state.mode;
@@ -1236,35 +1252,31 @@ impl App {
                 }
                 return;
             }
-            if key.code == KeyCode::F(4) {
+            if shortcut == Some(Shortcut::Settings) {
                 s.open = true;
                 return;
             }
         }
         if self.state.cover_view.is_some() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.state.cover_view = None,
-                KeyCode::F(5) => self.state.art_revision += 1,
+            match (key.code, shortcut) {
+                (KeyCode::Esc, _) => self.state.cover_view = None,
+                (_, Some(Shortcut::Refresh)) => self.state.art_revision += 1,
                 _ => {}
             }
             return;
         }
 
-        if key.code == KeyCode::F(3) && !self.state.help {
-            self.search_elsewhere();
-            return;
-        }
-
-        if key.code == KeyCode::F(2) && !self.state.help && !self.state.details {
-            self.cycle_source();
-            return;
-        }
-
-        if key.code == KeyCode::F(1) {
-            if self.state.help {
-                self.state.help = false;
-            } else {
-                self.open_help();
+        if let Some(shortcut) = shortcut {
+            match shortcut {
+                _ if self.state.help => {}
+                Shortcut::Help => self.open_help(),
+                Shortcut::Audio => self.toggle_audio(),
+                Shortcut::Quality => self.cycle_quality(false),
+                Shortcut::Provider => self.cycle_source(),
+                Shortcut::Alternate => self.search_elsewhere(),
+                Shortcut::Refresh => self.retry(),
+                Shortcut::RetryQueue => self.retry_activity(),
+                Shortcut::Settings => {}
             }
             return;
         }
@@ -1314,21 +1326,6 @@ impl App {
             return;
         }
 
-        if key.code == KeyCode::F(5) {
-            self.retry();
-            return;
-        }
-
-        if key.code == KeyCode::F(6) {
-            self.retry_activity();
-            return;
-        }
-
-        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
-            self.toggle_audio();
-            return;
-        }
-
         if self.state.details {
             self.details_key(key);
             return;
@@ -1344,25 +1341,6 @@ impl App {
 
     fn normalize_key(&self, mut key: KeyEvent, editing: bool) -> Option<KeyEvent> {
         // Modified navigation must not fall through to playback/download shortcuts.
-        if editing && key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
-        }
-
-        if !editing && key.modifiers == KeyModifiers::CONTROL {
-            key.code = match key.code {
-                KeyCode::Char('n') => KeyCode::Down,
-                KeyCode::Char('p') => KeyCode::Up,
-                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
-                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
-                _ => return None,
-            };
-            key.modifiers = KeyModifiers::NONE;
-        }
-
         if !editing
             && key.modifiers.intersects(
                 KeyModifiers::CONTROL
@@ -1381,14 +1359,10 @@ impl App {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }
 
-        if !editing
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        if !editing && !self.state.details && !self.state.help {
             key.code = match key.code {
-                KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => KeyCode::Esc,
-                KeyCode::Char('l') | KeyCode::Right if !self.state.details && !self.state.help => {
+                KeyCode::Left => KeyCode::Esc,
+                KeyCode::Right => {
                     if self.state.screen == Screen::Episodes {
                         KeyCode::Char('i')
                     } else {
@@ -1405,9 +1379,6 @@ impl App {
     fn help_filter_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
-            KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
-                self.state.help_filtering = false
-            }
             KeyCode::Down | KeyCode::PageDown => {
                 self.state.help_filtering = false;
                 self.state.view.help_scroll = self
@@ -1434,8 +1405,7 @@ impl App {
 
     fn help_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
-            KeyCode::Char('q') => self.state.help = false,
+            KeyCode::Esc => self.state.help = false,
             KeyCode::Char('/') => {
                 self.state.help_filtering = true;
                 self.state.help_query.cursor = self.state.help_query.text.len();
@@ -1452,15 +1422,15 @@ impl App {
             KeyCode::PageUp => {
                 self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
             }
-            KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
+            KeyCode::Home => self.state.view.help_scroll = 0,
+            KeyCode::End => self.state.view.help_scroll = u16::MAX,
             _ => {}
         }
     }
 
     fn details_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
+            KeyCode::Esc => self.state.details = false,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(1)
             }
@@ -1473,9 +1443,8 @@ impl App {
             KeyCode::PageUp => {
                 self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(10)
             }
-            KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
-            KeyCode::Char('q') => self.state.details = false,
+            KeyCode::Home => self.state.view.details_scroll = 0,
+            KeyCode::End => self.state.view.details_scroll = u16::MAX,
             KeyCode::Char('x') => self.stop(),
             KeyCode::Char('y') => self.copy_requested = true,
             _ => {}
@@ -1506,9 +1475,7 @@ impl App {
 
     fn history_filter_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
-                self.state.focus = Focus::List
-            }
+            KeyCode::Enter | KeyCode::Esc => self.state.focus = Focus::List,
             _ => {
                 if self.state.history.query.edit(key) {
                     self.state.history_filter_changed();
@@ -1519,7 +1486,7 @@ impl App {
 
     fn search_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
+            KeyCode::Enter => {
                 if self.search_due.is_some() {
                     self.search();
                 }
@@ -1539,7 +1506,6 @@ impl App {
     fn list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') if self.state.view.text_view.is_some() => self.copy_requested = true,
-            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
                 if !matches!(self.state.screen, Screen::Home | Screen::History) {
                     self.navigate(Screen::Search);
@@ -1557,18 +1523,43 @@ impl App {
                 self.load_synopsis(false);
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
-                if let Some(entry) = self.state.selected_history() {
-                    self.persist(crate::persistence::Change::Remove {
+                if let Some(entry) = self.state.selected_history().cloned() {
+                    let operation = self.history_operation + 1;
+                    if !self.persist(crate::persistence::Change::Remove {
+                        operation,
                         source: entry.anime.source_id(),
                         mode: entry.mode,
-                    });
+                    }) {
+                        return;
+                    }
+                    self.history_operation = operation;
+                    self.state.history.notice = None;
+                    self.state.message("", false);
+                    self.state.history_removal = Some(HistoryRemoval::Removing);
+                }
+            }
+            KeyCode::Char('u') if self.state.screen == Screen::History => {
+                if self.state.history_removal.is_none()
+                    && let Some(entry) = self.state.last_removed.clone()
+                {
+                    let operation = self.history_operation + 1;
+                    if !self.persist(crate::persistence::Change::Restore {
+                        operation,
+                        removed: entry,
+                    }) {
+                        return;
+                    }
+                    self.history_operation = operation;
+                    self.state.history.notice = None;
+                    self.state.message("", false);
+                    self.state.history_removal = Some(HistoryRemoval::Restoring);
                 }
             }
             KeyCode::Char(':') if self.state.screen == Screen::Episodes => {
                 self.state.focus = Focus::Range;
                 self.state.episodes.range.set(String::new());
             }
-            KeyCode::Char(' ') | KeyCode::Tab if self.state.screen == Screen::Episodes => {
+            KeyCode::Char(' ') if self.state.screen == Screen::Episodes => {
                 let i = self.state.episodes.selected;
                 if !self.state.episodes.marked.remove(&i) && i < self.state.episodes.items.len() {
                     self.state.episodes.marked.insert(i);
@@ -1577,9 +1568,6 @@ impl App {
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
                 self.start_selection(JobKind::Download)
-            }
-            KeyCode::Char('Q') => {
-                self.cycle_quality(false);
             }
             KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
                 self.open()
@@ -1616,7 +1604,6 @@ impl App {
                     .current_episode_index()
                     .unwrap_or(self.state.episodes.selected),
             ),
-            KeyCode::Char('R') => self.retry(),
             code => {
                 let len = match self.state.screen {
                     Screen::Home => return,
@@ -1638,8 +1625,8 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
                     KeyCode::PageDown => selected.saturating_add(10).min(len.saturating_sub(1)),
                     KeyCode::PageUp => selected.saturating_sub(10),
-                    KeyCode::Home | KeyCode::Char('g') => 0,
-                    KeyCode::End | KeyCode::Char('G') => len.saturating_sub(1),
+                    KeyCode::Home => 0,
+                    KeyCode::End => len.saturating_sub(1),
                     _ => *selected,
                 };
             }
@@ -1670,7 +1657,7 @@ impl App {
         jobs?;
         saved?;
         while let Ok(result) = self.library_rx.try_recv() {
-            result?;
+            result.1?;
         }
         Ok(())
     }
@@ -1827,7 +1814,9 @@ impl App {
                     }
                 }
                 _ = tick.tick() => {
-                    dirty |= self.expire_activity(Instant::now());
+                    let now = Instant::now();
+                    dirty |= self.expire_activity(now);
+                    dirty |= self.state.history.notice.take_if(|notice| now >= notice.expires).is_some();
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
@@ -1882,6 +1871,152 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn history_undo_restores_the_saved_entry_and_keeps_filter_typing_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = crate::persistence::Entry {
+            anime: anime("series", "Series"),
+            episode: "4".into(),
+            mode: Mode::Sub,
+            order: 0,
+            watched_at: 0,
+        };
+        let store = crate::persistence::Store::new(dir.path());
+        store
+            .update(crate::persistence::Change::Import(vec![
+                crate::persistence::Entry {
+                    episode: "5".into(),
+                    ..entry.clone()
+                },
+                crate::persistence::Entry {
+                    anime: anime("other", "Other"),
+                    ..entry.clone()
+                },
+            ]))
+            .unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(vec![entry]);
+        let mut app = test_app(state, dir.path());
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(result));
+        assert_eq!(app.state.history.entries()[0].anime.id, "other");
+        let notice = app.state.history.notice.as_ref().unwrap();
+        assert_eq!(
+            (notice.action, notice.title.as_str()),
+            ("Removed", "Series")
+        );
+        assert!(app.state.status.is_empty());
+        app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(app.state.history.query.text, "u");
+        assert!(app.state.last_removed.is_some());
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(result));
+        assert!(app.state.history_removal.is_none());
+        let saved = store.load().unwrap();
+        assert_eq!(saved.entries[0].episode, "5");
+        assert_eq!(saved.entries[1].anime.id, "other");
+        let notice = app.state.history.notice.as_ref().unwrap();
+        assert_eq!(
+            (notice.action, notice.title.as_str()),
+            ("Restored", "Series")
+        );
+        assert!(app.state.status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn removal_confirmation_survives_a_later_empty_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::persistence::Store::new(dir.path());
+        let library = store
+            .update(crate::persistence::Change::Record {
+                anime: anime("series", "Series"),
+                episode: "1".into(),
+                mode: Mode::Sub,
+            })
+            .unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(library.entries);
+        let mut app = test_app(state, dir.path());
+        let delete = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+        app.key(delete);
+        let first = app.library_rx.recv().await.unwrap();
+        app.key(delete);
+        let second = app.library_rx.recv().await.unwrap();
+        for result in [first, second] {
+            app.message(Message::Library(result));
+            let notice = app.state.history.notice.as_ref().unwrap();
+            assert_eq!(
+                (notice.action, notice.title.as_str()),
+                ("Removed", "Series")
+            );
+        }
+        assert!(app.state.last_removed.is_some());
+    }
+
+    #[tokio::test]
+    async fn earlier_write_failure_preserves_undo_for_the_next_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::persistence::Store::new(dir.path());
+        let entries: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|id| crate::persistence::Entry {
+                anime: anime(id, id),
+                episode: "1".into(),
+                mode: Mode::Sub,
+                order: 0,
+                watched_at: 0,
+            })
+            .collect();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(entries.clone());
+        let mut app = test_app(state, dir.path());
+        std::fs::write(&store.path, "invalid history").unwrap();
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let failed = app.library_rx.recv().await.unwrap();
+        assert!(failed.1.is_err());
+        std::fs::remove_file(&store.path).unwrap();
+        store
+            .update(crate::persistence::Change::Import(entries))
+            .unwrap();
+        app.state.history.selected = 1;
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        app.message(Message::Library(failed));
+        let saved = app.library_rx.recv().await.unwrap();
+        app.message(Message::Library(saved));
+        // A subsequent failed delete must leave the committed removal available.
+        let contents = std::fs::read(&store.path).unwrap();
+        std::fs::write(&store.path, "invalid history").unwrap();
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let failed = app.library_rx.recv().await.unwrap();
+        assert!(failed.1.is_err());
+        app.message(Message::Library(failed));
+        std::fs::write(&store.path, contents).unwrap();
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let restored = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(restored));
+        assert_eq!(store.load().unwrap().entries[1].anime.id, "second");
+    }
+
+    #[tokio::test]
     async fn merged_folder_updates_future_jobs_but_preserves_override_and_queue() {
         for override_folder in [false, true] {
             for popup in [false, true] {
@@ -1915,7 +2050,8 @@ mod tests {
                 )
                 .unwrap();
                 if popup {
-                    app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
                     app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
                     app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
                 } else {
@@ -1978,11 +2114,16 @@ mod tests {
         app.state.search.selected = 3;
         let old = dir.path().join("old");
         app.queue_execution = Some((app.options.player.clone(), old.clone()));
-        app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.paste(dir.path().join("new").to_str().unwrap());
+        for c in "a?,R".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.options.download_dir, dir.path().join("new"));
+        app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT));
+        assert_eq!(app.options.download_dir, dir.path().join("newa?,R"));
         assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.state.mode, Mode::Dub);
@@ -2007,6 +2148,7 @@ mod tests {
             );
             // No real provider is contacted: the spawned search is aborted before yielding.
             app.state.screen = Screen::Episodes;
+            app.state.focus = Focus::List;
             let mut series = anime("original", "Probe Season 2");
             series.provider = source.id();
             let episode = Episode {
@@ -2032,7 +2174,7 @@ mod tests {
                 message: "Resolution unavailable".into(),
             });
             let job = app.job;
-            app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
             abort(&mut app.search_task);
             assert_eq!(app.state.screen, Screen::Search);
             assert_eq!(app.state.search.source, source.next());
@@ -2059,6 +2201,11 @@ mod tests {
             assert_eq!(app.state.episodes.items[0].number, "1.5");
             assert!(app.state.episodes.marked.contains(&0));
             assert_eq!(app.state.activity.as_ref().unwrap().phase, JobPhase::Failed);
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT));
+            assert_eq!(
+                app.state.activity.as_ref().unwrap().phase,
+                JobPhase::Resolving
+            );
             app.jobs.shutdown().await.unwrap();
         }
     }
@@ -2080,7 +2227,8 @@ mod tests {
         app.state.screen = Screen::Search;
         app.state.request_error = Some("Offline".into());
         let old = app.state.search_generation;
-        app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         abort(&mut app.search_task);
         assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
         assert_eq!(app.state.search.query.text, "Missing title");
@@ -2166,7 +2314,8 @@ mod tests {
         state.search.replace_results(vec![original.clone()]);
         let mut app = test_app(state, dir.path());
         let old = app.state.search_generation;
-        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+        assert_eq!(app.state.search.query.text, "Probe");
         assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
         render_mouse_view(&mut app, 80, 24);
         let area = app.state.view.source_setting.unwrap();
@@ -2177,7 +2326,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.state.search.source, crate::provider::Source::Kaa);
-        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
         assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
         assert!(app.state.search.results().is_empty());
         app.message(Message::Search(old, Ok(vec![original.clone()])));
@@ -2333,6 +2482,9 @@ mod tests {
             );
             app.mouse(click);
             assert_eq!(app.state.cover_view.as_ref().unwrap().id, "cover");
+            let revision = app.state.art_revision;
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT));
+            assert_eq!(app.state.art_revision, revision + 1);
             let enlarged = draw(&mut app, 120, 40);
             assert!(enlarged.height > preview.height);
             assert!(enlarged.width > preview.width);
@@ -2340,7 +2492,8 @@ mod tests {
             assert!(app.state.view.audio_setting.is_none());
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-            app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
             app.paste("ignored");
             app.mouse(pointer(MouseEventKind::ScrollDown, Position::new(10, 10)));
             assert!(app.state.cover_view.is_some());
@@ -2586,6 +2739,8 @@ mod tests {
             assert!(!app.quit);
             assert_eq!(app.state.quality, "best");
             app.key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::NONE));
+            assert_eq!(app.state.quality, "best");
+            app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
             assert!(!app.quit);
             assert_ne!(app.state.quality, "best");
             app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -2660,15 +2815,22 @@ mod tests {
             app.key(key(KeyCode::Char(c)));
         }
         app.paste(" 日本語");
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+        app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
+        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.quality, "1080p");
+        assert_eq!(app.state.focus, Focus::Search);
         assert_eq!(app.state.search.query.text, "sQh 日本語");
         assert!(app.search_due.is_none() && app.search_task.is_none());
         app.key(key(KeyCode::Tab));
         assert_eq!(app.state.focus, Focus::Audio);
         app.key(key(KeyCode::Right));
-        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.mode, Mode::Sub);
         app.paste("ignored");
         app.key(key(KeyCode::Tab));
         assert_eq!(app.state.focus, Focus::Quality);
+        app.key(key(KeyCode::Left));
+        assert_eq!(app.state.quality, "best");
         app.key(key(KeyCode::Left));
         assert_eq!(app.state.quality, "worst");
         app.key(key(KeyCode::Right));
@@ -2704,6 +2866,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_shortcuts_stay_literal_in_text_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        for (screen, focus) in [
+            (Screen::Home, Focus::Search),
+            (Screen::Search, Focus::Search),
+            (Screen::History, Focus::Search),
+            (Screen::Episodes, Focus::Range),
+        ] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = screen;
+            state.focus = focus;
+            let mut app =
+                test_app(state, dir.path()).with_settings(crate::settings::Settings::new(
+                    Default::default(),
+                    Default::default(),
+                    dir.path().join("config.json"),
+                ));
+            for c in "a?,R".chars() {
+                app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+            assert!(app.state.help);
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(!app.state.help);
+            assert!(!app.settings.as_ref().unwrap().open);
+            assert_eq!(app.state.screen, screen);
+            assert_eq!(app.state.focus, Focus::List);
+            let text = match screen {
+                Screen::History => &app.state.history.query.text,
+                Screen::Episodes => &app.state.episodes.range.text,
+                _ => &app.state.search.query.text,
+            };
+            assert_eq!(text, "a?,R");
+        }
+    }
+
+    #[tokio::test]
     async fn help_filter_isolates_input_and_preserves_the_underlying_screen() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(
@@ -2715,14 +2916,15 @@ mod tests {
             false,
         );
         let mut app = test_app(state, dir.path());
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let original_focus = app.state.focus;
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        for c in "qhsD".chars() {
+        for c in "qhsDa?,R".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.paste(" downloads");
-        assert_eq!(app.state.help_query.text, "qhsD downloads");
+        assert_eq!(app.state.help_query.text, "qhsDa?,R downloads");
         assert_eq!(app.state.search.query.text, "anime query");
         assert_eq!(app.state.mode, Mode::Sub);
         assert_eq!(app.state.focus, original_focus);
@@ -2737,11 +2939,13 @@ mod tests {
         assert_eq!(app.state.view.help_scroll, 1);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.state.help && !app.quit);
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         assert!(app.state.help_query.text.is_empty());
         assert_eq!(app.state.view.help_scroll, 0);
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.state.help && !app.state.help_filtering);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.state.help);
     }
 
@@ -2761,6 +2965,7 @@ mod tests {
                         anime: state.episodes.anime.clone().unwrap(),
                         episode: last.into(),
                         mode: Mode::Dub,
+                        order: 0,
                         watched_at: 1,
                     });
                     state.history.replace_entries(entries);
@@ -3110,6 +3315,7 @@ mod tests {
                     anime: anime(&i.to_string(), title),
                     episode: "4".into(),
                     mode: Mode::Sub,
+                    order: 0,
                     watched_at: i as u64,
                 })
                 .collect(),
@@ -3126,10 +3332,16 @@ mod tests {
         assert_eq!(app.state.selected_history().unwrap().anime.id, "2");
         let mut entries = app.state.history.entries().to_vec();
         entries.remove(2);
-        app.message(Message::Library(Ok(crate::persistence::Library {
-            entries,
-            ..Default::default()
-        })));
+        app.message(Message::Library((
+            None,
+            Ok((
+                crate::persistence::Library {
+                    entries,
+                    ..Default::default()
+                },
+                None,
+            )),
+        )));
         assert_eq!(app.state.selected_history().unwrap().anime.id, "1");
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.state.screen, Screen::Episodes);
@@ -3151,6 +3363,7 @@ mod tests {
                         anime: anime(&n.to_string(), &format!("Series {n}")),
                         episode: "1".into(),
                         mode: Mode::Sub,
+                        order: 0,
                         watched_at: n,
                     })
                     .collect(),
@@ -3159,27 +3372,42 @@ mod tests {
             let mut entries = state.history.entries().to_vec();
             entries.remove(removed);
             let mut app = test_app(state, dir.path());
-            app.message(Message::Library(Ok(crate::persistence::Library {
-                entries: entries.clone(),
-                ..Default::default()
-            })));
+            app.message(Message::Library((
+                None,
+                Ok((
+                    crate::persistence::Library {
+                        entries: entries.clone(),
+                        ..Default::default()
+                    },
+                    None,
+                )),
+            )));
             assert_eq!(app.state.history.selected, removed.min(2));
             let selected = app.state.history.entries()[app.state.history.selected]
                 .anime
                 .id
                 .clone();
             entries.reverse();
-            app.message(Message::Library(Ok(crate::persistence::Library {
-                entries,
-                ..Default::default()
-            })));
+            app.message(Message::Library((
+                None,
+                Ok((
+                    crate::persistence::Library {
+                        entries,
+                        ..Default::default()
+                    },
+                    None,
+                )),
+            )));
             assert_eq!(
                 app.state.history.entries()[app.state.history.selected]
                     .anime
                     .id,
                 selected
             );
-            app.message(Message::Library(Ok(crate::persistence::Library::default())));
+            app.message(Message::Library((
+                None,
+                Ok((crate::persistence::Library::default(), None)),
+            )));
             assert_eq!(app.state.history.selected, 0);
         }
     }
@@ -3424,7 +3652,7 @@ mod tests {
             title: "Opening".into(),
         }];
         let mut app = test_app(state, dir.path());
-        for code in [KeyCode::Right, KeyCode::Char('l')] {
+        for code in [KeyCode::Right, KeyCode::Char('i')] {
             app.state.details = false;
             app.key(KeyEvent::new(code, KeyModifiers::NONE));
             assert!(
@@ -3436,7 +3664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn language_shortcut_accepts_uppercase_and_explicit_shift_events() {
+    async fn legacy_audio_aliases_leave_playback_and_audio_untouched() {
         for key in [
             KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
@@ -3450,7 +3678,7 @@ mod tests {
             state.focus = Focus::List;
             let mut app = test_app(state, dir.path());
             app.key(key);
-            assert_eq!(app.state.mode, Mode::Dub, "{key:?}");
+            assert_eq!(app.state.mode, Mode::Sub, "{key:?}");
             assert!(app.state.activity.is_none());
             app.state.details = true;
             app.key(key);
@@ -3460,16 +3688,18 @@ mod tests {
     }
 
     #[test]
-    fn readline_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
+    fn text_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         let alt = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+        let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let word = |code| KeyEvent::new(code, KeyModifiers::CONTROL);
         let mut input = Input::default();
         input.set("one 日本 e\u{301}clair!".into());
-        assert!(!input.edit(ctrl('a')));
+        assert!(!input.edit(plain(KeyCode::Home)));
         assert_eq!(input.cursor, 0);
-        input.edit(alt('f'));
+        input.edit(word(KeyCode::Right));
         assert_eq!(input.cursor, 3);
-        input.edit(alt('f'));
+        input.edit(word(KeyCode::Right));
         assert_eq!(&input.text[..input.cursor], "one 日本");
         assert!(input.edit(ctrl('u')));
         assert_eq!(input.text, " e\u{301}clair!");
@@ -3478,24 +3708,24 @@ mod tests {
         input.edit(ctrl('k'));
         assert_eq!(input.text, "one 日本");
         input.edit(ctrl('y'));
-        input.edit(alt('b'));
+        input.edit(word(KeyCode::Left));
         assert_eq!(&input.text[..input.cursor], "one 日本 ");
-        input.edit(ctrl('f'));
+        input.edit(plain(KeyCode::Right));
         assert_eq!(&input.text[..input.cursor], "one 日本 e\u{301}");
-        input.edit(ctrl('b'));
-        input.edit(ctrl('d'));
+        input.edit(plain(KeyCode::Left));
+        input.edit(plain(KeyCode::Delete));
         assert_eq!(input.text, "one 日本 clair!");
-        input.edit(ctrl('e'));
+        input.edit(plain(KeyCode::End));
         input.edit(ctrl('w'));
         assert_eq!(input.text, "one 日本 ");
         input.edit(ctrl('y'));
-        input.edit(alt('b'));
+        input.edit(word(KeyCode::Left));
         input.edit(alt('d'));
         assert_eq!(input.text, "one 日本 !");
         input.edit(ctrl('y'));
         input.edit(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
         assert_eq!(input.text, "one 日本 !");
-        input.edit(ctrl('h'));
+        input.edit(plain(KeyCode::Backspace));
         assert_eq!(input.text, "one 日本!");
         assert!(!input.edit(KeyEvent::new(
             KeyCode::Char('u'),
@@ -3509,15 +3739,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vim_navigation_and_readline_keys_do_not_trigger_media_actions() {
+    async fn list_navigation_and_retired_aliases_do_not_trigger_media_actions() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         let mut app = test_app(state, dir.path());
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT));
         assert_eq!(app.state.screen, Screen::History);
-        app.key(key('h'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.screen, Screen::Home);
         app.history();
         app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT));
@@ -3532,13 +3763,32 @@ mod tests {
                 title: String::new(),
             })
             .collect();
-        app.key(ctrl('d'));
+        for retired in [
+            ctrl('n'),
+            ctrl('p'),
+            ctrl('d'),
+            ctrl('f'),
+            ctrl('u'),
+            ctrl('b'),
+            key('l'),
+            key('g'),
+            key('G'),
+            plain(KeyCode::Tab),
+        ] {
+            app.key(retired);
+            assert_eq!(app.state.episodes.selected, 0, "{retired:?}");
+            assert!(
+                app.state.episodes.marked.is_empty() && !app.state.details,
+                "{retired:?}"
+            );
+        }
+        app.key(plain(KeyCode::PageDown));
         assert_eq!(app.state.episodes.selected, 10);
-        app.key(ctrl('n'));
+        app.key(key('j'));
         assert_eq!(app.state.episodes.selected, 11);
-        app.key(ctrl('p'));
+        app.key(key('k'));
         assert_eq!(app.state.episodes.selected, 10);
-        app.key(ctrl('u'));
+        app.key(plain(KeyCode::PageUp));
         assert_eq!(app.state.episodes.selected, 0);
         app.key(ctrl('r'));
         for code in [KeyCode::Enter, KeyCode::Char('D'), KeyCode::Char('d')] {
@@ -3547,32 +3797,32 @@ mod tests {
         assert_eq!(app.state.mode, Mode::Sub);
         assert!(app.state.activity.is_none());
         app.state.details = true;
-        app.key(key('G'));
+        app.key(plain(KeyCode::End));
         assert_eq!(app.state.view.details_scroll, u16::MAX);
-        app.key(key('g'));
+        app.key(plain(KeyCode::Home));
         assert_eq!(app.state.view.details_scroll, 0);
-        app.key(key('q'));
+        app.key(plain(KeyCode::Esc));
         assert!(!app.state.details && !app.quit);
         app.state.help = true;
-        app.key(key('q'));
+        app.key(plain(KeyCode::Esc));
         assert!(!app.state.help && !app.quit);
         app.key(key('/'));
         app.state.search.query.set("hello world".into());
-        app.key(ctrl('a'));
-        app.key(ctrl('e'));
+        app.key(plain(KeyCode::Home));
+        app.key(plain(KeyCode::End));
         assert_eq!(app.state.search.query.cursor, 11);
         assert!(!app.state.search.exact);
         app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT));
         assert!(app.state.search.exact);
-        app.key(ctrl('g'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.focus, Focus::List);
         app.state.accept_search(
             app.state.search_generation,
             Ok(vec![anime("series", "hello world")]),
         );
-        app.key(key('l'));
+        app.key(plain(KeyCode::Enter));
         assert_eq!(app.state.screen, Screen::Episodes);
-        app.key(key('h'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.screen, Screen::Search);
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.state.screen, Screen::Episodes);

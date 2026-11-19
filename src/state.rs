@@ -8,6 +8,7 @@ use lru::LruCache;
 use std::{
     collections::{BTreeSet, VecDeque},
     num::NonZeroUsize,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,10 +77,17 @@ pub struct SearchState {
     pub exact: bool,
 }
 
+pub struct HistoryNotice {
+    pub action: &'static str,
+    pub title: String,
+    pub expires: Instant,
+}
+
 pub struct HistoryState {
     entries: TitleList<crate::persistence::Entry>,
     pub query: Input,
     pub selected: usize,
+    pub notice: Option<HistoryNotice>,
 }
 
 impl SearchState {
@@ -98,6 +106,7 @@ impl Default for HistoryState {
             entries: TitleList::new(str::to_lowercase),
             query: Input::default(),
             selected: 0,
+            notice: None,
         }
     }
 }
@@ -124,11 +133,18 @@ pub struct EpisodesState {
     pub(crate) continuation: Option<crate::persistence::Entry>,
 }
 
+pub enum HistoryRemoval {
+    Removing,
+    Restoring,
+}
+
 pub struct State {
     pub screen: Screen,
     pub focus: Focus,
     pub search: SearchState,
     pub history: HistoryState,
+    pub last_removed: Option<crate::persistence::Entry>,
+    pub history_removal: Option<HistoryRemoval>,
     pub episodes: EpisodesState,
     pub view: crate::view::Geometry,
     pub art_revision: u64,
@@ -157,6 +173,26 @@ pub struct State {
 }
 
 impl State {
+    pub(crate) fn confirm_history_change(&mut self, action: &'static str, title: &str) {
+        if self.screen == Screen::History {
+            self.history.notice = Some(HistoryNotice {
+                action,
+                title: title.to_owned(),
+                expires: Instant::now() + Duration::from_secs(4),
+            });
+        }
+    }
+
+    pub fn typing(&self) -> bool {
+        if self.help {
+            self.help_filtering
+        } else {
+            self.cover_view.is_none()
+                && !self.details
+                && matches!(self.focus, Focus::Search | Focus::Range)
+        }
+    }
+
     pub fn recovery_search(&self) -> Option<(String, crate::provider::Source, Mode)> {
         if self.screen == Screen::Search
             && self.request_error.is_some()
@@ -193,6 +229,14 @@ impl State {
             return Some((title, source, mode));
         }
         None
+    }
+
+    pub fn quality_label(&self) -> &str {
+        if self.quality == "best" {
+            "Best"
+        } else {
+            &self.quality
+        }
     }
 
     pub fn downloads_supported(&self) -> bool {
@@ -232,6 +276,8 @@ impl State {
                 ..Default::default()
             },
             history: HistoryState::default(),
+            last_removed: None,
+            history_removal: None,
             episodes: EpisodesState::default(),
             view: crate::view::Geometry::default(),
             art_revision: 0,

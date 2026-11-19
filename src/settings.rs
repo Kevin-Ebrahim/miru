@@ -4,7 +4,7 @@ use crate::{
     model::Mode,
     player::{Backend, Player},
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -126,6 +126,9 @@ impl Settings {
     }
     pub fn key(&mut self, key: KeyEvent) -> bool {
         if self.edit.is_none() {
+            if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
+                return false;
+            }
             let step = match key.code {
                 KeyCode::PageDown => Some(true),
                 KeyCode::PageUp => Some(false),
@@ -184,11 +187,11 @@ impl Settings {
         if self.arguments {
             match key.code {
                 KeyCode::Esc => self.arguments = false,
-                KeyCode::Up => self.argument = self.argument.saturating_sub(1),
-                KeyCode::Down => {
+                KeyCode::Up | KeyCode::Char('k') => self.argument = self.argument.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.argument = (self.argument + 1).min(self.saved.player_args.len())
                 }
-                KeyCode::Enter | KeyCode::Left | KeyCode::Right => {
+                KeyCode::Enter => {
                     let mut input = Input::default();
                     input.set(
                         self.saved
@@ -210,23 +213,23 @@ impl Settings {
         }
         let mut next = self.saved.clone();
         match key.code {
-            KeyCode::Esc | KeyCode::F(4) => self.open = false,
+            KeyCode::Esc => self.open = false,
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(5),
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Left | KeyCode::Right => match self.selected {
-                4 => {
-                    self.arguments = true;
-                    self.argument = 0;
-                }
-                0 | 3 => {
-                    let mut input = Input::default();
-                    input.set(if self.selected == 0 && self.saved.download_dir.is_none() {
-                        String::new()
-                    } else {
-                        self.value(self.selected)
-                    });
-                    self.edit = Some(input);
-                }
+            KeyCode::Enter if self.selected == 4 => {
+                self.arguments = true;
+                self.argument = 0;
+            }
+            KeyCode::Enter if matches!(self.selected, 0 | 3) => {
+                let mut input = Input::default();
+                input.set(if self.selected == 0 && self.saved.download_dir.is_none() {
+                    String::new()
+                } else {
+                    self.value(self.selected)
+                });
+                self.edit = Some(input);
+            }
+            KeyCode::Left | KeyCode::Right => match self.selected {
                 1 => {
                     let mut mode = next.audio.unwrap_or_default();
                     mode.toggle();
@@ -248,7 +251,7 @@ impl Settings {
                     );
                     return self.save(next);
                 }
-                _ => {
+                5 => {
                     next.player_backend = match (next.player_backend, key.code == KeyCode::Left) {
                         (None, true) => Some(Backend::Vlc),
                         (Some(Backend::Vlc), true) => Some(Backend::Mpv),
@@ -259,8 +262,11 @@ impl Settings {
                     };
                     return self.save(next);
                 }
+                _ => {}
             },
-            KeyCode::Char('r' | 'R') => {
+            KeyCode::Char('R' | 'r')
+                if key.code == KeyCode::Char('R') || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 match self.selected {
                     0 => next.download_dir = None,
                     1 => next.audio = Some(Mode::Sub),
@@ -324,7 +330,8 @@ impl Settings {
             height,
         );
         let base = Style::default().fg(palette.text).bg(palette.canvas);
-        frame.render_widget(Clear, modal);
+        frame.render_widget(Clear, area);
+        frame.render_widget(Block::default().style(base), area);
         let block = crate::ui::panel(
             if self.arguments {
                 " Player arguments "
@@ -338,19 +345,13 @@ impl Settings {
         .style(base);
         let inner = block.inner(modal);
         frame.render_widget(block, modal);
-        let [header, body, detail, editor, footer] = Layout::vertical([
-            Constraint::Length(u16::from(inner.height >= 12) * 2),
+        let [body, detail, editor, footer] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(if inner.height >= 16 { 4 } else { 2 }),
             Constraint::Length(if self.edit.is_some() { 3 } else { 0 }),
-            Constraint::Length(if inner.width < 48 { 2 } else { 1 }),
+            Constraint::Length(u16::from(self.edit.is_some())),
         ])
         .areas(inner);
-        frame.render_widget(
-            Paragraph::new("Preferences for your next queue")
-                .style(Style::default().fg(palette.secondary)),
-            header,
-        );
         let names = [
             "Download folder",
             "Default audio",
@@ -396,7 +397,14 @@ impl Settings {
                 let label = *name;
                 let value = match i {
                     0 | 3 | 4 => self.value(i),
-                    _ => format!("< {} >", self.value(i)),
+                    _ => format!(
+                        "< {} >",
+                        if i == 2 && self.value(i) == "best" {
+                            "Best".into()
+                        } else {
+                            self.value(i)
+                        }
+                    ),
                 };
                 if body.width >= 48 {
                     let available = usize::from(body.width.saturating_sub(4));
@@ -416,6 +424,7 @@ impl Settings {
                 }
             }
         }
+        let content_height: usize = items.iter().map(ListItem::height).sum();
         let mut selection = ListState::default();
         selection.select(Some(selected));
         frame.render_stateful_widget(
@@ -426,6 +435,30 @@ impl Settings {
             body,
             &mut selection,
         );
+        if content_height > usize::from(body.height) && body.width >= 10 {
+            let indicator = format!(
+                " {}/{} ",
+                if self.arguments {
+                    self.argument + 1
+                } else {
+                    self.selected + 1
+                },
+                if self.arguments {
+                    self.saved.player_args.len() + 1
+                } else {
+                    6
+                }
+            );
+            frame.render_widget(
+                Paragraph::new(indicator.clone()).style(Style::default().fg(palette.secondary)),
+                Rect::new(
+                    modal.right().saturating_sub(indicator.len() as u16 + 2),
+                    modal.y,
+                    indicator.len() as u16,
+                    1,
+                ),
+            );
+        }
         let description = if !self.message.is_empty() {
             self.message.clone()
         } else if self.arguments {
@@ -433,14 +466,14 @@ impl Settings {
         } else {
             match self.selected {
                 0 => format!(
-                    "Destination: {}\nEnter edits the folder path. R restores Automatic.",
+                    "Destination: {}",
                     self.download()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|e| e.to_string())
                 ),
                 1 => "Preferred language for new queues. Existing queues keep their audio.".into(),
                 2 => "Preferred quality; the closest available stream is used.".into(),
-                3 => "Enter edits the executable name or path. Defaults to mpv.".into(),
+                3 => "Executable name or path. Defaults to mpv.".into(),
                 4 => "Add, edit or remove individual player arguments.".into(),
                 _ => "Automatic infers mpv or VLC from the executable name.".into(),
             }
@@ -488,32 +521,18 @@ impl Settings {
                 frame.set_cursor_position((input_area.x + (cursor - offset) as u16, input_area.y));
             }
         }
-        let hint = if self.edit.is_some() {
-            "Enter Save   Esc Cancel"
-        } else if self.arguments {
-            "Enter Edit/Add   Del Remove   Esc Back"
-        } else if matches!(self.selected, 0 | 3) {
-            "Enter Edit   R Reset   Esc Back"
-        } else if self.selected == 4 {
-            "Enter Manage   R Reset   Esc Back"
-        } else if state.ascii {
-            "Left/Right Change   R Reset   Esc Back"
-        } else {
-            "←/→ Change   R Reset   Esc Back"
-        };
-        frame.render_widget(
-            Paragraph::new(hint)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(palette.focus)),
-            footer,
-        );
+        if self.edit.is_some() {
+            frame.render_widget(
+                Paragraph::new("Enter Save").style(Style::default().fg(palette.focus)),
+                footer,
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -528,7 +547,7 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        assert!(settings.key(key(KeyCode::Char('r'))));
+        assert!(settings.key(key(KeyCode::Char('R'))));
         let saved = Config::load(&path).unwrap();
         assert!(saved.download_dir.is_none());
         assert!(settings.saved.download_dir.is_none());
@@ -536,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_cycle_both_directions_and_open_editors() {
+    fn arrows_cycle_values_and_enter_opens_editors() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::new(
             Config::default(),
@@ -555,6 +574,8 @@ mod tests {
         assert_eq!(settings.saved.player_backend, None);
         settings.selected = 0;
         settings.key(key(KeyCode::Right));
+        assert!(settings.edit.is_none());
+        settings.key(key(KeyCode::Enter));
         assert!(settings.edit.is_some());
     }
 
@@ -572,12 +593,12 @@ mod tests {
             path.clone(),
         );
         settings.selected = 1;
-        assert!(settings.key(key(KeyCode::Enter)));
+        assert!(settings.key(key(KeyCode::Right)));
         let saved = Config::load(&path).unwrap();
         assert_eq!(saved.audio, Some(Mode::Dub));
         assert_eq!(saved.quality, None);
         assert_eq!(saved.download_dir, None);
-        assert!(settings.key(key(KeyCode::Char('r'))));
+        assert!(settings.key(key(KeyCode::Char('R'))));
         assert_eq!(Config::load(&path).unwrap().audio, Some(Mode::Sub));
     }
     #[test]

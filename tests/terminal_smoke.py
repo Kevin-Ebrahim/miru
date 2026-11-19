@@ -73,7 +73,7 @@ def check(binary, exit_method, animate=False, locked=False):
             pump(0.25)
             assert process.poll() is None, bytes(output)
             for _ in range(20):
-                if b"anime" in output:
+                if b"anime" in output and b"\x1b[?1006h" in output:
                     break
                 pump(0.1)
             assert b"anime" in output, "Miru search did not draw"
@@ -89,7 +89,9 @@ def check(binary, exit_method, animate=False, locked=False):
                 typing = len(output)
                 pump(0.5)
                 assert len(output) > typing, "Typing must not pause the sakura"
-                os.write(master, b"\x1bOP")  # F1
+                os.write(master, b"\x1b")  # Leave the search before opening Help.
+                pump(0.1)
+                os.write(master, b"?")
                 pump(0.4)
                 help_drawn = len(output)
                 pump(0.5)
@@ -112,7 +114,9 @@ def check(binary, exit_method, animate=False, locked=False):
                     assert len(output) == compact_drawn, "Compact layout kept animating"
             if closing_terminal:
                 if exit_method == "terminal-close-help":
-                    os.write(master, b"\x1bOP")
+                    os.write(master, b"\x1b")
+                    pump(0.1)
+                    os.write(master, b"?")
                     pump(0.2)
                     assert b"Keybindings" in output, "Help did not draw before closing"
                 os.close(master)

@@ -229,17 +229,26 @@ while not (root / token).exists():
         try:
             pump(0.5)
             assert not requests, "Home must not fetch history or search before navigation"
+            send(b"\x1bp")  # Alt+p changes provider while the Home input has focus.
+            wait_for(lambda: b"AnimeGG" in output)
+            send(b"\x1bp")
+            wait_for(lambda: b"KAA" in output)
+            send(b"\x1bp")  # Cycle back to HiAnime.
+            send(b"\x1b")
+            send(b",")
+            wait_for(lambda: b"Download folder" in output)
+            send(b"\x1b")
             send(b"\x1bh")
             wait_for(lambda: requests.count("/original-1") == 1)
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
-            click_audio = pointer(0, 108, 1) + pointer(0, 108, 1, release=True)
+            click_audio = pointer(0, 111, 1) + pointer(0, 111, 1, release=True)
             send(click_audio)
             wait_for(lambda: json.loads(config.read_text())["audio"] == "dub")
             send(click_audio)
             wait_for(lambda: json.loads(config.read_text())["audio"] == "sub")
             send(pointer(0, 116, 1) + pointer(0, 116, 1, release=True))
             wait_for(lambda: json.loads(config.read_text())["quality"] == "1080p")
-            send(b"QQQQQ")
+            send(b"\x1bq" * 5)
             wait_for(lambda: json.loads(config.read_text())["quality"] == "best")
             copied = copied_text(b"jy")
             assert "Second Series" in copied and "Original Series" not in copied, "Queued navigation+copy must use the newly selected panel"
@@ -253,7 +262,7 @@ while not (root / token).exists():
             pump(0.3)
             output.clear()
             send(pointer(0, 50, 10) + pointer(0, 50, 10, release=True))
-            wait_for(lambda: b"Esc / click to close" in output)
+            wait_for(lambda: b"[x]" in output)
             assert not clipboard_texts(b"y"), "Cover viewer must block hidden synopsis copying"
             send(b"\x1b")
             assert copied_text(drag) == "Original Series", "Closing cover viewer must restore the preview"
@@ -267,16 +276,17 @@ while not (root / token).exists():
             click_first = pointer(0, 3, 7) + pointer(0, 3, 7, release=True)
             assert copied_text(click_second + drag) == "Second Series", "Click must refresh synopsis before a queued drag"
             assert copied_text(click_first + drag) == "Original Series", "Click must select the rendered history row"
+            escape = b"\x1b[27u"  # CSI-u keeps Escape distinct from the immediately following mouse report.
             details_drag = pointer(0, 42, 4) + pointer(32, 110, 4) + pointer(0, 110, 4, release=True)
             assert copied_text(b"i" + details_drag) == "Original Series", "Opening details must refresh mouse geometry"
-            assert copied_text(b"h" + drag) == "Original Series", "Returning to preview must refresh mouse geometry"
+            assert copied_text(escape + drag) == "Original Series", "Returning to preview must refresh mouse geometry"
             send(down)
             assert not clipboard_texts(b"i" + pointer(0, 110, 4, release=True)), "Details switch completed an old preview drag"
             send(b"\x1b")
-            assert not clipboard_texts(b"\x1bOP" + drag), "Help copied its hidden preview"
-            assert copied_text(b"\x1bOP" + drag) == "Original Series", "Closing Help must restore fresh mouse geometry"
+            assert not clipboard_texts(b"?" + drag), "Help copied its hidden preview"
+            assert copied_text(escape + drag) == "Original Series", "Closing Help must restore fresh mouse geometry"
             send(down)
-            assert not clipboard_texts(b"\x1bOP\x1bOP" + up), "Help transitions kept an unfinished drag alive"
+            assert not clipboard_texts(b"?" + escape + up), "Help transitions kept an unfinished drag alive"
             send(down)
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 640, 480))
             process.send_signal(signal.SIGWINCH)
@@ -302,11 +312,11 @@ while not (root / token).exists():
             send(b"i")
             copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
-            assert "F1 Help" not in copied and "Enter Episodes" not in copied
+            assert "? Help" not in copied and "Enter Episodes" not in copied
             send(b"\x1b")
             send(b"i")
             assert requests.count("/original-1") == 1, "Reopening details should reuse the full synopsis"
-            send(b"\x1b[15~")  # F5 explicitly refreshes the synopsis.
+            send(b"R")  # Refresh the open details.
             wait_for(lambda: requests.count("/original-1") == 2)
             send(b"\x1b")
             send(click_first + click_first)  # Double-click History -> episodes.
@@ -329,7 +339,7 @@ while not (root / token).exists():
             assert "--force-media-title=Original Series / Episode 1" in first["args"], first
             send(b"H\x1bh/\x1b\x1b")  # Home, history, search, and back must leave the player alive.
             assert alive(first["token"]), "Browsing stopped the player"
-            send(b"DQ")  # New defaults cannot mutate the active queue.
+            send(b"\x1ba\x1bq")  # New defaults cannot mutate the active queue.
             (root / first["token"]).touch()
             wait_for(lambda: len(launches()) == 2)
             second = launches()[1]
@@ -346,7 +356,7 @@ while not (root / token).exists():
             output.clear()
             send(b"\r")  # Open the other series.
             wait_for(lambda: b"Part 1" in output)
-            send(b"D \x1b[B d")  # SUB, mark two episodes, download.
+            send(b"\x1ba \x1b[B d")  # SUB, mark two episodes, download.
             wait_for(media_requested.is_set)
             send(b"H\x1bh/")
             release_media.set()
@@ -358,7 +368,7 @@ while not (root / token).exists():
             pump()
             fail_refresh.set()
             output.clear()
-            send(b"\x1b[15~")  # F5: a failed refresh keeps the cached episodes usable.
+            send(b"R")  # A failed refresh keeps the cached episodes usable.
             wait_for(refresh_failed.is_set)
             pump()
             fail_refresh.clear()
@@ -372,9 +382,9 @@ while not (root / token).exists():
             saved = originals[0].stat()
             first_requests = sum("episodeId=11" in url for url in requests)
             # Retry while searching elsewhere, after changing the next queue's defaults.
-            send(b"DQ/other")
+            send(b"\x1ba\x1bq/other")
             pump(0.5)
-            send(b"\x1b[17~")  # F6 retries only the failed and pending episodes.
+            send(b"\x1br")  # Alt+r retries the failed and pending episodes while typing.
             wait_for(lambda: len(list((root / "downloads").glob("Original*.mkv"))) == 3)
             originals = list((root / "downloads").glob("Original*.mkv"))
             assert all(" SUB.mkv" in file.name for file in originals), originals
