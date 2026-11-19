@@ -117,6 +117,9 @@ fn scan(state: &State) -> String {
 
 fn sections(state: &State, area: Rect) -> [Rect; 6] {
     let gap = u16::from(area.height >= 20);
+    let wrap_footer = download_hints(state, area.width).is_some_and(|controls| {
+        controls.width() + 1 + footer_hint(state).width() > usize::from(area.width)
+    });
     let [header, _, input, body, status, activity, _, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(gap),
@@ -143,7 +146,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         ),
         Constraint::Length(activity_height(state)),
         Constraint::Length(gap),
-        Constraint::Length(1),
+        Constraint::Length(1 + u16::from(wrap_footer)),
     ])
     .areas(area);
 
@@ -388,7 +391,7 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
 }
 
 fn footer_hint(state: &State) -> Line<'static> {
-    if state.activity.as_ref().is_some_and(Activity::retryable) {
+    let hint = if state.activity.as_ref().is_some_and(Activity::retryable) {
         shortcut(state, "Alt+r", "Retry queue")
     } else if !state.details
         && (state.request_blocks_list()
@@ -397,13 +400,45 @@ fn footer_hint(state: &State) -> Line<'static> {
         shortcut(state, if state.typing() { "Esc › R" } else { "R" }, "Retry")
     } else {
         shortcut(state, if state.typing() { "Esc › ?" } else { "?" }, "Help")
+    };
+    if state.screen == Screen::Home && !state.details {
+        let mut home = shortcut(state, "Alt+h", "History");
+        home.push_span("  ");
+        home.spans.extend(hint.spans);
+        return home;
     }
+    hint
+}
+
+fn download_hints(state: &State, width: u16) -> Option<Line<'static>> {
+    if state.screen != Screen::Episodes
+        || state.focus != Focus::List
+        || state.details
+        || state.episodes.items.is_empty()
+        || !state.downloads_supported()
+    {
+        return None;
+    }
+    let gap = if width <= 40 { "  " } else { "   " };
+    let mut controls = Line::from(" ");
+    controls
+        .spans
+        .extend(shortcut(state, "Space", "Mark").spans);
+    controls.push_span(gap);
+    controls.spans.extend(shortcut(state, ":", "Range").spans);
+    controls.push_span(gap);
+    controls
+        .spans
+        .extend(shortcut(state, "d", "Download").spans);
+    Some(controls)
 }
 
 fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
     let hint = footer_hint(state);
     let hint_width = (hint.width() as u16).min(area.width);
-    if state.screen != Screen::Home && !state.details && !state.downloads_supported() {
+    if let Some(controls) = download_hints(state, area.width) {
+        frame.render_widget(Paragraph::new(controls), area);
+    } else if state.screen != Screen::Home && !state.details && !state.downloads_supported() {
         let width = area.width.saturating_sub(hint_width + 1);
         frame.render_widget(
             Paragraph::new("Playback only").style(muted(state)),
@@ -412,12 +447,19 @@ fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(hint),
-        Rect::new(area.right() - hint_width, area.y, hint_width, 1),
+        Rect::new(
+            area.right() - hint_width,
+            area.bottom().saturating_sub(1),
+            hint_width,
+            1,
+        ),
     );
 }
 
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
-    let footer_download = area.width >= 80
+    let hint_width = footer_hint(state).width() as u16;
+    let progress_width = area.width.saturating_sub(hint_width + 2);
+    let footer_download = progress_width >= 60
         && visible_activity(state)
             .is_some_and(|activity| activity.kind == JobKind::Download && activity.active());
     let activity_height = if footer_download {
@@ -440,13 +482,7 @@ fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
     ])
     .areas(area);
     if footer_download {
-        let hint_width = footer_hint(state).width() as u16;
-        activity = Rect::new(
-            footer.x,
-            footer.y,
-            footer.width.saturating_sub(hint_width + 2),
-            1,
-        );
+        activity = Rect::new(footer.x, footer.y, progress_width, 1);
         footer = Rect::new(footer.right() - hint_width, footer.y, hint_width, 1);
     }
     [space, status, activity, gap, footer]
@@ -2167,7 +2203,7 @@ mod tests {
         assert!(status.contains("1080p") && status.contains("SUB"));
         assert_eq!(activity_height(&state), 1);
         let footer = text.lines().last().unwrap();
-        assert_eq!(footer.trim(), "? Help");
+        assert!(footer.contains("Space Mark   : Range   d Download") && footer.ends_with("? Help"));
     }
 
     #[test]
@@ -2255,7 +2291,10 @@ mod tests {
                         (Focus::Search, false) => "Esc › ? Help",
                         _ => "? Help",
                     };
-                    assert_eq!(text.lines().last().unwrap().trim(), hint);
+                    assert_eq!(
+                        text.lines().last().unwrap().trim(),
+                        format!("Alt+h History  {hint}")
+                    );
                     assert!(!text.contains("History stays in History"));
                     assert!(!text.contains("Ctrl+c Quit"));
                     assert!(!text.contains("/ Search  s Audio  Q Quality"));
@@ -2383,7 +2422,7 @@ mod tests {
     }
 
     #[test]
-    fn browsing_shows_the_selection_and_a_single_help_hint_at_all_sizes() {
+    fn episode_lists_show_mark_range_and_download_together_at_all_sizes() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
@@ -2406,18 +2445,31 @@ mod tests {
                 let text = render_text(&mut state, w, h);
                 assert!(text.contains("The beginning"), "{w}x{h}: {text}");
                 assert_eq!(text.contains("1 marked"), marked, "{text}");
-                assert_eq!(text.lines().last().unwrap().trim(), "? Help");
-                for hint in [
-                    "Space Mark",
-                    ": Range",
-                    "i Details",
-                    "d Download",
-                    "Enter Play",
-                ] {
+                let mut footer = text.lines().rev();
+                let last = footer.next().unwrap();
+                assert!(last.ends_with("? Help"), "{text}");
+                let controls = if w == 32 {
+                    footer.next().unwrap()
+                } else {
+                    last
+                };
+                let words: Vec<_> = controls.split_whitespace().take(6).collect();
+                assert_eq!(
+                    words,
+                    ["Space", "Mark", ":", "Range", "d", "Download"],
+                    "{text}"
+                );
+                for hint in ["i Details", "Enter Play"] {
                     assert!(!text.contains(hint), "{w}x{h}: {text}");
                 }
             }
         }
+        state.focus = Focus::Range;
+        assert!(!render_text(&mut state, 80, 24).contains("Space Mark"));
+        state.focus = Focus::List;
+        state.details = true;
+        assert!(!render_text(&mut state, 80, 24).contains("d Download"));
+        state.details = false;
         state.screen = Screen::Search;
         state.search.query.set("series".into());
         state.accept_search(0, Ok(vec![state.episodes.anime.clone().unwrap()]));
@@ -2605,12 +2657,15 @@ mod tests {
                         state.activity.as_mut().unwrap().phase = phase;
                         let text = render_text(&mut state, width, 24);
                         let footer = text.lines().last().unwrap();
-                        for label in [&scan(&state), "Ep 1 SUB", "? Help"] {
-                            assert!(footer.contains(label), "{width}: {text}");
-                        }
-                        assert!(!footer.contains("Alt+h History"), "{text}");
+                        assert!(footer.ends_with("? Help"), "{text}");
+                        assert!(footer.contains("Alt+h History"), "{text}");
                         assert_eq!(text.matches("Ep 1 SUB").count(), 1, "{text}");
-                        assert!(footer.find("Ep 1 SUB") < footer.find("? Help"));
+                        let progress = text.lines().find(|line| line.contains("Ep 1 SUB")).unwrap();
+                        assert!(
+                            progress.contains(&scan(&state)) && progress.contains("2 queued"),
+                            "{text}"
+                        );
+                        assert_eq!(footer.contains("Ep 1 SUB"), width >= 120, "{text}");
                     }
                 }
             }
@@ -2805,7 +2860,10 @@ mod tests {
         for width in [120, 133, 160] {
             state.view.text_view = None;
             let text = render_text(&mut state, width, 40);
-            assert_eq!(text.lines().last().unwrap().trim(), "? Help");
+            let footer = text.lines().last().unwrap();
+            assert!(
+                footer.contains("Space Mark   : Range   d Download") && footer.ends_with("? Help")
+            );
             assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[5].height, 1);
             assert!(!text.contains("Finished"), "{text}");
             assert!(!text.contains("x Dismiss"), "{text}");
