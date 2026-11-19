@@ -345,19 +345,13 @@ impl Settings {
         .style(base);
         let inner = block.inner(modal);
         frame.render_widget(block, modal);
-        let [header, body, detail, editor, footer] = Layout::vertical([
-            Constraint::Length(u16::from(inner.height >= 12) * 2),
+        let [body, detail, editor, footer] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(if inner.height >= 16 { 4 } else { 2 }),
             Constraint::Length(if self.edit.is_some() { 3 } else { 0 }),
             Constraint::Length(u16::from(self.edit.is_some())),
         ])
         .areas(inner);
-        frame.render_widget(
-            Paragraph::new("Preferences for your next queue")
-                .style(Style::default().fg(palette.secondary)),
-            header,
-        );
         let names = [
             "Download folder",
             "Default audio",
