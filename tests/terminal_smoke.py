@@ -23,12 +23,6 @@ def check(binary, exit_method, animate=False, locked=False):
     with tempfile.TemporaryDirectory(prefix="miru-pty-") as directory:
         held_lock = None
         if locked:
-            (pathlib.Path(directory) / "library.json").write_text(json.dumps({
-                "version": 2, "mode": "sub", "quality": "best", "entries": [{
-                    "anime": {"id": "sample-1", "title": "Sample"},
-                    "episode": "1", "mode": "sub", "watched_at": 1,
-                }],
-            }))
             held_lock = open(pathlib.Path(directory) / "library.lock", "w")
             fcntl.flock(held_lock, fcntl.LOCK_EX)
             (pathlib.Path(directory) / "library.json").write_text(json.dumps({
