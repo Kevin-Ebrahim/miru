@@ -134,9 +134,9 @@ pub struct EpisodesState {
 }
 
 pub enum HistoryRemoval {
-    Removing(crate::persistence::Entry),
-    Removed(crate::persistence::Entry),
-    Restoring(crate::persistence::Entry),
+    Removing,
+    Removed(crate::persistence::RemovedEntry),
+    Restoring(crate::persistence::RemovedEntry),
 }
 
 pub struct State {

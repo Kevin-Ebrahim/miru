@@ -56,7 +56,7 @@ enum Images {
         "--quality sets playback/download quality and the TUI's initial quality.\n",
         "Player options apply to playback; --download-dir applies to downloads.\n",
         "Appearance options apply to the TUI. State/provider/cache options remain available.\n\n",
-        "Keys: / search, Enter select/play, Alt+p provider, s sub/dub, Q quality, ? help.\n",
+        "Keys: / search, Enter select/play, Alt+p provider, Alt+a sub/dub, Alt+q quality, Esc then ? for help while typing.\n",
         "The shell ani-cli installation and history are left untouched."
     )
 )]
@@ -310,7 +310,7 @@ async fn run() -> Result<()> {
         stopped?;
         saved?;
         while let Ok(library) = library_rx.try_recv() {
-            library?;
+            library.1?;
         }
         return result.with_context(|| format!(
             "Search another provider with: miru --source {} --list --{} <title>. Remove any provider URL override when switching sites. Choose the matching series and episode; history is preserved.",

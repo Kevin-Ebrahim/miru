@@ -38,7 +38,7 @@ enum Message {
     Synopsis(u64, SourceId, Result<String>),
     Search(u64, Result<Vec<Anime>>),
     Episodes(u64, Result<Vec<Episode>>),
-    Library(Result<crate::persistence::Library>),
+    Library(crate::persistence::WriteResult),
 }
 
 pub struct Options {
@@ -79,7 +79,8 @@ pub struct App {
     last_click: Option<(Screen, usize, Position, Instant)>,
     back_stack: Vec<Visit>,
     writer: crate::persistence::Writer,
-    library_rx: mpsc::UnboundedReceiver<Result<crate::persistence::Library>>,
+    history_operation: u64,
+    library_rx: mpsc::UnboundedReceiver<crate::persistence::WriteResult>,
 }
 
 fn abort(task: &mut Option<JoinHandle<()>>) {
@@ -135,6 +136,7 @@ impl App {
             last_click: None,
             back_stack: vec![],
             writer,
+            history_operation: 0,
             library_rx,
         }
     }
@@ -163,10 +165,13 @@ impl App {
         }));
     }
 
-    fn persist(&self, change: crate::persistence::Change) {
+    fn persist(&mut self, change: crate::persistence::Change) -> bool {
         if let Err(error) = self.writer.submit(change) {
-            let _ = self.tx.send(Message::Library(Err(error)));
+            self.state
+                .message(format!("History was not saved: {error:#}"), true);
+            return false;
         }
+        true
     }
 
     fn settings(&mut self, audio: bool) -> bool {
@@ -719,9 +724,10 @@ impl App {
                     }
                 }
             }
-            Message::Library(result) => {
+            Message::Library((operation, result)) => {
+                let current = operation == Some(self.history_operation);
                 match result {
-                    Ok(library) => {
+                    Ok((library, removed)) => {
                         let previous = self.state.history.selected;
                         let key = self
                             .state
@@ -729,33 +735,32 @@ impl App {
                             .map(|e| (e.anime.source_id(), e.mode));
 
                         self.state.history.replace_entries(library.entries);
-                        if let Some(removal) = self.state.history_removal.take() {
-                            let entry = match &removal {
-                                HistoryRemoval::Removing(entry)
-                                | HistoryRemoval::Removed(entry)
-                                | HistoryRemoval::Restoring(entry) => entry,
-                            };
-                            let present =
-                                self.state.history.entries().iter().any(|e| {
-                                    e.anime.same_source(&entry.anime) && e.mode == entry.mode
-                                });
-                            self.state.history_removal = match (removal, present) {
-                                (HistoryRemoval::Removing(entry), false) => {
-                                    self.state
-                                        .confirm_history_change("Removed", &entry.anime.title);
-                                    Some(HistoryRemoval::Removed(entry))
+                        if current {
+                            match self.state.history_removal.take() {
+                                Some(HistoryRemoval::Removing) => {
+                                    if let Some(removed) = removed {
+                                        self.state.confirm_history_change(
+                                            "Removed",
+                                            &removed.entry.anime.title,
+                                        );
+                                        self.state.history_removal =
+                                            Some(HistoryRemoval::Removed(removed));
+                                    }
                                 }
-                                (HistoryRemoval::Restoring(entry), true) => {
-                                    self.state
-                                        .confirm_history_change("Restored", &entry.anime.title);
-                                    None
-                                }
-                                (HistoryRemoval::Removed(_), true) => {
-                                    self.state.history.notice = None;
-                                    None
-                                }
-                                (removal, _) => Some(removal),
-                            };
+                                Some(HistoryRemoval::Restoring(removed)) => self
+                                    .state
+                                    .confirm_history_change("Restored", &removed.entry.anime.title),
+                                other => self.state.history_removal = other,
+                            }
+                        }
+                        if let Some(HistoryRemoval::Removed(prior)) = &self.state.history_removal
+                            && self.state.history.entries().iter().any(|e| {
+                                e.anime.same_source(&prior.entry.anime)
+                                    && e.mode == prior.entry.mode
+                            })
+                        {
+                            self.state.history_removal = None;
+                            self.state.history.notice = None;
                         }
                         self.state.history.selected = key
                             .and_then(|(id, mode)| {
@@ -771,13 +776,16 @@ impl App {
                             });
                     }
                     Err(err) => {
-                        self.state.history.notice = None;
-                        self.state.history_removal = match self.state.history_removal.take() {
-                            Some(
-                                HistoryRemoval::Restoring(entry) | HistoryRemoval::Removed(entry),
-                            ) => Some(HistoryRemoval::Removed(entry)),
-                            _ => None,
-                        };
+                        if current {
+                            self.state.history.notice = None;
+                            self.state.history_removal = match self.state.history_removal.take() {
+                                Some(
+                                    HistoryRemoval::Restoring(entry)
+                                    | HistoryRemoval::Removed(entry),
+                                ) => Some(HistoryRemoval::Removed(entry)),
+                                _ => None,
+                            };
+                        }
                         self.state
                             .message(format!("History was not saved: {err:#}"), true);
                     }
@@ -1521,21 +1529,26 @@ impl App {
             }
             KeyCode::Delete if self.state.screen == Screen::History => {
                 if let Some(entry) = self.state.selected_history().cloned() {
-                    self.persist(crate::persistence::Change::Remove {
+                    let operation = self.history_operation + 1;
+                    if !self.persist(crate::persistence::Change::Remove {
+                        operation,
                         source: entry.anime.source_id(),
                         mode: entry.mode,
-                    });
+                    }) {
+                        return;
+                    }
+                    self.history_operation = operation;
                     self.state.history.notice = None;
                     self.state.message("", false);
-                    self.state.history_removal = Some(HistoryRemoval::Removing(entry));
+                    self.state.history_removal = Some(HistoryRemoval::Removing);
                 }
             }
             KeyCode::Char('u') if self.state.screen == Screen::History => {
                 if let Some(removal) = self.state.history_removal.take() {
                     let entry = match removal {
                         HistoryRemoval::Removed(entry) => entry,
-                        HistoryRemoval::Removing(entry) => {
-                            self.state.history_removal = Some(HistoryRemoval::Removing(entry));
+                        HistoryRemoval::Removing => {
+                            self.state.history_removal = Some(HistoryRemoval::Removing);
                             return;
                         }
                         HistoryRemoval::Restoring(entry) => {
@@ -1543,7 +1556,15 @@ impl App {
                             return;
                         }
                     };
-                    self.persist(crate::persistence::Change::Restore(entry.clone()));
+                    let operation = self.history_operation + 1;
+                    if !self.persist(crate::persistence::Change::Restore {
+                        operation,
+                        removed: entry.clone(),
+                    }) {
+                        self.state.history_removal = Some(HistoryRemoval::Removed(entry));
+                        return;
+                    }
+                    self.history_operation = operation;
                     self.state.history.notice = None;
                     self.state.message("", false);
                     self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
@@ -1651,7 +1672,7 @@ impl App {
         jobs?;
         saved?;
         while let Ok(result) = self.library_rx.try_recv() {
-            result?;
+            result.1?;
         }
         Ok(())
     }
@@ -1871,11 +1892,20 @@ mod tests {
             anime: anime("series", "Series"),
             episode: "4".into(),
             mode: Mode::Sub,
-            watched_at: 10,
+            watched_at: 0,
         };
         let store = crate::persistence::Store::new(dir.path());
         store
-            .update(crate::persistence::Change::Import(vec![entry.clone()]))
+            .update(crate::persistence::Change::Import(vec![
+                crate::persistence::Entry {
+                    episode: "5".into(),
+                    ..entry.clone()
+                },
+                crate::persistence::Entry {
+                    anime: anime("other", "Other"),
+                    ..entry.clone()
+                },
+            ]))
             .unwrap();
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::History;
@@ -1888,7 +1918,7 @@ mod tests {
             .unwrap()
             .unwrap();
         app.message(Message::Library(result));
-        assert!(app.state.history.entries().is_empty());
+        assert_eq!(app.state.history.entries()[0].anime.id, "other");
         let notice = app.state.history.notice.as_ref().unwrap();
         assert_eq!(
             (notice.action, notice.title.as_str()),
@@ -1911,14 +1941,54 @@ mod tests {
         app.message(Message::Library(result));
         assert!(app.state.history_removal.is_none());
         let saved = store.load().unwrap();
-        assert_eq!(saved.entries[0].episode, "4");
-        assert_eq!(saved.entries[0].watched_at, 10);
+        assert_eq!(saved.entries[0].episode, "5");
+        assert_eq!(saved.entries[1].anime.id, "other");
         let notice = app.state.history.notice.as_ref().unwrap();
         assert_eq!(
             (notice.action, notice.title.as_str()),
             ("Restored", "Series")
         );
         assert!(app.state.status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn earlier_write_failure_preserves_undo_for_the_next_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::persistence::Store::new(dir.path());
+        let entries: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|id| crate::persistence::Entry {
+                anime: anime(id, id),
+                episode: "1".into(),
+                mode: Mode::Sub,
+                watched_at: 0,
+            })
+            .collect();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(entries.clone());
+        let mut app = test_app(state, dir.path());
+        std::fs::write(&store.path, "invalid history").unwrap();
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let failed = app.library_rx.recv().await.unwrap();
+        assert!(failed.1.is_err());
+        std::fs::remove_file(&store.path).unwrap();
+        store
+            .update(crate::persistence::Change::Import(entries))
+            .unwrap();
+        app.state.history.selected = 1;
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        app.message(Message::Library(failed));
+        let saved = app.library_rx.recv().await.unwrap();
+        app.message(Message::Library(saved));
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let restored = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(Message::Library(restored));
+        assert_eq!(store.load().unwrap().entries[1].anime.id, "second");
     }
 
     #[tokio::test]
@@ -3235,10 +3305,16 @@ mod tests {
         assert_eq!(app.state.selected_history().unwrap().anime.id, "2");
         let mut entries = app.state.history.entries().to_vec();
         entries.remove(2);
-        app.message(Message::Library(Ok(crate::persistence::Library {
-            entries,
-            ..Default::default()
-        })));
+        app.message(Message::Library((
+            None,
+            Ok((
+                crate::persistence::Library {
+                    entries,
+                    ..Default::default()
+                },
+                None,
+            )),
+        )));
         assert_eq!(app.state.selected_history().unwrap().anime.id, "1");
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.state.screen, Screen::Episodes);
@@ -3268,27 +3344,42 @@ mod tests {
             let mut entries = state.history.entries().to_vec();
             entries.remove(removed);
             let mut app = test_app(state, dir.path());
-            app.message(Message::Library(Ok(crate::persistence::Library {
-                entries: entries.clone(),
-                ..Default::default()
-            })));
+            app.message(Message::Library((
+                None,
+                Ok((
+                    crate::persistence::Library {
+                        entries: entries.clone(),
+                        ..Default::default()
+                    },
+                    None,
+                )),
+            )));
             assert_eq!(app.state.history.selected, removed.min(2));
             let selected = app.state.history.entries()[app.state.history.selected]
                 .anime
                 .id
                 .clone();
             entries.reverse();
-            app.message(Message::Library(Ok(crate::persistence::Library {
-                entries,
-                ..Default::default()
-            })));
+            app.message(Message::Library((
+                None,
+                Ok((
+                    crate::persistence::Library {
+                        entries,
+                        ..Default::default()
+                    },
+                    None,
+                )),
+            )));
             assert_eq!(
                 app.state.history.entries()[app.state.history.selected]
                     .anime
                     .id,
                 selected
             );
-            app.message(Message::Library(Ok(crate::persistence::Library::default())));
+            app.message(Message::Library((
+                None,
+                Ok((crate::persistence::Library::default(), None)),
+            )));
             assert_eq!(app.state.history.selected, 0);
         }
     }

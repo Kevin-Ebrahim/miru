@@ -449,7 +449,7 @@ fn history_footer(state: &State, width: usize) -> Line<'static> {
         }
     } else {
         line = match &state.history_removal {
-            Some(HistoryRemoval::Removing(_)) => Line::styled("Removing...", muted(state)),
+            Some(HistoryRemoval::Removing) => Line::styled("Removing...", muted(state)),
             Some(HistoryRemoval::Restoring(_)) => Line::styled("Restoring...", muted(state)),
             _ if state.selected_history().is_some() => shortcut(state, "Delete", "Remove"),
             _ => Line::default(),
@@ -2120,7 +2120,10 @@ mod tests {
             mode: Mode::Sub,
             watched_at: 1,
         };
-        state.history_removal = Some(HistoryRemoval::Removed(entry.clone()));
+        state.history_removal = Some(HistoryRemoval::Removed(crate::persistence::RemovedEntry {
+            entry: entry.clone(),
+            equal_before: 0,
+        }));
         state.confirm_history_change("Removed", &entry.anime.title);
         for width in [32, 100] {
             let text = render_text(&mut state, width, 12);

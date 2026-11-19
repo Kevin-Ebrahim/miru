@@ -1,4 +1,4 @@
-use super::{Change, Library, Store};
+use super::{Change, Store, WriteResult};
 use anyhow::{Result, ensure};
 use std::{
     collections::VecDeque,
@@ -30,7 +30,7 @@ pub struct Writer {
 }
 
 impl Writer {
-    pub fn new(store: Store) -> (Self, mpsc::UnboundedReceiver<Result<Library>>) {
+    pub fn new(store: Store) -> (Self, mpsc::UnboundedReceiver<WriteResult>) {
         let pending = Arc::new(Mutex::new(Pending::default()));
         let ready = Arc::new(Notify::new());
         let (tx, rx) = mpsc::unbounded_channel();
@@ -50,10 +50,16 @@ impl Writer {
 
                 if !changes.is_empty() {
                     let store = store.clone();
+                    let operation = changes.iter().rev().find_map(|change| match change {
+                        Change::Remove { operation, .. } | Change::Restore { operation, .. } => {
+                            Some(*operation)
+                        }
+                        _ => None,
+                    });
                     let result = tokio::task::spawn_blocking(move || store.update_many(changes))
                         .await
                         .unwrap_or_else(|error| Err(error.into()));
-                    let _ = tx.send(result);
+                    let _ = tx.send((operation, result));
                 }
 
                 if closed {
@@ -157,7 +163,7 @@ mod tests {
         assert_eq!(library.quality, "worst");
         assert_eq!(library.mode, Mode::Dub);
         assert_eq!(library.entries.len(), 1);
-        assert!(results.recv().await.unwrap().is_ok());
+        assert!(results.recv().await.unwrap().1.is_ok());
         assert!(results.recv().await.is_none());
     }
 
@@ -183,6 +189,7 @@ mod tests {
                 .recv()
                 .await
                 .unwrap()
+                .1
                 .unwrap_err()
                 .to_string()
                 .contains("busy")

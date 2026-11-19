@@ -19,7 +19,8 @@ for a range, `1,5,8` for individual episodes, `-1` for the last episode and
 ## Providers
 
 Miru starts with HiAnime. Press Alt+p on Home or Search to change providers.
-If a title is missing or fails to play, press `a` on the series or failed search
+If a search returns no matches, press Alt+p to try another provider.
+Press `a` on a selected series or after a search request fails
 to look it up on the next provider. Pick the matching series and episode there.
 Your history and queues stay with their original provider.
 

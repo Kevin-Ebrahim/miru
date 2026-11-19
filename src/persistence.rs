@@ -99,6 +99,14 @@ pub struct Store {
     lock_timeout: Duration,
 }
 
+#[derive(Clone, Debug)]
+pub struct RemovedEntry {
+    pub entry: Entry,
+    pub equal_before: usize,
+}
+
+pub type WriteResult = (Option<u64>, Result<(Library, Option<RemovedEntry>)>);
+
 pub enum Change {
     Record {
         anime: Anime,
@@ -110,8 +118,12 @@ pub enum Change {
         quality: String,
     },
     Import(Vec<Entry>),
-    Restore(Entry),
+    Restore {
+        operation: u64,
+        removed: RemovedEntry,
+    },
     Remove {
+        operation: u64,
         source: SourceId,
         mode: Mode,
     },
@@ -219,14 +231,15 @@ impl Store {
     }
 
     pub fn update(&self, change: Change) -> Result<Library> {
-        self.update_many(vec![change])
+        self.update_many(vec![change]).map(|(library, _)| library)
     }
 
-    fn update_many(&self, changes: Vec<Change>) -> Result<Library> {
+    fn update_many(&self, changes: Vec<Change>) -> Result<(Library, Option<RemovedEntry>)> {
         let _lock = self.lock()?;
         let dir = self.path.parent().context("Missing state directory")?;
         let mut library = self.load()?;
 
+        let mut removed = None;
         for change in changes {
             match change {
                 Change::Record {
@@ -262,25 +275,45 @@ impl Store {
                         }
                     }
                 }
-                Change::Restore(entry) => {
+                Change::Restore { removed: prior, .. } => {
+                    removed = None;
+                    let entry = prior.entry;
                     // Never replace progress recorded after the removal.
                     if !library
                         .entries
                         .iter()
                         .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode)
                     {
-                        let index = library
+                        let newer = library
                             .entries
                             .iter()
-                            .position(|e| e.watched_at < entry.watched_at)
-                            .unwrap_or(library.entries.len());
+                            .take_while(|e| e.watched_at > entry.watched_at)
+                            .count();
+                        let equal = library.entries[newer..]
+                            .iter()
+                            .take_while(|e| e.watched_at == entry.watched_at)
+                            .count();
+                        let index = newer + equal.min(prior.equal_before);
                         library.entries.insert(index, entry);
                     }
                 }
-                Change::Remove { source, mode } => library.entries.retain(|e| {
-                    (e.anime.provider != source.provider || e.anime.id != source.id)
-                        || e.mode != mode
-                }),
+                Change::Remove { source, mode, .. } => {
+                    removed = library
+                        .entries
+                        .iter()
+                        .position(|e| e.anime.source_id() == source && e.mode == mode)
+                        .map(|index| {
+                            let entry = library.entries.remove(index);
+                            let equal_before = library.entries[..index]
+                                .iter()
+                                .filter(|e| e.watched_at == entry.watched_at)
+                                .count();
+                            RemovedEntry {
+                                entry,
+                                equal_before,
+                            }
+                        });
+                }
             }
         }
 
@@ -298,7 +331,7 @@ impl Store {
         temp.persist(&self.path)
             .context("Could not atomically save history")?;
         File::open(dir)?.sync_all()?;
-        Ok(library)
+        Ok((library, removed))
     }
 }
 
@@ -371,11 +404,20 @@ mod tests {
             .unwrap();
         store
             .update(Change::Remove {
+                operation: 0,
                 source: entry.anime.source_id(),
                 mode: entry.mode,
             })
             .unwrap();
-        let restored = store.update(Change::Restore(entry.clone())).unwrap();
+        let restored = store
+            .update(Change::Restore {
+                operation: 0,
+                removed: RemovedEntry {
+                    entry: entry.clone(),
+                    equal_before: 0,
+                },
+            })
+            .unwrap();
         assert_eq!(restored.entries[1].episode, "4");
         assert_eq!(restored.entries[1].watched_at, 10);
         store
@@ -385,7 +427,15 @@ mod tests {
                 mode: entry.mode,
             })
             .unwrap();
-        let restored = store.update(Change::Restore(entry)).unwrap();
+        let restored = store
+            .update(Change::Restore {
+                operation: 0,
+                removed: RemovedEntry {
+                    entry,
+                    equal_before: 0,
+                },
+            })
+            .unwrap();
         assert_eq!(restored.entries.len(), 2);
         assert_eq!(restored.entries[0].episode, "5");
     }
@@ -694,6 +744,7 @@ mod tests {
 
         store
             .update(Change::Remove {
+                operation: 0,
                 source: entries[0].anime.source_id(),
                 mode: entries[0].mode,
             })
@@ -763,6 +814,7 @@ mod tests {
         assert_eq!(store.load().unwrap().entries.len(), 2);
         let library = store
             .update(Change::Remove {
+                operation: 0,
                 source: first.source_id(),
                 mode: Mode::Sub,
             })
