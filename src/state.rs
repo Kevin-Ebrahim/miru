@@ -8,6 +8,7 @@ use lru::LruCache;
 use std::{
     collections::{BTreeSet, VecDeque},
     num::NonZeroUsize,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,10 +77,17 @@ pub struct SearchState {
     pub exact: bool,
 }
 
+pub struct HistoryNotice {
+    pub action: &'static str,
+    pub title: String,
+    pub expires: Instant,
+}
+
 pub struct HistoryState {
     entries: TitleList<crate::persistence::Entry>,
     pub query: Input,
     pub selected: usize,
+    pub notice: Option<HistoryNotice>,
 }
 
 impl SearchState {
@@ -98,6 +106,7 @@ impl Default for HistoryState {
             entries: TitleList::new(str::to_lowercase),
             query: Input::default(),
             selected: 0,
+            notice: None,
         }
     }
 }
@@ -164,6 +173,16 @@ pub struct State {
 }
 
 impl State {
+    pub(crate) fn confirm_history_change(&mut self, action: &'static str, title: &str) {
+        if self.screen == Screen::History {
+            self.history.notice = Some(HistoryNotice {
+                action,
+                title: title.to_owned(),
+                expires: Instant::now() + Duration::from_secs(4),
+            });
+        }
+    }
+
     pub fn typing(&self) -> bool {
         if self.help {
             self.help_filtering

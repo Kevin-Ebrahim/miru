@@ -246,6 +246,7 @@ impl App {
         self.state.episode_generation += 1;
 
         self.state.screen = screen;
+        self.state.history.notice = None;
         self.state.focus = if screen == Screen::Home {
             Focus::Search
         } else {
@@ -718,72 +719,70 @@ impl App {
                     }
                 }
             }
-            Message::Library(result) => match result {
-                Ok(library) => {
-                    let previous = self.state.history.selected;
-                    let key = self
-                        .state
-                        .selected_history()
-                        .map(|e| (e.anime.source_id(), e.mode));
-
-                    self.state.history.replace_entries(library.entries);
-                    if let Some(removal) = self.state.history_removal.take() {
-                        let newly_removed = matches!(removal, HistoryRemoval::Removing(_));
-                        let (entry, restoring) = match removal {
-                            HistoryRemoval::Removing(e) | HistoryRemoval::Removed(e) => (e, false),
-                            HistoryRemoval::Restoring(e) => (e, true),
-                        };
-                        let present = self
+            Message::Library(result) => {
+                match result {
+                    Ok(library) => {
+                        let previous = self.state.history.selected;
+                        let key = self
                             .state
-                            .history
-                            .entries()
-                            .iter()
-                            .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode);
-                        if restoring && present {
-                            self.state.message("History entry restored.", false);
-                        } else if !restoring && !present {
-                            if newly_removed && self.state.screen == Screen::History {
-                                self.state.message(
-                                    format!("Removed {} / u Undo", entry.anime.title),
-                                    false,
-                                );
-                            }
-                            self.state.history_removal = Some(HistoryRemoval::Removed(entry));
-                        } else {
-                            self.state.history_removal = Some(if restoring {
-                                HistoryRemoval::Restoring(entry)
-                            } else {
+                            .selected_history()
+                            .map(|e| (e.anime.source_id(), e.mode));
+
+                        self.state.history.replace_entries(library.entries);
+                        if let Some(removal) = self.state.history_removal.take() {
+                            let entry = match &removal {
                                 HistoryRemoval::Removing(entry)
-                            });
+                                | HistoryRemoval::Removed(entry)
+                                | HistoryRemoval::Restoring(entry) => entry,
+                            };
+                            let present =
+                                self.state.history.entries().iter().any(|e| {
+                                    e.anime.same_source(&entry.anime) && e.mode == entry.mode
+                                });
+                            self.state.history_removal = match (removal, present) {
+                                (HistoryRemoval::Removing(entry), false) => {
+                                    self.state
+                                        .confirm_history_change("Removed", &entry.anime.title);
+                                    Some(HistoryRemoval::Removed(entry))
+                                }
+                                (HistoryRemoval::Restoring(entry), true) => {
+                                    self.state
+                                        .confirm_history_change("Restored", &entry.anime.title);
+                                    None
+                                }
+                                (HistoryRemoval::Removed(_), true) => {
+                                    self.state.history.notice = None;
+                                    None
+                                }
+                                (removal, _) => Some(removal),
+                            };
                         }
-                    }
-                    self.state.history.selected = key
-                        .and_then(|(id, mode)| {
-                            self.state.visible_history().iter().position(|i| {
-                                let e = &self.state.history.entries()[*i];
-                                e.anime.provider == id.provider
-                                    && e.anime.id == id.id
-                                    && e.mode == mode
+                        self.state.history.selected = key
+                            .and_then(|(id, mode)| {
+                                self.state.visible_history().iter().position(|i| {
+                                    let e = &self.state.history.entries()[*i];
+                                    e.anime.provider == id.provider
+                                        && e.anime.id == id.id
+                                        && e.mode == mode
+                                })
                             })
-                        })
-                        .unwrap_or_else(|| {
-                            previous.min(self.state.visible_history().len().saturating_sub(1))
-                        });
+                            .unwrap_or_else(|| {
+                                previous.min(self.state.visible_history().len().saturating_sub(1))
+                            });
+                    }
+                    Err(err) => {
+                        self.state.history.notice = None;
+                        self.state.history_removal = match self.state.history_removal.take() {
+                            Some(
+                                HistoryRemoval::Restoring(entry) | HistoryRemoval::Removed(entry),
+                            ) => Some(HistoryRemoval::Removed(entry)),
+                            _ => None,
+                        };
+                        self.state
+                            .message(format!("History was not saved: {err:#}"), true);
+                    }
                 }
-                Err(err) => {
-                    self.state.history_removal = match self.state.history_removal.take() {
-                        Some(HistoryRemoval::Restoring(entry)) => {
-                            Some(HistoryRemoval::Removed(entry))
-                        }
-                        Some(HistoryRemoval::Removing(entry) | HistoryRemoval::Removed(entry)) => {
-                            Some(HistoryRemoval::Removed(entry))
-                        }
-                        _ => None,
-                    };
-                    self.state
-                        .message(format!("History was not saved: {err:#}"), true);
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -1580,8 +1579,8 @@ impl App {
                         source: entry.anime.source_id(),
                         mode: entry.mode,
                     });
-                    self.state
-                        .message(format!("Removing {}...", entry.anime.title), false);
+                    self.state.history.notice = None;
+                    self.state.message("", false);
                     self.state.history_removal = Some(HistoryRemoval::Removing(entry));
                 }
             }
@@ -1599,7 +1598,8 @@ impl App {
                         }
                     };
                     self.persist(crate::persistence::Change::Restore(entry.clone()));
-                    self.state.message("Restoring history entry...", false);
+                    self.state.history.notice = None;
+                    self.state.message("", false);
                     self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
                 }
             }
@@ -1865,7 +1865,9 @@ impl App {
                     }
                 }
                 _ = tick.tick() => {
-                    dirty |= self.expire_activity(Instant::now());
+                    let now = Instant::now();
+                    dirty |= self.expire_activity(now);
+                    dirty |= self.state.history.notice.take_if(|notice| now >= notice.expires).is_some();
                     if self.state.animate && animation.elapsed() >= Duration::from_millis(120) {
                         animation = Instant::now();
                         self.state.frame = self.state.frame.wrapping_add(1);
@@ -1944,7 +1946,12 @@ mod tests {
             .unwrap();
         app.message(Message::Library(result));
         assert!(app.state.history.entries().is_empty());
-        assert!(app.state.status.contains("Removed Series"));
+        let notice = app.state.history.notice.as_ref().unwrap();
+        assert_eq!(
+            (notice.action, notice.title.as_str()),
+            ("Removed", "Series")
+        );
+        assert!(app.state.status.is_empty());
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert_eq!(app.state.history.query.text, "u");
@@ -1963,7 +1970,12 @@ mod tests {
         let saved = store.load().unwrap();
         assert_eq!(saved.entries[0].episode, "4");
         assert_eq!(saved.entries[0].watched_at, 10);
-        assert_eq!(app.state.status, "History entry restored.");
+        let notice = app.state.history.notice.as_ref().unwrap();
+        assert_eq!(
+            (notice.action, notice.title.as_str()),
+            ("Restored", "Series")
+        );
+        assert!(app.state.status.is_empty());
     }
 
     #[tokio::test]

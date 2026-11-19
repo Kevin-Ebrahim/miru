@@ -1,7 +1,7 @@
 use crate::{
     artwork::Artwork,
     palette::Palette,
-    state::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis},
+    state::{Activity, Focus, HistoryRemoval, JobKind, JobPhase, Screen, State, Synopsis},
     view::TextView,
 };
 use ratatui::{
@@ -433,6 +433,38 @@ fn download_hints(state: &State, width: u16) -> Option<Line<'static>> {
     Some(controls)
 }
 
+fn history_footer(state: &State, width: usize) -> Line<'static> {
+    let undo = matches!(state.history_removal, Some(HistoryRemoval::Removed(_)))
+        .then(|| shortcut(state, "u", "Undo"));
+    let available = width.saturating_sub(undo.as_ref().map_or(0, |hint| hint.width() + 2));
+    let mut line = Line::default();
+    if let Some(notice) = &state.history.notice {
+        if available >= notice.action.len() {
+            line.push_span(Span::styled(notice.action, muted(state)));
+            let title_width = available.saturating_sub(line.width() + 1);
+            if title_width > 0 {
+                line.push_span(" ");
+                line.push_span(ellipsize(&notice.title, title_width, state));
+            }
+        }
+    } else {
+        line = match &state.history_removal {
+            Some(HistoryRemoval::Removing(_)) => Line::styled("Removing...", muted(state)),
+            Some(HistoryRemoval::Restoring(_)) => Line::styled("Restoring...", muted(state)),
+            _ if state.selected_history().is_some() => shortcut(state, "Delete", "Remove"),
+            _ => Line::default(),
+        };
+    }
+    if let Some(undo) = undo {
+        if line.width() == 0 || line.width() > available {
+            return undo;
+        }
+        line.push_span("  ");
+        line.spans.extend(undo.spans);
+    }
+    line
+}
+
 fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
     let hint = footer_hint(state);
     let hint_width = (hint.width() as u16).min(area.width);
@@ -442,9 +474,12 @@ fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
         && state.focus == Focus::List
         && !state.details
         && !state.help
-        && state.selected_history().is_some()
     {
-        frame.render_widget(Paragraph::new(shortcut(state, "Delete", "Remove")), area);
+        let width = area.width.saturating_sub(hint_width + 1);
+        frame.render_widget(
+            Paragraph::new(history_footer(state, usize::from(width))),
+            area,
+        );
     } else if matches!(state.screen, Screen::Episodes | Screen::Search)
         && !state.details
         && !state.downloads_supported()
@@ -2063,7 +2098,6 @@ mod tests {
                 mode: Mode::Sub,
                 watched_at: 1,
             }]);
-        state.status = "History entry restored.".into();
         for width in [32, 100] {
             let text = render_text(&mut state, width, 12);
             assert!(text.contains("Mushi-Shi"), "{text}");
@@ -2085,6 +2119,60 @@ mod tests {
         state.details = false;
         state.history.query.set("missing".into());
         assert!(!render_text(&mut state, 32, 12).contains("Delete Remove"));
+    }
+
+    #[test]
+    fn history_feedback_shares_the_footer_with_undo_without_shifting_the_list() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        let entry = crate::persistence::Entry {
+            anime: Anime {
+                title: "Cowboy Bebop".into(),
+                ..Default::default()
+            },
+            episode: "1".into(),
+            mode: Mode::Sub,
+            watched_at: 1,
+        };
+        state.history_removal = Some(HistoryRemoval::Removed(entry.clone()));
+        state.confirm_history_change("Removed", &entry.anime.title);
+        for width in [32, 100] {
+            let text = render_text(&mut state, width, 12);
+            let footer = text.lines().last().unwrap();
+            assert!(
+                footer.starts_with("Removed Cowboy") && footer.contains("  u Undo"),
+                "{text}"
+            );
+            assert!(
+                footer.ends_with("? Help") && text.contains("No history yet"),
+                "{text}"
+            );
+            assert_eq!(sections(&state, Rect::new(0, 0, width, 12))[3].height, 0);
+        }
+        state.history.notice = None;
+        assert!(
+            render_text(&mut state, 32, 12)
+                .lines()
+                .last()
+                .unwrap()
+                .starts_with("u Undo")
+        );
+        state.focus = Focus::Search;
+        assert!(!render_text(&mut state, 32, 12).contains("u Undo"));
+        state.focus = Focus::List;
+        state.history_removal = None;
+        state.confirm_history_change("Restored", &entry.anime.title);
+        state.history.replace_entries(vec![entry]);
+        let text = render_text(&mut state, 32, 12);
+        assert!(
+            text.lines()
+                .last()
+                .unwrap()
+                .starts_with("Restored Cowboy Bebop"),
+            "{text}"
+        );
+        assert!(!text.contains("u Undo"));
     }
 
     #[test]
