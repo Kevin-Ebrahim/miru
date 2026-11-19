@@ -143,7 +143,7 @@ pub struct State {
     pub focus: Focus,
     pub search: SearchState,
     pub history: HistoryState,
-    pub last_removed: Option<crate::persistence::RemovedEntry>,
+    pub last_removed: Option<crate::persistence::Entry>,
     pub history_removal: Option<HistoryRemoval>,
     pub episodes: EpisodesState,
     pub view: crate::view::Geometry,

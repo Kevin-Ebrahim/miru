@@ -218,10 +218,12 @@ async fn run() -> Result<()> {
 
     let library = store.load()?;
     if cli.history {
-        output::line(format_args!(
-            "{}",
-            serde_json::to_string_pretty(&library.entries)?
-        ))?;
+        // Order keys are local storage metadata. Keep them out of the public JSON.
+        let mut entries = library.entries;
+        for entry in &mut entries {
+            entry.order = 0;
+        }
+        output::line(format_args!("{}", serde_json::to_string_pretty(&entries)?))?;
         return Ok(());
     }
 

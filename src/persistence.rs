@@ -72,11 +72,20 @@ pub struct Entry {
     pub episode: String,
     pub mode: Mode,
     pub watched_at: u64,
+    // Descending display order. Playback prepends positive keys and imports append negative keys.
+    #[serde(default, skip_serializing_if = "is_unassigned")]
+    pub order: i64,
+}
+
+fn is_unassigned(order: &i64) -> bool {
+    *order == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Library {
     pub version: u8,
+    #[serde(default)]
+    pub sequence: i64,
     pub entries: Vec<Entry>,
     pub mode: Mode,
     pub quality: String,
@@ -86,11 +95,19 @@ impl Default for Library {
     fn default() -> Self {
         Self {
             version: 2,
+            sequence: 0,
             entries: vec![],
             mode: Mode::Sub,
             quality: "best".into(),
         }
     }
+}
+
+fn next_sequence(sequence: &mut i64) -> Result<i64> {
+    *sequence = sequence
+        .checked_add(1)
+        .context("History sequence exhausted")?;
+    Ok(*sequence)
 }
 
 #[derive(Clone)]
@@ -99,14 +116,7 @@ pub struct Store {
     lock_timeout: Duration,
 }
 
-#[derive(Clone, Debug)]
-pub struct RemovedEntry {
-    pub entry: Entry,
-    pub before: Option<(SourceId, Mode)>,
-    pub after: Option<(SourceId, Mode)>,
-}
-
-pub type WriteResult = (Option<u64>, Result<(Library, Option<Box<RemovedEntry>>)>);
+pub type WriteResult = (Option<u64>, Result<(Library, Option<Box<Entry>>)>);
 
 pub enum Change {
     Record {
@@ -121,7 +131,7 @@ pub enum Change {
     Import(Vec<Entry>),
     Restore {
         operation: u64,
-        removed: RemovedEntry,
+        removed: Entry,
     },
     Remove {
         operation: u64,
@@ -235,11 +245,17 @@ impl Store {
         self.update_many(vec![change]).map(|(library, _)| library)
     }
 
-    fn update_many(&self, changes: Vec<Change>) -> Result<(Library, Option<Box<RemovedEntry>>)> {
+    fn update_many(&self, changes: Vec<Change>) -> Result<(Library, Option<Box<Entry>>)> {
         let _lock = self.lock()?;
         let dir = self.path.parent().context("Missing state directory")?;
         let mut library = self.load()?;
 
+        // Older libraries have no order keys. Number their rows in the existing order.
+        if library.sequence == 0 {
+            for entry in &mut library.entries {
+                entry.order = -next_sequence(&mut library.sequence)?;
+            }
+        }
         let mut removed = None;
         for change in changes {
             match change {
@@ -257,6 +273,7 @@ impl Store {
                             anime,
                             episode,
                             mode,
+                            order: next_sequence(&mut library.sequence)?,
                             watched_at: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
                         },
                     );
@@ -266,48 +283,28 @@ impl Store {
                     library.quality = quality;
                 }
                 Change::Import(entries) => {
-                    for entry in entries {
+                    for mut entry in entries {
                         if !library
                             .entries
                             .iter()
                             .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode)
                         {
+                            entry.order = -next_sequence(&mut library.sequence)?;
                             library.entries.push(entry);
                         }
                     }
                 }
-                Change::Restore { removed: prior, .. } => {
+                Change::Restore { removed: entry, .. } => {
                     removed = None;
-                    let entry = prior.entry;
                     // Never replace progress recorded after the removal.
                     if !library
                         .entries
                         .iter()
                         .any(|e| e.anime.same_source(&entry.anime) && e.mode == entry.mode)
                     {
-                        let newer = library
+                        let index = library
                             .entries
-                            .iter()
-                            .take_while(|e| e.watched_at > entry.watched_at)
-                            .count();
-                        let equal = library.entries[newer..]
-                            .iter()
-                            .take_while(|e| e.watched_at == entry.watched_at)
-                            .count();
-                        let peers = &library.entries[newer..newer + equal];
-                        let locate = |key: &Option<(SourceId, Mode)>| {
-                            key.as_ref().and_then(|(id, mode)| {
-                                peers.iter().position(|e| {
-                                    e.mode == *mode
-                                        && e.anime.id == id.id
-                                        && e.anime.provider == id.provider
-                                })
-                            })
-                        };
-                        let index = newer
-                            + locate(&prior.after)
-                                .or_else(|| locate(&prior.before).map(|i| i + 1))
-                                .unwrap_or(equal);
+                            .partition_point(|other| other.order > entry.order);
                         library.entries.insert(index, entry);
                     }
                 }
@@ -317,18 +314,7 @@ impl Store {
                         .iter()
                         .position(|e| e.anime.source_id() == source && e.mode == mode)
                     {
-                        let entry = library.entries.remove(index);
-                        let neighbor = |other: &Entry| {
-                            (other.watched_at == entry.watched_at)
-                                .then(|| (other.anime.source_id(), other.mode))
-                        };
-                        let before = library.entries[..index].last().and_then(neighbor);
-                        let after = library.entries.get(index).and_then(neighbor);
-                        removed = Some(Box::new(RemovedEntry {
-                            entry,
-                            before,
-                            after,
-                        }));
+                        removed = Some(Box::new(library.entries.remove(index)));
                     }
                 }
             }
@@ -376,6 +362,7 @@ pub fn import_legacy(text: &str) -> Vec<Entry> {
                 },
                 episode: episode.into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 0,
             })
         })
@@ -395,45 +382,66 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, symlink};
 
     #[test]
-    fn restore_preserves_neighbors_after_a_same_second_playback() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path());
-        let entry = |id: &str| Entry {
-            anime: Anime {
+    fn undo_keeps_legacy_row_order_when_other_sessions_delete_or_replay_neighbors() {
+        for (removed_id, other_id, replay, expected) in [
+            ("A", "B", false, vec!["A", "C"]),
+            ("B", "C", true, vec!["C", "A", "B"]),
+            ("C", "D", true, vec!["D", "A", "B", "C"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::new(dir.path());
+            let other_session = Store::new(dir.path());
+            let entries: Vec<_> = ["A", "B", "C"].iter().map(|id| serde_json::json!({
+                "anime": {"id": id, "title": id}, "episode": "1", "mode": "sub", "watched_at": 10
+            })).collect();
+            fs::write(
+                &store.path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 2, "entries": entries, "mode": "sub", "quality": "best"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let anime = |id: &str| Anime {
                 id: id.into(),
+                title: id.into(),
                 ..Default::default()
-            },
-            episode: "1".into(),
-            mode: Mode::Sub,
-            watched_at: 10,
-        };
-        store
-            .update(Change::Import(vec![entry("B"), entry("A")]))
-            .unwrap();
-        let (mut library, removed) = store
-            .update_many(vec![Change::Remove {
+            };
+            let delete = |id| Change::Remove {
                 operation: 1,
-                source: entry("A").anime.source_id(),
+                source: anime(id).source_id(),
                 mode: Mode::Sub,
-            }])
-            .unwrap();
-        // Model the file another player commits in the same second.
-        library.entries.insert(0, entry("C"));
-        fs::write(&store.path, serde_json::to_vec(&library).unwrap()).unwrap();
-        let saved = store
-            .update(Change::Restore {
-                operation: 2,
-                removed: *removed.unwrap(),
-            })
-            .unwrap();
-        assert_eq!(
-            saved
-                .entries
-                .iter()
-                .map(|entry| entry.anime.id.as_str())
-                .collect::<Vec<_>>(),
-            ["C", "B", "A"]
-        );
+            };
+            let (_, removed) = store.update_many(vec![delete(removed_id)]).unwrap();
+            if replay {
+                let mut library = other_session
+                    .update(Change::Record {
+                        anime: anime(other_id),
+                        episode: "1".into(),
+                        mode: Mode::Sub,
+                    })
+                    .unwrap();
+                // Make playback and the original rows share a second without depending on the clock.
+                library.entries[0].watched_at = 10;
+                fs::write(&store.path, serde_json::to_vec(&library).unwrap()).unwrap();
+            } else {
+                other_session.update(delete(other_id)).unwrap();
+            }
+            let saved = store
+                .update(Change::Restore {
+                    operation: 2,
+                    removed: *removed.unwrap(),
+                })
+                .unwrap();
+            assert_eq!(
+                saved
+                    .entries
+                    .iter()
+                    .map(|e| e.anime.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -448,6 +456,7 @@ mod tests {
             },
             episode: "4".into(),
             mode: Mode::Sub,
+            order: 0,
             watched_at: 10,
         };
         let newer = Entry {
@@ -455,27 +464,25 @@ mod tests {
                 id: "other".into(),
                 ..Default::default()
             },
+            order: 0,
             watched_at: 20,
             ..entry.clone()
         };
         store
             .update(Change::Import(vec![newer, entry.clone()]))
             .unwrap();
-        store
-            .update(Change::Remove {
+        let (_, removed) = store
+            .update_many(vec![Change::Remove {
                 operation: 0,
                 source: entry.anime.source_id(),
                 mode: entry.mode,
-            })
+            }])
             .unwrap();
+        let removed = *removed.unwrap();
         let restored = store
             .update(Change::Restore {
                 operation: 0,
-                removed: RemovedEntry {
-                    entry: entry.clone(),
-                    before: None,
-                    after: None,
-                },
+                removed: removed.clone(),
             })
             .unwrap();
         assert_eq!(restored.entries[1].episode, "4");
@@ -490,11 +497,7 @@ mod tests {
         let restored = store
             .update(Change::Restore {
                 operation: 0,
-                removed: RemovedEntry {
-                    entry,
-                    before: None,
-                    after: None,
-                },
+                removed,
             })
             .unwrap();
         assert_eq!(restored.entries.len(), 2);
@@ -662,6 +665,7 @@ mod tests {
             anime: Anime::default(),
             episode: "1".into(),
             mode: Mode::Sub,
+            order: 0,
             watched_at: 0,
         };
         let episodes: Vec<_> = ["1", "1.5"]

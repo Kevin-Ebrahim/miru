@@ -736,17 +736,17 @@ impl App {
 
                         self.state.history.replace_entries(library.entries);
                         if let Some(removed) = removed {
-                            if current {
-                                self.state
-                                    .confirm_history_change("Removed", &removed.entry.anime.title);
-                            }
+                            self.state
+                                .confirm_history_change("Removed", &removed.anime.title);
                             self.state.last_removed = Some(*removed);
                         }
                         if let Some(prior) = &self.state.last_removed
-                            && self.state.history.entries().iter().any(|e| {
-                                e.anime.same_source(&prior.entry.anime)
-                                    && e.mode == prior.entry.mode
-                            })
+                            && self
+                                .state
+                                .history
+                                .entries()
+                                .iter()
+                                .any(|e| e.anime.same_source(&prior.anime) && e.mode == prior.mode)
                         {
                             let prior = self.state.last_removed.take().unwrap();
                             self.state.history.notice = None;
@@ -757,7 +757,7 @@ impl App {
                                 )
                             {
                                 self.state
-                                    .confirm_history_change("Restored", &prior.entry.anime.title);
+                                    .confirm_history_change("Restored", &prior.anime.title);
                             }
                         }
                         if current {
@@ -1877,6 +1877,7 @@ mod tests {
             anime: anime("series", "Series"),
             episode: "4".into(),
             mode: Mode::Sub,
+            order: 0,
             watched_at: 0,
         };
         let store = crate::persistence::Store::new(dir.path());
@@ -1935,6 +1936,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removal_confirmation_survives_a_later_empty_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::persistence::Store::new(dir.path());
+        let library = store
+            .update(crate::persistence::Change::Record {
+                anime: anime("series", "Series"),
+                episode: "1".into(),
+                mode: Mode::Sub,
+            })
+            .unwrap();
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        state.history.replace_entries(library.entries);
+        let mut app = test_app(state, dir.path());
+        let delete = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+        app.key(delete);
+        let first = app.library_rx.recv().await.unwrap();
+        app.key(delete);
+        let second = app.library_rx.recv().await.unwrap();
+        for result in [first, second] {
+            app.message(Message::Library(result));
+            let notice = app.state.history.notice.as_ref().unwrap();
+            assert_eq!(
+                (notice.action, notice.title.as_str()),
+                ("Removed", "Series")
+            );
+        }
+        assert!(app.state.last_removed.is_some());
+    }
+
+    #[tokio::test]
     async fn earlier_write_failure_preserves_undo_for_the_next_delete() {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::persistence::Store::new(dir.path());
@@ -1944,6 +1977,7 @@ mod tests {
                 anime: anime(id, id),
                 episode: "1".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 0,
             })
             .collect();
@@ -2931,6 +2965,7 @@ mod tests {
                         anime: state.episodes.anime.clone().unwrap(),
                         episode: last.into(),
                         mode: Mode::Dub,
+                        order: 0,
                         watched_at: 1,
                     });
                     state.history.replace_entries(entries);
@@ -3280,6 +3315,7 @@ mod tests {
                     anime: anime(&i.to_string(), title),
                     episode: "4".into(),
                     mode: Mode::Sub,
+                    order: 0,
                     watched_at: i as u64,
                 })
                 .collect(),
@@ -3327,6 +3363,7 @@ mod tests {
                         anime: anime(&n.to_string(), &format!("Series {n}")),
                         episode: "1".into(),
                         mode: Mode::Sub,
+                        order: 0,
                         watched_at: n,
                     })
                     .collect(),

@@ -2081,6 +2081,7 @@ mod tests {
                 },
                 episode: "1".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 1,
             }]);
         for width in [32, 100] {
@@ -2118,13 +2119,10 @@ mod tests {
             },
             episode: "1".into(),
             mode: Mode::Sub,
+            order: 0,
             watched_at: 1,
         };
-        state.last_removed = Some(crate::persistence::RemovedEntry {
-            entry: entry.clone(),
-            before: None,
-            after: None,
-        });
+        state.last_removed = Some(entry.clone());
         state.confirm_history_change("Removed", &entry.anime.title);
         for width in [32, 100] {
             let text = render_text(&mut state, width, 12);
@@ -2411,6 +2409,7 @@ mod tests {
                             },
                             episode: "1".into(),
                             mode: Mode::Sub,
+                            order: 0,
                             watched_at: 1,
                         });
                         state.history.replace_entries(entries);
@@ -2527,6 +2526,7 @@ mod tests {
                 anime,
                 episode: "1".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 1,
             });
             state.history.replace_entries(entries);
@@ -2676,6 +2676,7 @@ mod tests {
                     anime: state.activity.as_ref().unwrap().anime.clone(),
                     episode: "1".into(),
                     mode: Mode::Sub,
+                    order: 0,
                     watched_at: 1,
                 });
                 state.history.replace_entries(entries);
@@ -2780,6 +2781,7 @@ mod tests {
                         anime: anime.clone(),
                         episode: "1".into(),
                         mode: Mode::Sub,
+                        order: 0,
                         watched_at: 1,
                     }]
                 } else {
@@ -3084,6 +3086,7 @@ mod tests {
                 anime,
                 episode: "5".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 1,
             });
             state.history.replace_entries(entries);
@@ -3229,6 +3232,7 @@ mod tests {
                 },
                 episode: "6".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 0,
             });
             state.history.replace_entries(entries);
@@ -3437,6 +3441,7 @@ mod tests {
                 anime,
                 episode: "1".into(),
                 mode: Mode::Sub,
+                order: 0,
                 watched_at: 1,
             }]);
         for screen in [Screen::Search, Screen::Episodes, Screen::History] {
