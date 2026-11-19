@@ -7,7 +7,7 @@
 Press `?` while browsing to open Help. Press `/` there to find a key or action.
 Esc leaves a text field or closes a panel.
 
-- Press Alt+h to open history. Miru remembers the last episode you launched. Opening the series highlights the next episode.
+- Press Alt+h to open history. Miru records an episode when mpv starts playback. For VLC and wrappers without a playback notification, it waits for a successful exit. Opening the series highlights the next episode.
 - Press `i` for series details. Press `y` to copy the panel text, or drag to copy a passage.
 - In Episodes, press Space to mark individual episodes or `:` to enter a range. Press `d` to download the marked episodes. With none marked, `d` downloads the highlighted episode.
 - Press `x` to stop the current queue. If a queue fails, Alt+r retries from the failed episode.
@@ -90,7 +90,7 @@ Use `MIRU_STATE_DIR` or `MIRU_CACHE_DIR` to override Miru's own directories.
 
 ### Network policy
 
-Playback and downloads run inside bubblewrap on Linux. Miru checks remote
+Provider requests ignore system proxy settings. Playback and downloads run inside bubblewrap on Linux. Miru checks remote
 destinations through its own proxy and blocks local and reserved addresses,
 except for an explicitly configured local provider. Media jobs can't use a
 corporate proxy or host TCP player controls. Players still have access to local

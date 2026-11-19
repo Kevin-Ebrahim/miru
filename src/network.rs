@@ -209,6 +209,8 @@ impl Http {
         let policy = Policy::new(base);
         let redirects = policy.clone();
         let client = reqwest::Client::builder()
+            // Proxies resolve destinations outside our DNS policy.
+            .no_proxy()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(20))

@@ -349,7 +349,7 @@ while not (root / token).exists():
             send(b"x")
             wait_for(lambda: not alive(second["token"]))
             history = json.loads((root / "library.json").read_text())["entries"]
-            assert history[0]["anime"]["id"] == "original-1" and history[0]["episode"] == "2", history
+            assert history[0]["anime"]["id"] == "original-1" and history[0]["episode"] == "1", history
             assert history[0]["mode"] == "sub", history
             send(b"H")  # History's / now filters locally; use Home for catalogue search.
             send(b"\r")  # Submit the retained search.

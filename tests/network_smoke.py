@@ -18,8 +18,43 @@ import threading
 import urllib.parse
 
 
+def check_provider_proxy(binary):
+    requests = []
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+        def do_GET(self):
+            requests.append(self.path)
+            body = b'<div class="film_list-wrap"></div>'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory(prefix="miru-provider-proxy-") as root:
+            env = {k: v for k, v in os.environ.items()
+                   if "proxy" not in k.lower() and not k.startswith(("MIRU_", "ANI_WATCH_"))}
+            proxy = f"http://127.0.0.1:{server.server_port}"
+            env.update(http_proxy=proxy, https_proxy=proxy, all_proxy=proxy,
+                       XDG_CONFIG_HOME=str(pathlib.Path(root) / "config"))
+            result = subprocess.run([str(binary), "--provider", "http://miru-probe.invalid/",
+                                     "--state-dir", root, "--list", "Probe"],
+                                    env=env, capture_output=True, text=True, timeout=25)
+            assert not requests, f"Provider request bypassed destination resolution via proxy: {requests}"
+            assert result.returncode != 0, result.stdout
+            print("PASS: ambient proxies cannot bypass provider destination resolution", flush=True)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def main():
     binary = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/miru").resolve()
+    check_provider_proxy(binary)
     for program in ("ffmpeg", "mpv", "openssl"):
         if not shutil.which(program):
             raise SystemExit(f"Install {program} to run the network smoke test")
