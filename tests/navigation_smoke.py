@@ -229,6 +229,15 @@ while not (root / token).exists():
         try:
             pump(0.5)
             assert not requests, "Home must not fetch history or search before navigation"
+            send(b"\x1bp")  # Alt+p changes provider while the Home input has focus.
+            wait_for(lambda: b"AnimeGG" in output)
+            send(b"\x1bp")
+            wait_for(lambda: b"KAA" in output)
+            send(b"\x1bOQ")  # F2 still cycles back to HiAnime.
+            send(b"\x1b")
+            send(b",")
+            wait_for(lambda: b"Download folder" in output)
+            send(b"\x1b")
             send(b"\x1bh")
             wait_for(lambda: requests.count("/original-1") == 1)
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
@@ -302,11 +311,11 @@ while not (root / token).exists():
             send(b"i")
             copied = copied_text()
             assert all(text in copied for text in ["Original Series", "Synopsis", "A complete synopsis beyond the search snippet."])
-            assert "F1 Help" not in copied and "Enter Episodes" not in copied
+            assert "? Help" not in copied and "Enter Episodes" not in copied
             send(b"\x1b")
             send(b"i")
             assert requests.count("/original-1") == 1, "Reopening details should reuse the full synopsis"
-            send(b"\x1b[15~")  # F5 explicitly refreshes the synopsis.
+            send(b"R")  # Refresh the open details.
             wait_for(lambda: requests.count("/original-1") == 2)
             send(b"\x1b")
             send(click_first + click_first)  # Double-click History -> episodes.
@@ -374,7 +383,7 @@ while not (root / token).exists():
             # Retry while searching elsewhere, after changing the next queue's defaults.
             send(b"DQ/other")
             pump(0.5)
-            send(b"\x1b[17~")  # F6 retries only the failed and pending episodes.
+            send(b"\x1br")  # Alt+r retries the failed and pending episodes while typing.
             wait_for(lambda: len(list((root / "downloads").glob("Original*.mkv"))) == 3)
             originals = list((root / "downloads").glob("Original*.mkv"))
             assert all(" SUB.mkv" in file.name for file in originals), originals

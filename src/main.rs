@@ -56,7 +56,7 @@ enum Images {
         "--quality sets playback/download quality and the TUI's initial quality.\n",
         "Player options apply to playback; --download-dir applies to downloads.\n",
         "Appearance options apply to the TUI. State/provider/cache options remain available.\n\n",
-        "Keys: / search, Enter select/play, F2 provider, s sub/dub, Q quality, ? help.\n",
+        "Keys: / search, Enter select/play, Alt+p provider, s sub/dub, Q quality, ? help.\n",
         "The shell ani-cli installation and history are left untouched."
     )
 )]

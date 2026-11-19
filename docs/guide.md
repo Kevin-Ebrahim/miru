@@ -13,7 +13,8 @@ See the [README](../README.md) for installation and first use.
 | ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
 | `i` | Open full cover and series details |
 | `s` or Shift+D | Toggle SUB/DUB |
-| F2 | Change provider on Home or Search |
+| Alt+p | Change provider on Home or Search, including while typing |
+| `a` | Search the selected title or failed query on the next provider |
 | `Q` | Cycle playback quality |
 | Alt+e | Toggle exact title matching |
 | Alt+h | Open watch history |
@@ -22,15 +23,21 @@ See the [README](../README.md) for installation and first use.
 | `d` in Episodes | Download marked episodes, or the highlighted episode |
 | `n` / `p` / `r` | Play next / previous / replay |
 | `x` | Stop the current player or download queue, or dismiss its result |
-| F5 / F6 | Retry the current view / retry a failed queue |
+| `R` | Refresh the current view, series details, or enlarged cover |
+| Alt+r | Retry a failed queue, including while typing |
 | Delete in History | Remove the highlighted history entry |
 | `u` in History | Undo the last removal during this session |
-| `?` / F1 | Open help; `/` filters help by key or action |
+| `?` | Open Help. Press `/` to filter by key or action |
+| `,` | Open Settings |
 | `q` | Close Help or Details |
 | Ctrl+C | Quit from anywhere and stop owned jobs |
 
 Printable keys enter text while an input has focus. Inputs support readline
-shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. F1 lists all bindings.
+shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. Press Esc to leave a search,
+filter, or episode range before using a browsing shortcut such as `?` or `,`.
+
+F1–F6 remain available as aliases for Help, change provider, search another
+provider, Settings, refresh, and retry queue, respectively.
 
 Click a list item to select it; double-click to open a series or play an episode,
 using the same action as Enter. The wheel moves one item at a time over a list
@@ -47,7 +54,7 @@ or opening Help clears unfinished selections.
 Ranges use the provider's episode order and can include decimal specials. Use
 `1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru
 validates the whole range before starting a queue. A queue keeps its original
-series, episodes, language, and quality as you browse. If it fails, F6 retries
+series, episodes, language, and quality as you browse. If it fails, Alt+r retries
 from the failed episode without repeating completed ones.
 
 ## Command-line use
@@ -257,7 +264,7 @@ Miru supports HiAnime (the default), AnimeGG and KAA. AnimeGG downloads are disa
 because sustained transfers have been unreliable. Its episode view hides the
 download action, and `--source animegg --download` fails before network access.
 HiAnime and KAA downloads remain available, regardless of the current search source.
-Select a source with F2 or by
+Select a source with Alt+p or by
 clicking its name on Home or Search. From the CLI:
 
 ```sh
@@ -287,8 +294,8 @@ metadata to variants (`format: "direct"` distinguishes direct media from HLS).
 The adapter resolves the site's direct sources; third-party backup embeds are not
 supported. Site challenges, missing language sources and changed markup can still
 interrupt playback. Short playback tests do not establish full-episode reliability.
-Errors appear in the affected view, and F5 retries it. Check state-directory logs
-for player failures.
+Errors appear in the affected view. Press `R` while browsing to retry.
+Check state-directory logs for player failures.
 
 KAA selects Japanese audio for SUB and English audio for DUB from the HLS
 manifest, regardless of track order or default flags. If an English episode has
@@ -308,9 +315,9 @@ the partial file instead of publishing it as a completed episode.
 
 ### Search another provider
 
-Press F3 on a series, in its episode view, or after a failed search to search
+Press `a` on a series, in its episode view, or after a failed search to search
 the same title on the next provider. The footer names the destination provider;
-use F2 in the resulting search to choose another source.
+use Alt+p in the resulting search to choose another source.
 The requested SUB/DUB mode is retained. Choose the matching series or season and
 then the episode yourself; Miru does not match episodes across providers.
 Esc returns to the previous view.
@@ -426,8 +433,9 @@ manually run `CodeQL weekly` once to verify analysis and result uploads.
 
 ### Settings
 
-Press F4 to open Settings and Esc to return to the previous screen. Choose a row
-with the arrow keys, use Left/Right to change it, Enter to edit, or R to restore its default.
+Press `,` while browsing to open Settings and Esc to return to the previous screen.
+Choose a row with the arrow keys, use Left/Right to change it, Enter to edit, or R
+to restore its default.
 PgUp/PgDn move through settings in short terminals; the selected row stays visible. The Advanced section is always visible and contains the player
 executable, compatibility mode, and an argument list; arguments are passed
 individually without shell expansion. Use Enter to add/edit an argument and

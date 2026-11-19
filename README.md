@@ -41,10 +41,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 3. Select an episode and press Enter to play it.
 
 Use Tab on Home to select audio or quality, then the arrow keys to change it.
-Press F4 for Settings: download folder, playback defaults, and advanced player options.
+Press `,` while browsing to open Settings for the download folder, playback
+defaults, and player options.
 Enter edits a setting, R restores its default, and Esc returns to browsing.
 Saved defaults apply to the next queue; command-line overrides remain temporary.
-Press F2 or click the provider name on Home or Search to switch between HiAnime,
+Press Alt+p or click the provider name on Home or Search to switch between HiAnime,
 AnimeGG and KAA. HiAnime remains the default. AnimeGG supports playback only.
 KAA requires mpv; its media hosts need headers that VLC cannot apply.
 
@@ -55,8 +56,9 @@ KAA requires mpv; its media hosts need headers that VLC cannot apply.
 | `s` / Shift+Q | Change audio / quality |
 | Alt+h | Open history |
 | Space, then `d` | Mark episodes, then download them |
-| F2 | Change search provider |
-| F1 | Show all controls |
+| Alt+p | Change search provider, including while typing |
+| `a` | Search the selected title on another provider |
+| `?` | Show all controls (Esc then `?` while typing) |
 | Ctrl+C | Quit |
 
 History remembers the last episode launched, not playback position or completion.
@@ -82,8 +84,9 @@ JSON output, configuration, history migration and development checks.
 
 - If covers render incorrectly, try `miru --images halfblocks` or `--images off`.
 - For plain output, use `miru --images off --ascii --no-animation`.
-- If a request fails, press F5 to retry. Miru is an unofficial anime client;
-  provider outages and site changes can interrupt search or playback.
+- If a request fails, press `R` while browsing to refresh. Use Alt+r to retry a
+  failed queue. Provider outages and site changes can interrupt search or playback
+  in unofficial clients like Miru.
 
 ## License and credits
 

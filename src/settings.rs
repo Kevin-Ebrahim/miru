@@ -4,7 +4,7 @@ use crate::{
     model::Mode,
     player::{Backend, Player},
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -260,7 +260,9 @@ impl Settings {
                     return self.save(next);
                 }
             },
-            KeyCode::Char('r' | 'R') => {
+            KeyCode::Char('r' | 'R')
+                if matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) =>
+            {
                 match self.selected {
                     0 => next.download_dir = None,
                     1 => next.audio = Some(Mode::Sub),
@@ -546,7 +548,6 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }

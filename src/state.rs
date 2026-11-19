@@ -164,6 +164,16 @@ pub struct State {
 }
 
 impl State {
+    pub fn typing(&self) -> bool {
+        if self.help {
+            self.help_filtering
+        } else {
+            self.cover_view.is_none()
+                && !self.details
+                && matches!(self.focus, Focus::Search | Focus::Range)
+        }
+    }
+
     pub fn recovery_search(&self) -> Option<(String, crate::provider::Source, Mode)> {
         if self.screen == Screen::Search
             && self.request_error.is_some()

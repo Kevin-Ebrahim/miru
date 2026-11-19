@@ -1,6 +1,52 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Shortcut {
+    Help,
+    Provider,
+    Alternate,
+    Settings,
+    Refresh,
+    RetryQueue,
+}
+
+impl Shortcut {
+    pub fn from_key(key: KeyEvent, typing: bool) -> Option<Self> {
+        use KeyCode::{Char, F};
+        match (key.code, key.modifiers) {
+            (F(1), _) => Some(Self::Help),
+            (F(2), _) | (Char('p'), KeyModifiers::ALT) => Some(Self::Provider),
+            (F(3), _) => Some(Self::Alternate),
+            (F(4), _) => Some(Self::Settings),
+            (F(5), _) => Some(Self::Refresh),
+            (F(6), _) | (Char('r'), KeyModifiers::ALT) => Some(Self::RetryQueue),
+            _ if typing => None,
+            (Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => Some(Self::Help),
+            (Char('a'), KeyModifiers::NONE) => Some(Self::Alternate),
+            (Char(','), KeyModifiers::NONE | KeyModifiers::SHIFT) => Some(Self::Settings),
+            (Char('R'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            | (Char('r'), KeyModifiers::SHIFT) => Some(Self::Refresh),
+            _ => None,
+        }
+    }
+
+    pub fn label(self, typing: bool) -> &'static str {
+        match self {
+            Self::Help if typing => "Esc then ?",
+            Self::Help => "?",
+            Self::Provider => "Alt+p",
+            Self::Alternate if typing => "Esc then a",
+            Self::Alternate => "a",
+            Self::Settings if typing => "Esc then ,",
+            Self::Settings => ",",
+            Self::Refresh if typing => "Esc then R",
+            Self::Refresh => "R",
+            Self::RetryQueue => "Alt+r",
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Input {
     pub text: String,

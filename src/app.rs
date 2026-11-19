@@ -5,6 +5,7 @@ use crate::view::TextSelection;
 use crate::view::TextView;
 use crate::{
     artwork::Artwork,
+    input::Shortcut,
     jobs::{self, Jobs},
     model::{Anime, Episode, Mode, SourceId},
     player::Player,
@@ -1012,12 +1013,7 @@ impl App {
         if self.state.cover_view.is_some() {
             return;
         }
-        if self.state.help && !self.state.help_filtering {
-            return;
-        }
-        if !self.state.help
-            && (self.state.details || !matches!(self.state.focus, Focus::Search | Focus::Range))
-        {
+        if !self.state.typing() {
             return;
         }
 
@@ -1169,10 +1165,6 @@ impl App {
             return true;
         }
 
-        if key.code == KeyCode::F(5) || key.code == KeyCode::F(6) {
-            return false;
-        }
-
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -1243,6 +1235,7 @@ impl App {
             return;
         }
 
+        let shortcut = Shortcut::from_key(key, self.state.typing());
         if let Some(s) = &mut self.settings {
             if s.open {
                 let previous_mode = self.state.mode;
@@ -1277,35 +1270,30 @@ impl App {
                 }
                 return;
             }
-            if key.code == KeyCode::F(4) {
+            if shortcut == Some(Shortcut::Settings) {
                 s.open = true;
                 return;
             }
         }
         if self.state.cover_view.is_some() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.state.cover_view = None,
-                KeyCode::F(5) => self.state.art_revision += 1,
+            match (key.code, shortcut) {
+                (KeyCode::Esc | KeyCode::Char('q'), _) => self.state.cover_view = None,
+                (_, Some(Shortcut::Refresh)) => self.state.art_revision += 1,
                 _ => {}
             }
             return;
         }
 
-        if key.code == KeyCode::F(3) && !self.state.help {
-            self.search_elsewhere();
-            return;
-        }
-
-        if key.code == KeyCode::F(2) && !self.state.help && !self.state.details {
-            self.cycle_source();
-            return;
-        }
-
-        if key.code == KeyCode::F(1) {
-            if self.state.help {
-                self.state.help = false;
-            } else {
-                self.open_help();
+        if let Some(shortcut) = shortcut {
+            match shortcut {
+                Shortcut::Help if self.state.help => self.state.help = false,
+                Shortcut::Help => self.open_help(),
+                _ if self.state.help => {}
+                Shortcut::Provider => self.cycle_source(),
+                Shortcut::Alternate => self.search_elsewhere(),
+                Shortcut::Refresh => self.retry(),
+                Shortcut::RetryQueue => self.retry_activity(),
+                Shortcut::Settings => {}
             }
             return;
         }
@@ -1352,16 +1340,6 @@ impl App {
 
         if self.state.help {
             self.help_key(key);
-            return;
-        }
-
-        if key.code == KeyCode::F(5) {
-            self.retry();
-            return;
-        }
-
-        if key.code == KeyCode::F(6) {
-            self.retry_activity();
             return;
         }
 
@@ -1475,7 +1453,7 @@ impl App {
 
     fn help_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => self.state.help = false,
+            KeyCode::Esc | KeyCode::Enter => self.state.help = false,
             KeyCode::Char('q') => self.state.help = false,
             KeyCode::Char('/') => {
                 self.state.help_filtering = true;
@@ -1580,7 +1558,6 @@ impl App {
     fn list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y') if self.state.view.text_view.is_some() => self.copy_requested = true,
-            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('/') => {
                 if !matches!(self.state.screen, Screen::Home | Screen::History) {
                     self.navigate(Screen::Search);
@@ -1678,7 +1655,6 @@ impl App {
                     .current_episode_index()
                     .unwrap_or(self.state.episodes.selected),
             ),
-            KeyCode::Char('R') => self.retry(),
             code => {
                 let len = match self.state.screen {
                     Screen::Home => return,
@@ -2087,11 +2063,16 @@ mod tests {
         app.state.search.selected = 3;
         let old = dir.path().join("old");
         app.queue_execution = Some((app.options.player.clone(), old.clone()));
-        app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.paste(dir.path().join("new").to_str().unwrap());
+        for c in "a?,R".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.options.download_dir, dir.path().join("new"));
+        app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT));
+        assert_eq!(app.options.download_dir, dir.path().join("newa?,R"));
         assert_eq!(app.queue_execution.as_ref().unwrap().1, old);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.state.mode, Mode::Dub);
@@ -2116,6 +2097,7 @@ mod tests {
             );
             // No real provider is contacted: the spawned search is aborted before yielding.
             app.state.screen = Screen::Episodes;
+            app.state.focus = Focus::List;
             let mut series = anime("original", "Probe Season 2");
             series.provider = source.id();
             let episode = Episode {
@@ -2141,7 +2123,7 @@ mod tests {
                 message: "Resolution unavailable".into(),
             });
             let job = app.job;
-            app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
             abort(&mut app.search_task);
             assert_eq!(app.state.screen, Screen::Search);
             assert_eq!(app.state.search.source, source.next());
@@ -2168,6 +2150,11 @@ mod tests {
             assert_eq!(app.state.episodes.items[0].number, "1.5");
             assert!(app.state.episodes.marked.contains(&0));
             assert_eq!(app.state.activity.as_ref().unwrap().phase, JobPhase::Failed);
+            app.key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+            assert_eq!(
+                app.state.activity.as_ref().unwrap().phase,
+                JobPhase::Resolving
+            );
             app.jobs.shutdown().await.unwrap();
         }
     }
@@ -2275,7 +2262,8 @@ mod tests {
         state.search.replace_results(vec![original.clone()]);
         let mut app = test_app(state, dir.path());
         let old = app.state.search_generation;
-        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
+        assert_eq!(app.state.search.query.text, "Probe");
         assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
         render_mouse_view(&mut app, 80, 24);
         let area = app.state.view.source_setting.unwrap();
@@ -2442,6 +2430,9 @@ mod tests {
             );
             app.mouse(click);
             assert_eq!(app.state.cover_view.as_ref().unwrap().id, "cover");
+            let revision = app.state.art_revision;
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT));
+            assert_eq!(app.state.art_revision, revision + 1);
             let enlarged = draw(&mut app, 120, 40);
             assert!(enlarged.height > preview.height);
             assert!(enlarged.width > preview.width);
@@ -2813,6 +2804,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browsing_shortcuts_stay_literal_in_text_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        for (screen, focus) in [
+            (Screen::Home, Focus::Search),
+            (Screen::Search, Focus::Search),
+            (Screen::History, Focus::Search),
+            (Screen::Episodes, Focus::Range),
+        ] {
+            let mut state =
+                State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+            state.screen = screen;
+            state.focus = focus;
+            let mut app =
+                test_app(state, dir.path()).with_settings(crate::settings::Settings::new(
+                    Default::default(),
+                    Default::default(),
+                    dir.path().join("config.json"),
+                ));
+            for c in "a?,R".chars() {
+                app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+            assert!(app.state.help);
+            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+            assert!(!app.state.help);
+            assert!(!app.settings.as_ref().unwrap().open);
+            assert_eq!(app.state.screen, screen);
+            assert_eq!(app.state.focus, Focus::List);
+            let text = match screen {
+                Screen::History => &app.state.history.query.text,
+                Screen::Episodes => &app.state.episodes.range.text,
+                _ => &app.state.search.query.text,
+            };
+            assert_eq!(text, "a?,R");
+        }
+    }
+
+    #[tokio::test]
     async fn help_filter_isolates_input_and_preserves_the_underlying_screen() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(
@@ -2827,11 +2857,11 @@ mod tests {
         let original_focus = app.state.focus;
         app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        for c in "qhsD".chars() {
+        for c in "qhsDa?,R".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.paste(" downloads");
-        assert_eq!(app.state.help_query.text, "qhsD downloads");
+        assert_eq!(app.state.help_query.text, "qhsDa?,R downloads");
         assert_eq!(app.state.search.query.text, "anime query");
         assert_eq!(app.state.mode, Mode::Sub);
         assert_eq!(app.state.focus, original_focus);
