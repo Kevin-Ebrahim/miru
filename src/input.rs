@@ -15,16 +15,12 @@ pub enum Shortcut {
 
 impl Shortcut {
     pub fn from_key(key: KeyEvent, typing: bool) -> Option<Self> {
-        use KeyCode::{Char, F};
+        use KeyCode::Char;
         match (key.code, key.modifiers) {
             (Char('a'), KeyModifiers::ALT) => Some(Self::Audio),
             (Char('q'), KeyModifiers::ALT) => Some(Self::Quality),
-            (F(1), _) => Some(Self::Help),
-            (F(2), _) | (Char('p'), KeyModifiers::ALT) => Some(Self::Provider),
-            (F(3), _) => Some(Self::Alternate),
-            (F(4), _) => Some(Self::Settings),
-            (F(5), _) => Some(Self::Refresh),
-            (F(6), _) | (Char('r'), KeyModifiers::ALT) => Some(Self::RetryQueue),
+            (Char('p'), KeyModifiers::ALT) => Some(Self::Provider),
+            (Char('r'), KeyModifiers::ALT) => Some(Self::RetryQueue),
             _ if typing => None,
             (Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => Some(Self::Help),
             (Char('a'), KeyModifiers::NONE) => Some(Self::Alternate),
@@ -112,7 +108,7 @@ impl Input {
         true
     }
 
-    pub fn edit(&mut self, mut key: KeyEvent) -> bool {
+    pub fn edit(&mut self, key: KeyEvent) -> bool {
         if ![
             KeyModifiers::NONE,
             KeyModifiers::SHIFT,
@@ -134,22 +130,6 @@ impl Input {
                     self.cursor = self.next_word();
                     return false;
                 }
-                KeyCode::Char('a') => {
-                    self.cursor = 0;
-                    return false;
-                }
-                KeyCode::Char('e') => {
-                    self.cursor = self.text.len();
-                    return false;
-                }
-                KeyCode::Char('b') => {
-                    self.cursor = self.previous_character();
-                    return false;
-                }
-                KeyCode::Char('f') => {
-                    self.cursor = self.next_character();
-                    return false;
-                }
                 KeyCode::Char('u') => return self.kill(0, self.cursor),
                 KeyCode::Char('k') => return self.kill(self.cursor, self.text.len()),
                 KeyCode::Char('w') => return self.kill(self.previous_word(true), self.cursor),
@@ -161,20 +141,10 @@ impl Input {
                     self.cursor += self.killed.len();
                     return true;
                 }
-                KeyCode::Char('h') => key.code = KeyCode::Backspace,
-                KeyCode::Char('d') => key.code = KeyCode::Delete,
                 _ => return false,
             }
         } else if key.modifiers.contains(KeyModifiers::ALT) {
             match key.code {
-                KeyCode::Char('b') => {
-                    self.cursor = self.previous_word(false);
-                    return false;
-                }
-                KeyCode::Char('f') => {
-                    self.cursor = self.next_word();
-                    return false;
-                }
                 KeyCode::Char('d') => return self.kill(self.cursor, self.next_word()),
                 KeyCode::Backspace => return self.kill(self.previous_word(false), self.cursor),
                 _ => return false,
@@ -218,5 +188,20 @@ impl Input {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn function_keys_do_not_invoke_miru_shortcuts() {
+        for number in 1..=6 {
+            let key = KeyEvent::new(KeyCode::F(number), KeyModifiers::NONE);
+            for typing in [false, true] {
+                assert!(Shortcut::from_key(key, typing).is_none());
+            }
+        }
     }
 }

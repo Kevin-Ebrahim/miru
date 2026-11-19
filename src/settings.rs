@@ -126,6 +126,9 @@ impl Settings {
     }
     pub fn key(&mut self, key: KeyEvent) -> bool {
         if self.edit.is_none() {
+            if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
+                return false;
+            }
             let step = match key.code {
                 KeyCode::PageDown => Some(true),
                 KeyCode::PageUp => Some(false),
@@ -184,11 +187,11 @@ impl Settings {
         if self.arguments {
             match key.code {
                 KeyCode::Esc => self.arguments = false,
-                KeyCode::Up => self.argument = self.argument.saturating_sub(1),
-                KeyCode::Down => {
+                KeyCode::Up | KeyCode::Char('k') => self.argument = self.argument.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.argument = (self.argument + 1).min(self.saved.player_args.len())
                 }
-                KeyCode::Enter | KeyCode::Left | KeyCode::Right => {
+                KeyCode::Enter => {
                     let mut input = Input::default();
                     input.set(
                         self.saved
@@ -210,23 +213,23 @@ impl Settings {
         }
         let mut next = self.saved.clone();
         match key.code {
-            KeyCode::Esc | KeyCode::F(4) => self.open = false,
+            KeyCode::Esc => self.open = false,
             KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(5),
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Enter | KeyCode::Left | KeyCode::Right => match self.selected {
-                4 => {
-                    self.arguments = true;
-                    self.argument = 0;
-                }
-                0 | 3 => {
-                    let mut input = Input::default();
-                    input.set(if self.selected == 0 && self.saved.download_dir.is_none() {
-                        String::new()
-                    } else {
-                        self.value(self.selected)
-                    });
-                    self.edit = Some(input);
-                }
+            KeyCode::Enter if self.selected == 4 => {
+                self.arguments = true;
+                self.argument = 0;
+            }
+            KeyCode::Enter if matches!(self.selected, 0 | 3) => {
+                let mut input = Input::default();
+                input.set(if self.selected == 0 && self.saved.download_dir.is_none() {
+                    String::new()
+                } else {
+                    self.value(self.selected)
+                });
+                self.edit = Some(input);
+            }
+            KeyCode::Left | KeyCode::Right => match self.selected {
                 1 => {
                     let mut mode = next.audio.unwrap_or_default();
                     mode.toggle();
@@ -248,7 +251,7 @@ impl Settings {
                     );
                     return self.save(next);
                 }
-                _ => {
+                5 => {
                     next.player_backend = match (next.player_backend, key.code == KeyCode::Left) {
                         (None, true) => Some(Backend::Vlc),
                         (Some(Backend::Vlc), true) => Some(Backend::Mpv),
@@ -259,9 +262,10 @@ impl Settings {
                     };
                     return self.save(next);
                 }
+                _ => {}
             },
-            KeyCode::Char('r' | 'R')
-                if matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) =>
+            KeyCode::Char('R' | 'r')
+                if key.code == KeyCode::Char('R') || key.modifiers == KeyModifiers::SHIFT =>
             {
                 match self.selected {
                     0 => next.download_dir = None,
@@ -549,7 +553,7 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        assert!(settings.key(key(KeyCode::Char('r'))));
+        assert!(settings.key(key(KeyCode::Char('R'))));
         let saved = Config::load(&path).unwrap();
         assert!(saved.download_dir.is_none());
         assert!(settings.saved.download_dir.is_none());
@@ -557,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn arrows_cycle_both_directions_and_open_editors() {
+    fn arrows_cycle_values_and_enter_opens_editors() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::new(
             Config::default(),
@@ -576,6 +580,8 @@ mod tests {
         assert_eq!(settings.saved.player_backend, None);
         settings.selected = 0;
         settings.key(key(KeyCode::Right));
+        assert!(settings.edit.is_none());
+        settings.key(key(KeyCode::Enter));
         assert!(settings.edit.is_some());
     }
 
@@ -593,12 +599,12 @@ mod tests {
             path.clone(),
         );
         settings.selected = 1;
-        assert!(settings.key(key(KeyCode::Enter)));
+        assert!(settings.key(key(KeyCode::Right)));
         let saved = Config::load(&path).unwrap();
         assert_eq!(saved.audio, Some(Mode::Dub));
         assert_eq!(saved.quality, None);
         assert_eq!(saved.download_dir, None);
-        assert!(settings.key(key(KeyCode::Char('r'))));
+        assert!(settings.key(key(KeyCode::Char('R'))));
         assert_eq!(Config::load(&path).unwrap().audio, Some(Mode::Sub));
     }
     #[test]

@@ -1700,85 +1700,70 @@ fn ellipsize_start(text: &str, width: usize, state: &State) -> String {
 
 const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Home",
+        "Navigation",
         &[
-            ("Tab / Shift+Tab", "Cycle search, audio and quality"),
-            ("Left/Right", "Change focused setting"),
-            ("Enter", "Return to input / submit search"),
+            ("Up/Down or k/j", "Move or scroll"),
+            ("PgUp/PgDn", "Jump ten rows"),
+            ("Home/End", "First or last row"),
+            ("Enter", "Search, open a series or play an episode"),
+            ("Esc", "Go back, close a panel or leave input"),
+            ("Left/Right", "Browse back or forward"),
+            ("i", "View series details"),
+            ("y", "Copy panel text"),
+            ("H", "Return Home"),
         ],
     ),
     (
-        "Navigation",
+        "Search & history",
         &[
-            ("H", "Home"),
-            ("/", "Search"),
-            ("Alt+p / F2", "Change search provider"),
-            (
-                "a / F3",
-                "Search this title on another provider; choose series and episode",
-            ),
-            ("Alt+h", "History"),
-            ("j/k / Up/Down", "Move or scroll"),
-            ("Ctrl+n/p", "Next / previous item"),
-            ("PgUp/PgDn / Ctrl+u/d/f/b", "Jump ten items or lines"),
-            ("g/G / Home/End", "First / last item or line"),
-            ("Enter", "Open series / play episode"),
-            ("l / Right", "Open series / episode details"),
-            ("i", "Series details"),
-            ("Esc / h / Left", "Back (Esc leaves text input)"),
+            ("/", "Search or filter the current list"),
+            ("Alt+p", "Change search provider"),
+            ("a", "Find this title on the next provider"),
             ("Alt+e", "Toggle exact search"),
-            ("Delete", "Remove highlighted history entry"),
-            ("u", "Undo last history removal (in History)"),
-            ("Click cover", "Enlarge cover; Esc / click closes"),
-            ("Click / double-click", "Select item / open or play"),
-            ("Mouse wheel", "Move list selection / scroll text"),
-            ("Drag in text / y", "Select and copy / copy panel text"),
+            ("Alt+h", "Open history"),
+            ("Delete", "Remove the selected history entry"),
+            ("u", "Undo the last removal"),
         ],
     ),
     (
         "Playback & downloads",
         &[
-            ("Alt+a / s / D", "Switch SUB/DUB audio"),
-            ("Alt+q / Q", "Change quality"),
-            ("Space / Tab", "Mark episode"),
-            (":", "Mark range (1-3, 5 or 0--1)"),
+            ("Alt+a", "Switch SUB/DUB audio"),
+            ("Alt+q", "Change quality"),
+            ("Space", "Mark an episode"),
+            (":", "Mark an episode range"),
             ("d", "Download marked or current episodes"),
-            ("n / p / r", "Next / previous / replay"),
-            ("x", "Stop or dismiss activity"),
-            ("R / F5", "Retry request and cover"),
-            ("Alt+r / F6", "Retry remaining queue"),
-        ],
-    ),
-    (
-        "Text editing",
-        &[
-            ("Ctrl+a/e / Home/End", "Start / end of line"),
-            ("Ctrl+b/f / Left/Right", "Previous / next character"),
-            ("Alt+b/f / Ctrl+Left/Right", "Previous / next word"),
-            ("Ctrl+u/k", "Cut to start / end of line"),
-            ("Ctrl+w", "Cut previous whitespace word"),
-            ("Alt+Backspace/d", "Cut previous / next word"),
-            ("Ctrl+y", "Restore last cut"),
-            ("Ctrl+h/d", "Backspace / delete character"),
-            ("Esc / Ctrl+g", "Leave text input"),
-            ("Enter / Ctrl+j/m", "Accept input"),
+            ("n/p/r", "Next episode / previous / replay"),
+            ("x", "Stop or dismiss the queue"),
+            ("R", "Refresh the current view"),
+            ("Alt+r", "Retry a failed queue"),
         ],
     ),
     (
         "Settings",
         &[
-            ("Enter / Left/Right", "Edit or change the selected setting"),
+            (",", "Open Settings"),
+            ("Tab/Shift+Tab", "Move focus on Home"),
+            ("Left/Right", "Change the focused value"),
+            ("Enter", "Edit or save a field"),
             ("R", "Restore the selected default"),
-            ("Delete", "Remove the selected player argument"),
-            ("Enter / Esc", "Save or cancel an edit"),
+            ("Delete", "Remove a player argument"),
+        ],
+    ),
+    (
+        "Text editing",
+        &[
+            ("Ctrl+Left/Right", "Previous / next word"),
+            ("Ctrl+u/k", "Cut to start / end of line"),
+            ("Ctrl+w", "Cut to the previous space"),
+            ("Alt+Backspace/d", "Cut previous / next word"),
+            ("Ctrl+y", "Restore last cut"),
         ],
     ),
     (
         "App controls",
         &[
-            ("? / F1", "Help (Esc › ? while typing)"),
-            (", / F4", "Open Settings (Esc › , while typing)"),
-            ("q", "Close Help/Details"),
+            ("?", "Help (Esc › ? while typing)"),
             ("Ctrl+c", "Quit from anywhere"),
         ],
     ),
@@ -1837,12 +1822,12 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::styled(group, accent(state)));
         for (key, action) in entries {
             let action = action.replace('›', symbol(state, "›", ">"));
-            if width >= 64 {
-                for (index, description) in wrap_prose(&action, width - 29).into_iter().enumerate()
+            if width >= 50 {
+                for (index, description) in wrap_prose(&action, width - 20).into_iter().enumerate()
                 {
                     lines.push(Line::from(vec![
                         Span::styled(
-                            format!("{:<29}", if index == 0 { key } else { "" }),
+                            format!("{:<20}", if index == 0 { key } else { "" }),
                             key_style,
                         ),
                         Span::styled(description, muted(state)),
@@ -2849,15 +2834,13 @@ mod tests {
 
     #[test]
     fn help_finds_individual_shortcut_aliases() {
-        assert!(!help_key_aliases("Ctrl+a/e / Home/End").contains("Ctrl+Home"));
-        assert!(!help_key_aliases("Ctrl+b/f / Left/Right").contains("Ctrl+Right"));
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         for (query, expected) in [
-            ("Ctrl+e", "Start / end of line"),
-            ("Ctrl+f", "Previous / next character"),
-            ("Ctrl+p", "Next / previous item"),
+            ("Ctrl+k", "Cut to start / end of line"),
             ("Alt+d", "Cut previous / next word"),
             ("Ctrl+Right", "Previous / next word"),
+            ("F2", "No matching shortcuts"),
+            ("Ctrl+p", "No matching shortcuts"),
         ] {
             state.help_query.set(query.into());
             let text = help_lines(&state, 92)
@@ -2877,7 +2860,7 @@ mod tests {
             state.help = true;
             state.help_filtering = true;
             for (query, expected) in [
-                ("sUb/DuB", "s / D"),
+                ("sUb/DuB", "Alt+a"),
                 ("Ctrl+y", "Restore last cut"),
                 ("playback quality", "Change quality"),
             ] {

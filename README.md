@@ -40,7 +40,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 2. Select an anime and press Enter to open its episodes.
 3. Select an episode and press Enter to play it.
 
-On Home, Tab selects audio or quality. The arrow keys change the selected value.
+On Home, Tab selects audio or quality. Left and Right change the selected value.
 Press `,` while browsing to open Settings for the download folder, playback
 defaults, and player options.
 Enter edits a setting, R restores its default, and Esc returns to browsing.

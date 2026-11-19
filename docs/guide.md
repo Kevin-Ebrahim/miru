@@ -9,16 +9,19 @@ See the [README](../README.md) for installation and first use.
 | `H` | Return Home, outside text input |
 | `/` | Focus search; in History, filter saved entries |
 | ↑ / ↓, `j` / `k` | Navigate the current list |
-| Enter / → / `l` | Open a selection; Enter plays an episode |
-| ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
+| Enter | Submit a search, open a series or play an episode |
+| ← / → | Browse back / forward. In Episodes, → opens details |
+| Esc | Go back, close a panel or leave text input |
+| PgUp / PgDn | Jump ten items or lines |
+| Home / End | Go to the first or last item or line |
 | `i` | Open full cover and series details |
-| Alt+a | Toggle SUB/DUB, including while typing (`s` or Shift+D while browsing) |
-| Alt+q | Cycle playback quality, including while typing (`Q` while browsing lists) |
+| Alt+a | Toggle SUB/DUB, including while typing |
+| Alt+q | Cycle playback quality, including while typing |
 | Alt+p | Change provider on Home or Search, including while typing |
 | `a` | Search the selected title or failed query on the next provider |
 | Alt+e | Toggle exact title matching |
 | Alt+h | Open watch history |
-| Tab / Space in Episodes | Mark or unmark an episode |
+| Space in Episodes | Mark or unmark an episode |
 | `:` in Episodes | Enter an episode range to mark |
 | `d` in Episodes | Download marked episodes, or the highlighted episode |
 | `n` / `p` / `r` | Play next / previous / replay |
@@ -29,16 +32,15 @@ See the [README](../README.md) for installation and first use.
 | `u` in History | Undo the last removal during this session |
 | `?` | Open Help. Press `/` to filter by key or action |
 | `,` | Open Settings |
-| `q` | Close Help or Details |
 | Ctrl+C | Quit from anywhere and stop owned jobs |
 
-Printable keys enter text while an input has focus. Inputs support readline
-shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. Press Esc to leave a search,
+In text fields, use Left/Right for characters, Ctrl+Left/Right for words and
+Home/End for the start and end of the line. Backspace and Delete erase a
+character. Ctrl+w cuts back to the previous space, Alt+Backspace and Alt+d cut
+a word in either direction, and Ctrl+u/k cut to the start or end of the line.
+Ctrl+y restores the last cut. Press Esc to leave a search,
 filter, or episode range before using a browsing shortcut. For example,
 `Esc › ?` means press Esc, release it, and press `?` to open Help.
-
-F1–F6 remain available as aliases for Help, change provider, search another
-provider, Settings, refresh, and retry queue, respectively.
 
 Click a list item to select it; double-click to open a series or play an episode,
 using the same action as Enter. The wheel moves one item at a time over a list
@@ -48,9 +50,9 @@ quality label to cycle playback quality. Keyboard controls remain available.
 Click a cover to view it enlarged. Press Esc or click anywhere to close the viewer
 and return to the same browsing position.
 
-Dragging preview or details text copies the selected text. Navigation before a
-new drag targets the newly selected series. Resizing, moving the reading area,
-or opening Help clears unfinished selections.
+Dragging preview or details text copies the selection. Press `y` to copy the
+panel text. Navigation before a new drag targets the newly selected series.
+Resizing, moving the reading area, or opening Help clears unfinished selections.
 
 Ranges use the provider's episode order and can include decimal specials. Use
 `1-3`, `1, 5, 8` or `1.5-3`. Use `0--1` for all episodes and `-1` for the last. Miru

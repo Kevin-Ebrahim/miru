@@ -115,7 +115,9 @@ def check(binary, exit_method, animate=False, locked=False):
                     assert len(output) == compact_drawn, "Compact layout kept animating"
             if closing_terminal:
                 if exit_method == "terminal-close-help":
-                    os.write(master, b"\x1bOP")
+                    os.write(master, b"\x1b")
+                    pump(0.1)
+                    os.write(master, b"?")
                     pump(0.2)
                     assert b"Keybindings" in output, "Help did not draw before closing"
                 os.close(master)

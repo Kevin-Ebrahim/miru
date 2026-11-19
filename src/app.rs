@@ -1153,7 +1153,7 @@ impl App {
         );
     }
 
-    fn home_key(&mut self, mut key: KeyEvent) -> bool {
+    fn home_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('h') {
             self.history();
             return true;
@@ -1162,14 +1162,6 @@ impl App {
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('e') {
             self.state.search.exact = !self.state.search.exact;
             return true;
-        }
-
-        if key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
         }
 
         match key.code {
@@ -1198,23 +1190,11 @@ impl App {
                 self.state.search.query.edit(key);
             }
             _ if matches!(self.state.focus, Focus::Audio | Focus::Quality) => {
-                if key.modifiers.is_empty()
-                    && matches!(
-                        key.code,
-                        KeyCode::Left
-                            | KeyCode::Right
-                            | KeyCode::Up
-                            | KeyCode::Down
-                            | KeyCode::Char('h' | 'j' | 'k' | 'l')
-                    )
-                {
+                if key.modifiers.is_empty() && matches!(key.code, KeyCode::Left | KeyCode::Right) {
                     if self.state.focus == Focus::Audio {
                         self.toggle_audio();
                     } else {
-                        self.cycle_quality(matches!(
-                            key.code,
-                            KeyCode::Left | KeyCode::Up | KeyCode::Char('h' | 'k')
-                        ));
+                        self.cycle_quality(key.code == KeyCode::Left);
                     }
                 }
             }
@@ -1276,7 +1256,7 @@ impl App {
         }
         if self.state.cover_view.is_some() {
             match (key.code, shortcut) {
-                (KeyCode::Esc | KeyCode::Char('q'), None) => self.state.cover_view = None,
+                (KeyCode::Esc, _) => self.state.cover_view = None,
                 (_, Some(Shortcut::Refresh)) => self.state.art_revision += 1,
                 _ => {}
             }
@@ -1285,9 +1265,8 @@ impl App {
 
         if let Some(shortcut) = shortcut {
             match shortcut {
-                Shortcut::Help if self.state.help => self.state.help = false,
-                Shortcut::Help => self.open_help(),
                 _ if self.state.help => {}
+                Shortcut::Help => self.open_help(),
                 Shortcut::Audio => self.toggle_audio(),
                 Shortcut::Quality => self.cycle_quality(false),
                 Shortcut::Provider => self.cycle_source(),
@@ -1344,11 +1323,6 @@ impl App {
             return;
         }
 
-        if !editing && matches!(key.code, KeyCode::Char('s' | 'D')) {
-            self.toggle_audio();
-            return;
-        }
-
         if self.state.details {
             self.details_key(key);
             return;
@@ -1364,25 +1338,6 @@ impl App {
 
     fn normalize_key(&self, mut key: KeyEvent, editing: bool) -> Option<KeyEvent> {
         // Modified navigation must not fall through to playback/download shortcuts.
-        if editing && key.modifiers == KeyModifiers::CONTROL {
-            match key.code {
-                KeyCode::Char('g') => key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-                KeyCode::Char('j' | 'm') => key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                _ => {}
-            }
-        }
-
-        if !editing && key.modifiers == KeyModifiers::CONTROL {
-            key.code = match key.code {
-                KeyCode::Char('n') => KeyCode::Down,
-                KeyCode::Char('p') => KeyCode::Up,
-                KeyCode::Char('d' | 'f') => KeyCode::PageDown,
-                KeyCode::Char('u' | 'b') => KeyCode::PageUp,
-                _ => return None,
-            };
-            key.modifiers = KeyModifiers::NONE;
-        }
-
         if !editing
             && key.modifiers.intersects(
                 KeyModifiers::CONTROL
@@ -1401,14 +1356,10 @@ impl App {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }
 
-        if !editing
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        if !editing && !self.state.details && !self.state.help {
             key.code = match key.code {
-                KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => KeyCode::Esc,
-                KeyCode::Char('l') | KeyCode::Right if !self.state.details && !self.state.help => {
+                KeyCode::Left => KeyCode::Esc,
+                KeyCode::Right => {
                     if self.state.screen == Screen::Episodes {
                         KeyCode::Char('i')
                     } else {
@@ -1425,9 +1376,6 @@ impl App {
     fn help_filter_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => self.state.help_filtering = false,
-            KeyCode::Char('g' | 'j' | 'm') if key.modifiers == KeyModifiers::CONTROL => {
-                self.state.help_filtering = false
-            }
             KeyCode::Down | KeyCode::PageDown => {
                 self.state.help_filtering = false;
                 self.state.view.help_scroll = self
@@ -1454,8 +1402,7 @@ impl App {
 
     fn help_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Enter => self.state.help = false,
-            KeyCode::Char('q') => self.state.help = false,
+            KeyCode::Esc => self.state.help = false,
             KeyCode::Char('/') => {
                 self.state.help_filtering = true;
                 self.state.help_query.cursor = self.state.help_query.text.len();
@@ -1472,15 +1419,15 @@ impl App {
             KeyCode::PageUp => {
                 self.state.view.help_scroll = self.state.view.help_scroll.saturating_sub(10)
             }
-            KeyCode::Home | KeyCode::Char('g') => self.state.view.help_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.state.view.help_scroll = u16::MAX,
+            KeyCode::Home => self.state.view.help_scroll = 0,
+            KeyCode::End => self.state.view.help_scroll = u16::MAX,
             _ => {}
         }
     }
 
     fn details_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('i') => self.state.details = false,
+            KeyCode::Esc => self.state.details = false,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.state.view.details_scroll = self.state.view.details_scroll.saturating_add(1)
             }
@@ -1493,9 +1440,8 @@ impl App {
             KeyCode::PageUp => {
                 self.state.view.details_scroll = self.state.view.details_scroll.saturating_sub(10)
             }
-            KeyCode::Home | KeyCode::Char('g') => self.state.view.details_scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => self.state.view.details_scroll = u16::MAX,
-            KeyCode::Char('q') => self.state.details = false,
+            KeyCode::Home => self.state.view.details_scroll = 0,
+            KeyCode::End => self.state.view.details_scroll = u16::MAX,
             KeyCode::Char('x') => self.stop(),
             KeyCode::Char('y') => self.copy_requested = true,
             _ => {}
@@ -1526,9 +1472,7 @@ impl App {
 
     fn history_filter_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter | KeyCode::Down | KeyCode::Tab | KeyCode::Esc => {
-                self.state.focus = Focus::List
-            }
+            KeyCode::Enter | KeyCode::Esc => self.state.focus = Focus::List,
             _ => {
                 if self.state.history.query.edit(key) {
                     self.state.history_filter_changed();
@@ -1539,7 +1483,7 @@ impl App {
 
     fn search_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
+            KeyCode::Enter => {
                 if self.search_due.is_some() {
                     self.search();
                 }
@@ -1609,7 +1553,7 @@ impl App {
                 self.state.focus = Focus::Range;
                 self.state.episodes.range.set(String::new());
             }
-            KeyCode::Char(' ') | KeyCode::Tab if self.state.screen == Screen::Episodes => {
+            KeyCode::Char(' ') if self.state.screen == Screen::Episodes => {
                 let i = self.state.episodes.selected;
                 if !self.state.episodes.marked.remove(&i) && i < self.state.episodes.items.len() {
                     self.state.episodes.marked.insert(i);
@@ -1618,9 +1562,6 @@ impl App {
             }
             KeyCode::Char('d') if self.state.screen == Screen::Episodes => {
                 self.start_selection(JobKind::Download)
-            }
-            KeyCode::Char('Q') => {
-                self.cycle_quality(false);
             }
             KeyCode::Enter if matches!(self.state.screen, Screen::Search | Screen::History) => {
                 self.open()
@@ -1678,8 +1619,8 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
                     KeyCode::PageDown => selected.saturating_add(10).min(len.saturating_sub(1)),
                     KeyCode::PageUp => selected.saturating_sub(10),
-                    KeyCode::Home | KeyCode::Char('g') => 0,
-                    KeyCode::End | KeyCode::Char('G') => len.saturating_sub(1),
+                    KeyCode::Home => 0,
+                    KeyCode::End => len.saturating_sub(1),
                     _ => *selected,
                 };
             }
@@ -2014,7 +1955,8 @@ mod tests {
                 )
                 .unwrap();
                 if popup {
-                    app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    app.key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE));
                     app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
                     app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
                 } else {
@@ -2164,7 +2106,7 @@ mod tests {
             assert_eq!(app.state.episodes.items[0].number, "1.5");
             assert!(app.state.episodes.marked.contains(&0));
             assert_eq!(app.state.activity.as_ref().unwrap().phase, JobPhase::Failed);
-            app.key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT));
             assert_eq!(
                 app.state.activity.as_ref().unwrap().phase,
                 JobPhase::Resolving
@@ -2190,7 +2132,8 @@ mod tests {
         app.state.screen = Screen::Search;
         app.state.request_error = Some("Offline".into());
         let old = app.state.search_generation;
-        app.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         abort(&mut app.search_task);
         assert_eq!(app.state.search.source, crate::provider::Source::AnimeGg);
         assert_eq!(app.state.search.query.text, "Missing title");
@@ -2288,7 +2231,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.state.search.source, crate::provider::Source::Kaa);
-        app.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT));
         assert_eq!(app.state.search.source, crate::provider::Source::HiAnime);
         assert!(app.state.search.results().is_empty());
         app.message(Message::Search(old, Ok(vec![original.clone()])));
@@ -2454,7 +2397,7 @@ mod tests {
             assert!(app.state.view.audio_setting.is_none());
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-            app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
             app.paste("ignored");
             app.mouse(pointer(MouseEventKind::ScrollDown, Position::new(10, 10)));
@@ -2701,6 +2644,8 @@ mod tests {
             assert!(!app.quit);
             assert_eq!(app.state.quality, "best");
             app.key(KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::NONE));
+            assert_eq!(app.state.quality, "best");
+            app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
             assert!(!app.quit);
             assert_ne!(app.state.quality, "best");
             app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -2850,7 +2795,7 @@ mod tests {
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
             assert!(app.state.help);
-            app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             assert!(!app.state.help);
             assert!(!app.settings.as_ref().unwrap().open);
             assert_eq!(app.state.screen, screen);
@@ -2876,8 +2821,9 @@ mod tests {
             false,
         );
         let mut app = test_app(state, dir.path());
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let original_focus = app.state.focus;
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         for c in "qhsDa?,R".chars() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
@@ -2898,11 +2844,13 @@ mod tests {
         assert_eq!(app.state.view.help_scroll, 1);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.state.help && !app.quit);
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         assert!(app.state.help_query.text.is_empty());
         assert_eq!(app.state.view.help_scroll, 0);
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.state.help && !app.state.help_filtering);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.state.help);
     }
 
@@ -3585,7 +3533,7 @@ mod tests {
             title: "Opening".into(),
         }];
         let mut app = test_app(state, dir.path());
-        for code in [KeyCode::Right, KeyCode::Char('l')] {
+        for code in [KeyCode::Right, KeyCode::Char('i')] {
             app.state.details = false;
             app.key(KeyEvent::new(code, KeyModifiers::NONE));
             assert!(
@@ -3597,7 +3545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn language_shortcut_accepts_uppercase_and_explicit_shift_events() {
+    async fn legacy_audio_aliases_leave_playback_and_audio_untouched() {
         for key in [
             KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT),
@@ -3611,7 +3559,7 @@ mod tests {
             state.focus = Focus::List;
             let mut app = test_app(state, dir.path());
             app.key(key);
-            assert_eq!(app.state.mode, Mode::Dub, "{key:?}");
+            assert_eq!(app.state.mode, Mode::Sub, "{key:?}");
             assert!(app.state.activity.is_none());
             app.state.details = true;
             app.key(key);
@@ -3621,16 +3569,18 @@ mod tests {
     }
 
     #[test]
-    fn readline_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
+    fn text_editing_moves_cuts_and_yanks_unicode_without_splitting_it() {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         let alt = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+        let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let word = |code| KeyEvent::new(code, KeyModifiers::CONTROL);
         let mut input = Input::default();
         input.set("one 日本 e\u{301}clair!".into());
-        assert!(!input.edit(ctrl('a')));
+        assert!(!input.edit(plain(KeyCode::Home)));
         assert_eq!(input.cursor, 0);
-        input.edit(alt('f'));
+        input.edit(word(KeyCode::Right));
         assert_eq!(input.cursor, 3);
-        input.edit(alt('f'));
+        input.edit(word(KeyCode::Right));
         assert_eq!(&input.text[..input.cursor], "one 日本");
         assert!(input.edit(ctrl('u')));
         assert_eq!(input.text, " e\u{301}clair!");
@@ -3639,24 +3589,24 @@ mod tests {
         input.edit(ctrl('k'));
         assert_eq!(input.text, "one 日本");
         input.edit(ctrl('y'));
-        input.edit(alt('b'));
+        input.edit(word(KeyCode::Left));
         assert_eq!(&input.text[..input.cursor], "one 日本 ");
-        input.edit(ctrl('f'));
+        input.edit(plain(KeyCode::Right));
         assert_eq!(&input.text[..input.cursor], "one 日本 e\u{301}");
-        input.edit(ctrl('b'));
-        input.edit(ctrl('d'));
+        input.edit(plain(KeyCode::Left));
+        input.edit(plain(KeyCode::Delete));
         assert_eq!(input.text, "one 日本 clair!");
-        input.edit(ctrl('e'));
+        input.edit(plain(KeyCode::End));
         input.edit(ctrl('w'));
         assert_eq!(input.text, "one 日本 ");
         input.edit(ctrl('y'));
-        input.edit(alt('b'));
+        input.edit(word(KeyCode::Left));
         input.edit(alt('d'));
         assert_eq!(input.text, "one 日本 !");
         input.edit(ctrl('y'));
         input.edit(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
         assert_eq!(input.text, "one 日本 !");
-        input.edit(ctrl('h'));
+        input.edit(plain(KeyCode::Backspace));
         assert_eq!(input.text, "one 日本!");
         assert!(!input.edit(KeyEvent::new(
             KeyCode::Char('u'),
@@ -3670,15 +3620,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vim_navigation_and_readline_keys_do_not_trigger_media_actions() {
+    async fn list_navigation_and_retired_aliases_do_not_trigger_media_actions() {
         let dir = tempfile::tempdir().unwrap();
         let state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         let mut app = test_app(state, dir.path());
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let plain = |code| KeyEvent::new(code, KeyModifiers::NONE);
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT));
         assert_eq!(app.state.screen, Screen::History);
-        app.key(key('h'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.screen, Screen::Home);
         app.history();
         app.key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT));
@@ -3693,13 +3644,32 @@ mod tests {
                 title: String::new(),
             })
             .collect();
-        app.key(ctrl('d'));
+        for retired in [
+            ctrl('n'),
+            ctrl('p'),
+            ctrl('d'),
+            ctrl('f'),
+            ctrl('u'),
+            ctrl('b'),
+            key('l'),
+            key('g'),
+            key('G'),
+            plain(KeyCode::Tab),
+        ] {
+            app.key(retired);
+            assert_eq!(app.state.episodes.selected, 0, "{retired:?}");
+            assert!(
+                app.state.episodes.marked.is_empty() && !app.state.details,
+                "{retired:?}"
+            );
+        }
+        app.key(plain(KeyCode::PageDown));
         assert_eq!(app.state.episodes.selected, 10);
-        app.key(ctrl('n'));
+        app.key(key('j'));
         assert_eq!(app.state.episodes.selected, 11);
-        app.key(ctrl('p'));
+        app.key(key('k'));
         assert_eq!(app.state.episodes.selected, 10);
-        app.key(ctrl('u'));
+        app.key(plain(KeyCode::PageUp));
         assert_eq!(app.state.episodes.selected, 0);
         app.key(ctrl('r'));
         for code in [KeyCode::Enter, KeyCode::Char('D'), KeyCode::Char('d')] {
@@ -3708,32 +3678,32 @@ mod tests {
         assert_eq!(app.state.mode, Mode::Sub);
         assert!(app.state.activity.is_none());
         app.state.details = true;
-        app.key(key('G'));
+        app.key(plain(KeyCode::End));
         assert_eq!(app.state.view.details_scroll, u16::MAX);
-        app.key(key('g'));
+        app.key(plain(KeyCode::Home));
         assert_eq!(app.state.view.details_scroll, 0);
-        app.key(key('q'));
+        app.key(plain(KeyCode::Esc));
         assert!(!app.state.details && !app.quit);
         app.state.help = true;
-        app.key(key('q'));
+        app.key(plain(KeyCode::Esc));
         assert!(!app.state.help && !app.quit);
         app.key(key('/'));
         app.state.search.query.set("hello world".into());
-        app.key(ctrl('a'));
-        app.key(ctrl('e'));
+        app.key(plain(KeyCode::Home));
+        app.key(plain(KeyCode::End));
         assert_eq!(app.state.search.query.cursor, 11);
         assert!(!app.state.search.exact);
         app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT));
         assert!(app.state.search.exact);
-        app.key(ctrl('g'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.focus, Focus::List);
         app.state.accept_search(
             app.state.search_generation,
             Ok(vec![anime("series", "hello world")]),
         );
-        app.key(key('l'));
+        app.key(plain(KeyCode::Enter));
         assert_eq!(app.state.screen, Screen::Episodes);
-        app.key(key('h'));
+        app.key(plain(KeyCode::Esc));
         assert_eq!(app.state.screen, Screen::Search);
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.state.screen, Screen::Episodes);
