@@ -53,7 +53,8 @@ KAA requires mpv; its media hosts need headers that VLC cannot apply.
 | --- | --- |
 | ↑ / ↓ or `j` / `k` | Move through a list |
 | Esc | Go back or leave text input |
-| `s` / Shift+Q | Change audio / quality |
+| Alt+a | Switch SUB/DUB audio, including while typing |
+| Alt+q | Cycle playback quality, including while typing |
 | Alt+h | Open history |
 | `Space › d` | Mark episodes and download the selection |
 | Alt+p | Change search provider, including while typing |

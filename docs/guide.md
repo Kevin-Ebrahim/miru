@@ -12,10 +12,10 @@ See the [README](../README.md) for installation and first use.
 | Enter / → / `l` | Open a selection; Enter plays an episode |
 | ← / `h` / Backspace / Esc | Go back, close a panel, or leave text input |
 | `i` | Open full cover and series details |
-| `s` or Shift+D | Toggle SUB/DUB |
+| Alt+a | Toggle SUB/DUB, including while typing (`s` or Shift+D while browsing) |
+| Alt+q | Cycle playback quality, including while typing (`Q` while browsing lists) |
 | Alt+p | Change provider on Home or Search, including while typing |
 | `a` | Search the selected title or failed query on the next provider |
-| `Q` | Cycle playback quality |
 | Alt+e | Toggle exact title matching |
 | Alt+h | Open watch history |
 | Tab / Space in Episodes | Mark or unmark an episode |

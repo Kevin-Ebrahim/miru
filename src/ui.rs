@@ -1738,8 +1738,8 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Playback & downloads",
         &[
-            ("s / D", "Switch SUB/DUB"),
-            ("Q", "Change quality"),
+            ("Alt+a / s / D", "Switch SUB/DUB audio"),
+            ("Alt+q / Q", "Change quality"),
             ("Space / Tab", "Mark episode"),
             (":", "Mark range (1-3, 5 or 0--1)"),
             ("d", "Download marked or current episodes"),

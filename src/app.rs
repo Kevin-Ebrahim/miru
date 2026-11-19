@@ -1276,7 +1276,7 @@ impl App {
         }
         if self.state.cover_view.is_some() {
             match (key.code, shortcut) {
-                (KeyCode::Esc | KeyCode::Char('q'), _) => self.state.cover_view = None,
+                (KeyCode::Esc | KeyCode::Char('q'), None) => self.state.cover_view = None,
                 (_, Some(Shortcut::Refresh)) => self.state.art_revision += 1,
                 _ => {}
             }
@@ -1288,6 +1288,8 @@ impl App {
                 Shortcut::Help if self.state.help => self.state.help = false,
                 Shortcut::Help => self.open_help(),
                 _ if self.state.help => {}
+                Shortcut::Audio => self.toggle_audio(),
+                Shortcut::Quality => self.cycle_quality(false),
                 Shortcut::Provider => self.cycle_source(),
                 Shortcut::Alternate => self.search_elsewhere(),
                 Shortcut::Refresh => self.retry(),
@@ -2453,6 +2455,7 @@ mod tests {
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
             app.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+            app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
             app.paste("ignored");
             app.mouse(pointer(MouseEventKind::ScrollDown, Position::new(10, 10)));
             assert!(app.state.cover_view.is_some());
@@ -2772,15 +2775,22 @@ mod tests {
             app.key(key(KeyCode::Char(c)));
         }
         app.paste(" 日本語");
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+        app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT));
+        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.quality, "1080p");
+        assert_eq!(app.state.focus, Focus::Search);
         assert_eq!(app.state.search.query.text, "sQh 日本語");
         assert!(app.search_due.is_none() && app.search_task.is_none());
         app.key(key(KeyCode::Tab));
         assert_eq!(app.state.focus, Focus::Audio);
         app.key(key(KeyCode::Right));
-        assert_eq!(app.state.mode, Mode::Dub);
+        assert_eq!(app.state.mode, Mode::Sub);
         app.paste("ignored");
         app.key(key(KeyCode::Tab));
         assert_eq!(app.state.focus, Focus::Quality);
+        app.key(key(KeyCode::Left));
+        assert_eq!(app.state.quality, "best");
         app.key(key(KeyCode::Left));
         assert_eq!(app.state.quality, "worst");
         app.key(key(KeyCode::Right));

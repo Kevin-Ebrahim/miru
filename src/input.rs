@@ -4,6 +4,8 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Shortcut {
     Help,
+    Audio,
+    Quality,
     Provider,
     Alternate,
     Settings,
@@ -15,6 +17,8 @@ impl Shortcut {
     pub fn from_key(key: KeyEvent, typing: bool) -> Option<Self> {
         use KeyCode::{Char, F};
         match (key.code, key.modifiers) {
+            (Char('a'), KeyModifiers::ALT) => Some(Self::Audio),
+            (Char('q'), KeyModifiers::ALT) => Some(Self::Quality),
             (F(1), _) => Some(Self::Help),
             (F(2), _) | (Char('p'), KeyModifiers::ALT) => Some(Self::Provider),
             (F(3), _) => Some(Self::Alternate),
