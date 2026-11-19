@@ -735,32 +735,33 @@ impl App {
                             .map(|e| (e.anime.source_id(), e.mode));
 
                         self.state.history.replace_entries(library.entries);
-                        if current {
-                            match self.state.history_removal.take() {
-                                Some(HistoryRemoval::Removing) => {
-                                    if let Some(removed) = removed {
-                                        self.state.confirm_history_change(
-                                            "Removed",
-                                            &removed.entry.anime.title,
-                                        );
-                                        self.state.history_removal =
-                                            Some(HistoryRemoval::Removed(removed));
-                                    }
-                                }
-                                Some(HistoryRemoval::Restoring(removed)) => self
-                                    .state
-                                    .confirm_history_change("Restored", &removed.entry.anime.title),
-                                other => self.state.history_removal = other,
+                        if let Some(removed) = removed {
+                            if current {
+                                self.state
+                                    .confirm_history_change("Removed", &removed.entry.anime.title);
                             }
+                            self.state.last_removed = Some(*removed);
                         }
-                        if let Some(HistoryRemoval::Removed(prior)) = &self.state.history_removal
+                        if let Some(prior) = &self.state.last_removed
                             && self.state.history.entries().iter().any(|e| {
                                 e.anime.same_source(&prior.entry.anime)
                                     && e.mode == prior.entry.mode
                             })
                         {
-                            self.state.history_removal = None;
+                            let prior = self.state.last_removed.take().unwrap();
                             self.state.history.notice = None;
+                            if current
+                                && matches!(
+                                    self.state.history_removal,
+                                    Some(HistoryRemoval::Restoring)
+                                )
+                            {
+                                self.state
+                                    .confirm_history_change("Restored", &prior.entry.anime.title);
+                            }
+                        }
+                        if current {
+                            self.state.history_removal = None;
                         }
                         self.state.history.selected = key
                             .and_then(|(id, mode)| {
@@ -778,13 +779,7 @@ impl App {
                     Err(err) => {
                         if current {
                             self.state.history.notice = None;
-                            self.state.history_removal = match self.state.history_removal.take() {
-                                Some(
-                                    HistoryRemoval::Restoring(entry)
-                                    | HistoryRemoval::Removed(entry),
-                                ) => Some(HistoryRemoval::Removed(entry)),
-                                _ => None,
-                            };
+                            self.state.history_removal = None;
                         }
                         self.state
                             .message(format!("History was not saved: {err:#}"), true);
@@ -1544,30 +1539,20 @@ impl App {
                 }
             }
             KeyCode::Char('u') if self.state.screen == Screen::History => {
-                if let Some(removal) = self.state.history_removal.take() {
-                    let entry = match removal {
-                        HistoryRemoval::Removed(entry) => entry,
-                        HistoryRemoval::Removing => {
-                            self.state.history_removal = Some(HistoryRemoval::Removing);
-                            return;
-                        }
-                        HistoryRemoval::Restoring(entry) => {
-                            self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
-                            return;
-                        }
-                    };
+                if self.state.history_removal.is_none()
+                    && let Some(entry) = self.state.last_removed.clone()
+                {
                     let operation = self.history_operation + 1;
                     if !self.persist(crate::persistence::Change::Restore {
                         operation,
-                        removed: entry.clone(),
+                        removed: entry,
                     }) {
-                        self.state.history_removal = Some(HistoryRemoval::Removed(entry));
                         return;
                     }
                     self.history_operation = operation;
                     self.state.history.notice = None;
                     self.state.message("", false);
-                    self.state.history_removal = Some(HistoryRemoval::Restoring(entry));
+                    self.state.history_removal = Some(HistoryRemoval::Restoring);
                 }
             }
             KeyCode::Char(':') if self.state.screen == Screen::Episodes => {
@@ -1913,6 +1898,7 @@ mod tests {
         state.history.replace_entries(vec![entry]);
         let mut app = test_app(state, dir.path());
         app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
             .await
             .unwrap()
@@ -1928,10 +1914,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert_eq!(app.state.history.query.text, "u");
-        assert!(matches!(
-            app.state.history_removal,
-            Some(HistoryRemoval::Removed(_))
-        ));
+        assert!(app.state.last_removed.is_some());
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         let result = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
@@ -1982,6 +1965,14 @@ mod tests {
         app.message(Message::Library(failed));
         let saved = app.library_rx.recv().await.unwrap();
         app.message(Message::Library(saved));
+        // A subsequent failed delete must leave the committed removal available.
+        let contents = std::fs::read(&store.path).unwrap();
+        std::fs::write(&store.path, "invalid history").unwrap();
+        app.key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let failed = app.library_rx.recv().await.unwrap();
+        assert!(failed.1.is_err());
+        app.message(Message::Library(failed));
+        std::fs::write(&store.path, contents).unwrap();
         app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         let restored = tokio::time::timeout(Duration::from_secs(5), app.library_rx.recv())
             .await

@@ -135,8 +135,7 @@ pub struct EpisodesState {
 
 pub enum HistoryRemoval {
     Removing,
-    Removed(crate::persistence::RemovedEntry),
-    Restoring(crate::persistence::RemovedEntry),
+    Restoring,
 }
 
 pub struct State {
@@ -144,6 +143,7 @@ pub struct State {
     pub focus: Focus,
     pub search: SearchState,
     pub history: HistoryState,
+    pub last_removed: Option<crate::persistence::RemovedEntry>,
     pub history_removal: Option<HistoryRemoval>,
     pub episodes: EpisodesState,
     pub view: crate::view::Geometry,
@@ -276,6 +276,7 @@ impl State {
                 ..Default::default()
             },
             history: HistoryState::default(),
+            last_removed: None,
             history_removal: None,
             episodes: EpisodesState::default(),
             view: crate::view::Geometry::default(),

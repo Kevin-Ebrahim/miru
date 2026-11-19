@@ -434,7 +434,7 @@ fn download_hints(state: &State, width: u16) -> Option<Line<'static>> {
 }
 
 fn history_footer(state: &State, width: usize) -> Line<'static> {
-    let undo = matches!(state.history_removal, Some(HistoryRemoval::Removed(_)))
+    let undo = (state.history_removal.is_none() && state.last_removed.is_some())
         .then(|| shortcut(state, "u", "Undo"));
     let available = width.saturating_sub(undo.as_ref().map_or(0, |hint| hint.width() + 2));
     let mut line = Line::default();
@@ -450,7 +450,7 @@ fn history_footer(state: &State, width: usize) -> Line<'static> {
     } else {
         line = match &state.history_removal {
             Some(HistoryRemoval::Removing) => Line::styled("Removing...", muted(state)),
-            Some(HistoryRemoval::Restoring(_)) => Line::styled("Restoring...", muted(state)),
+            Some(HistoryRemoval::Restoring) => Line::styled("Restoring...", muted(state)),
             _ if state.selected_history().is_some() => shortcut(state, "Delete", "Remove"),
             _ => Line::default(),
         };
@@ -2120,10 +2120,11 @@ mod tests {
             mode: Mode::Sub,
             watched_at: 1,
         };
-        state.history_removal = Some(HistoryRemoval::Removed(crate::persistence::RemovedEntry {
+        state.last_removed = Some(crate::persistence::RemovedEntry {
             entry: entry.clone(),
-            equal_before: 0,
-        }));
+            before: None,
+            after: None,
+        });
         state.confirm_history_change("Removed", &entry.anime.title);
         for width in [32, 100] {
             let text = render_text(&mut state, width, 12);
@@ -2149,7 +2150,7 @@ mod tests {
         state.focus = Focus::Search;
         assert!(!render_text(&mut state, 32, 12).contains("u Undo"));
         state.focus = Focus::List;
-        state.history_removal = None;
+        state.last_removed = None;
         state.confirm_history_change("Restored", &entry.anime.title);
         state.history.replace_entries(vec![entry]);
         let text = render_text(&mut state, 32, 12);
