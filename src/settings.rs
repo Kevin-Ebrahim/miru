@@ -346,7 +346,7 @@ impl Settings {
             Constraint::Min(1),
             Constraint::Length(if inner.height >= 16 { 4 } else { 2 }),
             Constraint::Length(if self.edit.is_some() { 3 } else { 0 }),
-            Constraint::Length(if inner.width < 48 { 2 } else { 1 }),
+            Constraint::Length(u16::from(self.edit.is_some())),
         ])
         .areas(inner);
         frame.render_widget(
@@ -468,14 +468,14 @@ impl Settings {
         } else {
             match self.selected {
                 0 => format!(
-                    "Destination: {}\nEnter edits the folder path. R restores Automatic.",
+                    "Destination: {}",
                     self.download()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|e| e.to_string())
                 ),
                 1 => "Preferred language for new queues. Existing queues keep their audio.".into(),
                 2 => "Preferred quality; the closest available stream is used.".into(),
-                3 => "Enter edits the executable name or path. Defaults to mpv.".into(),
+                3 => "Executable name or path. Defaults to mpv.".into(),
                 4 => "Add, edit or remove individual player arguments.".into(),
                 _ => "Automatic infers mpv or VLC from the executable name.".into(),
             }
@@ -523,25 +523,12 @@ impl Settings {
                 frame.set_cursor_position((input_area.x + (cursor - offset) as u16, input_area.y));
             }
         }
-        let hint = if self.edit.is_some() {
-            "Enter Save   Esc Cancel"
-        } else if self.arguments {
-            "Enter Edit/Add   Del Remove   Esc Back"
-        } else if matches!(self.selected, 0 | 3) {
-            "Enter Edit   R Reset   Esc Back"
-        } else if self.selected == 4 {
-            "Enter Manage   R Reset   Esc Back"
-        } else if state.ascii {
-            "Left/Right Change   R Reset   Esc Back"
-        } else {
-            "←/→ Change   R Reset   Esc Back"
-        };
-        frame.render_widget(
-            Paragraph::new(hint)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(palette.focus)),
-            footer,
-        );
+        if self.edit.is_some() {
+            frame.render_widget(
+                Paragraph::new("Enter Save").style(Style::default().fg(palette.focus)),
+                footer,
+            );
+        }
     }
 }
 

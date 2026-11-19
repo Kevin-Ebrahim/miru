@@ -30,21 +30,6 @@ impl Shortcut {
             _ => None,
         }
     }
-
-    pub fn label(self, typing: bool) -> &'static str {
-        match self {
-            Self::Help if typing => "Esc then ?",
-            Self::Help => "?",
-            Self::Provider => "Alt+p",
-            Self::Alternate if typing => "Esc then a",
-            Self::Alternate => "a",
-            Self::Settings if typing => "Esc then ,",
-            Self::Settings => ",",
-            Self::Refresh if typing => "Esc then R",
-            Self::Refresh => "R",
-            Self::RetryQueue => "Alt+r",
-        }
-    }
 }
 
 #[derive(Clone, Default)]

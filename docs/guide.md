@@ -316,8 +316,8 @@ the partial file instead of publishing it as a completed episode.
 ### Search another provider
 
 Press `a` on a series, in its episode view, or after a failed search to search
-the same title on the next provider. The footer names the destination provider;
-use Alt+p in the resulting search to choose another source.
+the same title on the next provider. Use Alt+p in the resulting search to choose
+another source.
 The requested SUB/DUB mode is retained. Choose the matching series or season and
 then the episode yourself; Miru does not match episodes across providers.
 Esc returns to the previous view.

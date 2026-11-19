@@ -74,7 +74,7 @@ def check(binary, exit_method, animate=False, locked=False):
             pump(0.25)
             assert process.poll() is None, bytes(output)
             for _ in range(20):
-                if b"anime" in output:
+                if b"anime" in output and b"\x1b[?1006h" in output:
                     break
                 pump(0.1)
             assert b"anime" in output, "Miru search did not draw"

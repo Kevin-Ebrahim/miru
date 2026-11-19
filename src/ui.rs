@@ -1,6 +1,5 @@
 use crate::{
     artwork::Artwork,
-    input::Shortcut,
     palette::Palette,
     state::{Activity, Focus, JobKind, JobPhase, Screen, State, Synopsis},
     view::TextView,
@@ -36,31 +35,10 @@ fn key_style(state: &State) -> Style {
 }
 
 fn shortcut(state: &State, key: &str, action: &str) -> Line<'static> {
-    let base = if key == "Enter" {
-        palette(state).selection
-    } else {
-        Style::default()
-    };
-
     Line::from(vec![
-        Span::styled(key.to_owned(), base.patch(key_style(state))),
-        Span::styled(format!(" {action}"), base.patch(muted(state).not_bold())),
+        Span::styled(key.to_owned(), key_style(state)),
+        Span::styled(format!(" {action}"), muted(state)),
     ])
-}
-
-fn hint_message(state: &State, text: &str, style: Style) -> Line<'static> {
-    if let Some(action) = text.strip_prefix("Alt+e ") {
-        return shortcut(state, "Alt+e", action);
-    }
-
-    if let Some((before, after)) = text.split_once("R Retry") {
-        let mut spans = vec![Span::styled(before.to_owned(), style)];
-        spans.extend(shortcut(state, "R", "Retry").spans);
-        spans.push(Span::styled(after.to_owned(), style));
-        return Line::from(spans);
-    }
-
-    Line::styled(text.to_owned(), style)
 }
 
 fn accent(state: &State) -> Style {
@@ -160,8 +138,7 @@ fn sections(state: &State, area: Rect) -> [Rect; 6] {
         ),
         Constraint::Length(activity_height(state)),
         Constraint::Length(gap),
-        // Reserve footer rows before preview rendering updates text_view.
-        Constraint::Length(key_hints(state, area.width as usize, false).len() as u16),
+        Constraint::Length(1),
     ])
     .areas(area);
 
@@ -363,45 +340,27 @@ pub fn render(frame: &mut Frame, state: &mut State, art: &Artwork) {
         } else {
             (
                 format!(
-                    " ! Refresh failed / {} Retry\n {}",
-                    Shortcut::Refresh.label(state.typing()),
+                    " ! Refresh failed\n {}",
                     episode_refresh_error(state).unwrap_or_default()
                 ),
                 true,
             )
         };
         frame.render_widget(
-            Paragraph::new(
-                text.lines()
-                    .map(|line| hint_message(state, line, Style::default()))
-                    .collect::<Vec<_>>(),
-            )
-            .style(if error {
-                Style::default().fg(palette(state).error)
-            } else {
-                Style::default()
-            })
-            .wrap(Wrap { trim: true }),
+            Paragraph::new(text)
+                .style(if error {
+                    Style::default().fg(palette(state).error)
+                } else {
+                    Style::default()
+                })
+                .wrap(Wrap { trim: true }),
             status,
         );
     }
 
     render_activity(frame, state, activity);
 
-    let copy_available = (state.details || state.view.text_view.is_some())
-        && state.view.text_selection.is_some()
-        && (state.details || state.focus == Focus::List);
-    let hints = key_hints(state, area.width as usize, copy_available);
-    let hint_rows = hints.len() as u16;
-    frame.render_widget(
-        Paragraph::new(hints).style(Style::default().bold()),
-        Rect::new(
-            footer.x,
-            footer.bottom().saturating_sub(hint_rows),
-            footer.width,
-            hint_rows,
-        ),
-    );
+    render_footer(frame, state, footer);
 
     if state.help {
         render_help(frame, state);
@@ -423,23 +382,44 @@ fn wordmark_style(state: &State, color: ratatui::style::Color, strength: u16) ->
     }
 }
 
-fn home_footer(state: &State, width: u16) -> Vec<Line<'static>> {
-    let mut hints = Vec::new();
+fn footer_hint(state: &State) -> Line<'static> {
     if state.activity.as_ref().is_some_and(Activity::retryable) {
-        hints.push(KeyHint::new(state, HintAction::RetryActivity, "Retry"));
+        shortcut(state, "Alt+r", "Retry queue")
+    } else if !state.details
+        && (state.request_blocks_list()
+            || (state.status.is_empty() && episode_refresh_error(state).is_some()))
+    {
+        shortcut(
+            state,
+            if state.typing() { "Esc then R" } else { "R" },
+            "Retry",
+        )
+    } else {
+        shortcut(
+            state,
+            if state.typing() { "Esc then ?" } else { "?" },
+            "Help",
+        )
     }
-    if !state.history.entries().is_empty() {
-        hints.push(KeyHint::new(state, HintAction::History, "History"));
+}
+
+fn render_footer(frame: &mut Frame, state: &State, area: Rect) {
+    let hint = footer_hint(state);
+    let hint_width = (hint.width() as u16).min(area.width);
+    if state.screen != Screen::Home && !state.details && !state.downloads_supported() {
+        let width = area.width.saturating_sub(hint_width + 1);
+        frame.render_widget(
+            Paragraph::new("Playback only").style(muted(state)),
+            Rect::new(area.x, area.y, width, 1),
+        );
     }
-    hints.push(KeyHint::new(state, HintAction::Help, "Help"));
-    if visible_activity(state).is_none() {
-        hints.push(KeyHint::new(state, HintAction::Settings, "Settings"));
-    }
-    wrap_hints(&hints, usize::from(width), state)
+    frame.render_widget(
+        Paragraph::new(hint),
+        Rect::new(area.right() - hint_width, area.y, hint_width, 1),
+    );
 }
 
 fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
-    let hints = home_footer(state, area.width);
     let footer_download = area.width >= 80
         && visible_activity(state)
             .is_some_and(|activity| activity.kind == JobKind::Download && activity.active());
@@ -459,11 +439,11 @@ fn home_sections(state: &State, area: Rect) -> [Rect; 5] {
         }),
         Constraint::Length(activity_height),
         Constraint::Length(u16::from(activity_height > 0 && area.height >= 18)),
-        Constraint::Length(hints.len() as u16),
+        Constraint::Length(1),
     ])
     .areas(area);
     if footer_download {
-        let hint_width = hints[0].width() as u16;
+        let hint_width = footer_hint(state).width() as u16;
         activity = Rect::new(
             footer.x,
             footer.y,
@@ -495,11 +475,9 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
     } else {
         u16::from(space.height >= 10)
     };
-    let hint_height = 1;
     let gap = u16::from(space.height >= 16);
     let box_height = if space.height >= 12 { 5 } else { 4 };
-    let hint_gap = u16::from(space.height >= 10);
-    let height = logo_height + gap + box_height + hint_gap + hint_height;
+    let height = logo_height + gap + box_height;
     let x = space.x + (space.width - width) / 2;
     let y = space.y + space.height.saturating_sub(height) * 2 / 5;
     if !state.help {
@@ -577,11 +555,7 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         );
     }
     let field = Rect::new(x, y + logo_height + gap, width, box_height);
-    let source = format!(
-        " {} {} ",
-        Shortcut::Provider.label(false),
-        state.search.source.label()
-    );
+    let source = format!(" {} ", state.search.source.label());
     state.view.source_setting =
         Some(Rect::new(field.x + 1, field.y, source.width() as u16, 1).intersection(field));
     let block = panel(source, state, state.focus != Focus::List)
@@ -648,15 +622,6 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
         quality_width,
         1,
     ));
-    let mut hint = shortcut(state, "Enter", "Search");
-    if matches!(state.focus, Focus::Audio | Focus::Quality) {
-        hint = shortcut(state, symbol(state, "←/→", "</>"), "Change");
-    }
-    frame.render_widget(
-        Paragraph::new(hint),
-        Rect::new(x, field.bottom() + hint_gap, width, hint_height),
-    );
-
     if status.height > 0 {
         frame.render_widget(
             Paragraph::new(state.status.as_str())
@@ -671,10 +636,7 @@ fn render_home(frame: &mut Frame, state: &mut State, area: Rect) {
     }
 
     render_activity(frame, state, activity);
-    frame.render_widget(
-        Paragraph::new(home_footer(state, footer.width)).right_aligned(),
-        footer,
-    );
+    render_footer(frame, state, footer);
 }
 
 fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
@@ -726,52 +688,22 @@ fn render_header(frame: &mut Frame, state: &mut State, header: Rect) {
 fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     let bar = Style::default().fg(palette(state).text).bold();
     frame.render_widget(Block::default().style(bar), area);
-    let shortcuts = state.focus == Focus::List && !state.details;
-    let settings = if shortcuts {
-        let mut spans = shortcut(state, "s", &state.mode.as_str().to_uppercase()).spans;
-        spans.push(Span::raw("   "));
-        spans.extend(shortcut(state, "Q", state.quality_label()).spans);
-        spans.push(Span::raw(" "));
-        Line::from(spans)
-    } else {
-        Line::styled(
-            format!(
-                "{} / {} ",
-                state.mode.as_str().to_uppercase(),
-                state.quality_label()
-            ),
-            muted(state),
-        )
-    };
+    let settings = Line::styled(
+        format!(
+            "{} / {} ",
+            state.mode.as_str().to_uppercase(),
+            state.quality_label()
+        ),
+        muted(state),
+    );
     let mut nav = vec![Span::raw(" ")];
     if state.details {
         nav.push(Span::styled("Details", accent(state)));
     } else {
-        for (screen, key, label) in [(Screen::Search, "/", "Search")] {
-            if matches!(state.screen, Screen::History | Screen::Episodes) {
-                continue;
-            }
-            let active = state.screen == screen;
-            if shortcuts && !active {
-                nav.push(Span::styled(format!("{key} "), key_style(state)));
-            }
-            nav.push(Span::styled(
-                label,
-                if active {
-                    accent(state).underlined()
-                } else {
-                    muted(state)
-                },
-            ));
-            nav.push(Span::raw(
-                if screen == Screen::Search && inline_search(state, area.width) {
-                    " "
-                } else {
-                    "   "
-                },
-            ));
-        }
-        if state.screen == Screen::Episodes {
+        if state.screen == Screen::Search {
+            nav.push(Span::styled("Search", accent(state).underlined()));
+            nav.push(Span::raw(" "));
+        } else if state.screen == Screen::Episodes {
             nav.push(Span::styled("Episodes", accent(state).underlined()));
             if let Some(anime) = &state.episodes.anime {
                 let separator = symbol(state, " · ", " / ");
@@ -790,14 +722,11 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
         }
     }
     if inline_search(state, area.width) {
-        let label = format!(
-            "{} {}  ",
-            Shortcut::Provider.label(false),
-            state.search.source.label()
-        );
+        let label = state.search.source.label();
         let x = area.x + Line::from(nav.clone()).width() as u16;
         state.view.source_setting = Some(Rect::new(x, area.y, label.width() as u16, 1));
         nav.push(Span::styled(label, muted(state)));
+        nav.push(Span::raw("  "));
     }
     let navigation = Line::from(nav);
     let nav_width = navigation.width() as u16;
@@ -809,8 +738,8 @@ fn render_wide_header(frame: &mut Frame, state: &mut State, area: Rect) {
     .areas(Rect::new(area.x, area.y, area.width, 1));
     frame.render_widget(Paragraph::new(navigation), left);
     frame.render_widget(Paragraph::new(settings), right);
-    let audio_width = if shortcuts { 5 } else { 3 };
-    let quality_width = state.quality.width() as u16 + if shortcuts { 2 } else { 0 };
+    let audio_width = 3;
+    let quality_width = state.quality_label().width() as u16;
     state.view.audio_setting =
         Some(Rect::new(right.x, right.y, audio_width, 1).intersection(right));
     state.view.quality_setting =
@@ -847,11 +776,7 @@ fn render_input(frame: &mut Frame, state: &mut State, area: Rect) {
         " Search "
     };
     let title = if state.screen == Screen::Search && !state.details {
-        let label = format!(
-            "{} {}",
-            Shortcut::Provider.label(false),
-            state.search.source.label()
-        );
+        let label = state.search.source.label();
         state.view.source_setting =
             Some(Rect::new(area.x + 11, area.y, label.width() as u16, 1).intersection(area));
         format!(" Search / {label} ")
@@ -889,409 +814,6 @@ fn render_input(frame: &mut Frame, state: &mut State, area: Rect) {
     if state.focus != Focus::List && !state.help && !state.hide_input_cursor {
         frame.set_cursor_position((inner.x + cursor as u16, inner.y));
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HintAction {
-    Back,
-    Scroll,
-    ExactSearch,
-    MarkRange,
-    Cancel,
-    RetryRequest,
-    SearchElsewhere,
-    Search,
-    MarkEpisode,
-    EnterRange,
-    Download,
-    Details,
-    RemoveHistory,
-    UndoHistory,
-    Submit,
-    History,
-    Settings,
-    Help,
-    ActivityControl,
-    Audio,
-    Quality,
-    RetryActivity,
-    Copy,
-}
-
-struct KeyHint {
-    action: HintAction,
-    key: &'static str,
-    label: String,
-}
-
-impl KeyHint {
-    fn new(state: &State, action: HintAction, label: impl Into<String>) -> Self {
-        let key = match action {
-            HintAction::Back | HintAction::Cancel => "Esc",
-            HintAction::Scroll => "Up/Down",
-            HintAction::ExactSearch => "Alt+e",
-            HintAction::MarkRange => "Enter",
-            HintAction::RetryRequest => Shortcut::Refresh.label(state.typing()),
-            HintAction::SearchElsewhere => Shortcut::Alternate.label(state.typing()),
-            HintAction::Search => "/",
-            HintAction::MarkEpisode => "Space",
-            HintAction::EnterRange => ":",
-            HintAction::Download => "d",
-            HintAction::Details => "i",
-            HintAction::RemoveHistory => "Delete",
-            HintAction::UndoHistory => "u",
-            HintAction::Submit => "Enter",
-            HintAction::History => "Alt+h",
-            HintAction::Settings => Shortcut::Settings.label(state.typing()),
-            HintAction::Help => Shortcut::Help.label(state.typing()),
-            HintAction::ActivityControl => "x",
-            HintAction::Audio => "s",
-            HintAction::Quality => "Q",
-            HintAction::RetryActivity => Shortcut::RetryQueue.label(state.typing()),
-            HintAction::Copy => "y",
-        };
-        Self {
-            action,
-            key,
-            label: label.into(),
-        }
-    }
-
-    fn width(&self) -> usize {
-        self.key.width() + 1 + self.label.width()
-    }
-}
-
-fn fit_hints(hints: &[KeyHint], width: usize, state: &State) -> Line<'static> {
-    let gap = if width < 72 { "  " } else { "   " };
-    let mut spans = vec![Span::raw(" ")];
-    let mut used = 1;
-
-    for hint in hints {
-        let separator = if used == 1 { "" } else { gap };
-        if used + separator.len() + hint.width() > width {
-            continue;
-        }
-
-        used += separator.len() + hint.width();
-        spans.push(Span::raw(separator));
-        spans.extend(shortcut(state, hint.key, &hint.label).spans);
-    }
-
-    Line::from(spans)
-}
-
-fn primary_hints(state: &State, compact: bool) -> Vec<KeyHint> {
-    if state.details {
-        return vec![
-            KeyHint::new(state, HintAction::Back, "Back"),
-            KeyHint::new(state, HintAction::Scroll, "Scroll"),
-        ];
-    }
-
-    if state.focus == Focus::Search {
-        return if state.screen == Screen::History {
-            vec![]
-        } else {
-            vec![
-                KeyHint::new(state, HintAction::Submit, "Search"),
-                KeyHint::new(state, HintAction::ExactSearch, "Exact"),
-            ]
-        };
-    }
-
-    if state.focus == Focus::Range {
-        return vec![
-            KeyHint::new(state, HintAction::MarkRange, "Mark range"),
-            KeyHint::new(state, HintAction::Cancel, "Cancel"),
-        ];
-    }
-
-    if state.request_blocks_list() {
-        let mut hints = vec![KeyHint::new(state, HintAction::RetryRequest, "Retry")];
-        if state.screen != Screen::History {
-            hints.push(KeyHint::new(state, HintAction::Search, "Search"));
-        }
-        hints.push(KeyHint::new(state, HintAction::Back, "Back"));
-        return hints;
-    }
-
-    if state.screen == Screen::Episodes {
-        if state.episodes.items.is_empty() {
-            let mut hints = vec![
-                KeyHint::new(state, HintAction::Back, "Back"),
-                KeyHint::new(state, HintAction::Details, "Details"),
-            ];
-            if !state.loading {
-                hints.push(KeyHint::new(state, HintAction::RetryRequest, "Retry"));
-            }
-
-            return hints;
-        }
-
-        let count = state.episodes.marked.len();
-        let download = if count > 0 && (!compact || state.focus != Focus::List) {
-            format!("Download {count}")
-        } else {
-            "Download".into()
-        };
-        let mut hints = vec![
-            KeyHint::new(state, HintAction::Submit, "Play"),
-            KeyHint::new(state, HintAction::MarkEpisode, "Mark"),
-            KeyHint::new(state, HintAction::EnterRange, "Range"),
-        ];
-        if state.downloads_supported() {
-            hints.push(KeyHint::new(state, HintAction::Download, download));
-        }
-        hints.push(KeyHint::new(state, HintAction::Details, "Details"));
-        return hints;
-    }
-
-    let search = if state.screen == Screen::Search {
-        "Edit"
-    } else {
-        "Search"
-    };
-    let mut hints = vec![];
-    if state.screen != Screen::History {
-        hints.push(KeyHint::new(state, HintAction::Search, search));
-    }
-    if state.selected_anime().is_some() {
-        hints.insert(0, KeyHint::new(state, HintAction::Submit, "Open"));
-        hints.push(KeyHint::new(state, HintAction::Details, "Details"));
-    }
-    if state.screen == Screen::History
-        && matches!(
-            state.history_removal,
-            Some(crate::state::HistoryRemoval::Removed(_))
-        )
-    {
-        hints.insert(
-            0,
-            KeyHint::new(state, HintAction::UndoHistory, "Undo remove"),
-        );
-    }
-    if state.screen == Screen::History && !state.history.entries().is_empty() {
-        hints.push(KeyHint::new(state, HintAction::RemoveHistory, "Remove"));
-    }
-
-    hints
-}
-
-fn global_hints(state: &State, compact: bool, copy_available: bool) -> Vec<KeyHint> {
-    let mut hints = vec![KeyHint::new(state, HintAction::Help, "Help")];
-    if let Some(activity) = visible_activity(state) {
-        let action = if matches!(activity.phase, JobPhase::Finished | JobPhase::Failed) {
-            "Dismiss"
-        } else {
-            "Stop"
-        };
-        hints.insert(0, KeyHint::new(state, HintAction::ActivityControl, action));
-    }
-
-    // Printable shortcuts are text while editing.
-    if state.typing() {
-        hints = vec![KeyHint::new(state, HintAction::Help, "Help")];
-        if state.request_error.is_some() && !state.details {
-            hints.insert(0, KeyHint::new(state, HintAction::RetryRequest, "Retry"));
-        }
-    } else if !state.details {
-        hints.extend([
-            KeyHint::new(state, HintAction::Audio, "SUB/DUB"),
-            KeyHint::new(state, HintAction::Quality, "Quality"),
-        ]);
-    }
-
-    if let Some((_, source, _)) = state.recovery_search() {
-        hints.insert(
-            0,
-            KeyHint::new(
-                state,
-                HintAction::SearchElsewhere,
-                format!("Search {}", source.label()),
-            ),
-        );
-    }
-
-    if state.activity.as_ref().is_some_and(Activity::retryable) {
-        let action = if compact { "Retry" } else { "Retry remaining" };
-        hints.insert(0, KeyHint::new(state, HintAction::RetryActivity, action));
-    }
-
-    if copy_available {
-        hints.push(KeyHint::new(state, HintAction::Copy, "Copy"));
-    }
-
-    hints
-}
-
-fn wide_key_hints(
-    state: &State,
-    width: usize,
-    mut primary: Vec<KeyHint>,
-    mut global: Vec<KeyHint>,
-) -> Vec<Line<'static>> {
-    global.retain(|hint| !matches!(hint.action, HintAction::Audio | HintAction::Quality));
-
-    let help_index = global
-        .iter()
-        .position(|hint| hint.action == HintAction::Help)
-        .unwrap();
-    let help = global.remove(help_index);
-
-    let keep_primary_left = state.screen == Screen::History
-        || primary.first().is_some_and(|hint| {
-            matches!(
-                hint.action,
-                HintAction::ExactSearch | HintAction::MarkEpisode
-            ) || (hint.action == HintAction::Search && state.screen == Screen::Search)
-        });
-    let action = if keep_primary_left {
-        None
-    } else {
-        Some(primary.remove(0))
-    };
-    let mut secondary = primary;
-    secondary.extend(global);
-
-    let mut right = shortcut(state, help.key, &help.label);
-    if let Some(action) = action {
-        right.spans.push(Span::raw("    "));
-        right
-            .spans
-            .extend(shortcut(state, action.key, &action.label).spans);
-    }
-    right.spans.push(Span::raw("  "));
-
-    let secondary_width = 1
-        + secondary.iter().map(KeyHint::width).sum::<usize>()
-        + secondary.len().saturating_sub(1) * 3;
-    let left = fit_hints(&secondary, width, state);
-    if secondary_width + 3 + right.width() <= width {
-        let gap = width - left.width() - right.width();
-        let mut spans = left.spans;
-        spans.push(Span::raw(" ".repeat(gap)));
-        spans.extend(right.spans);
-        return vec![Line::from(spans)];
-    }
-
-    let mut lines = wrap_hints(&secondary, width, state);
-    lines.push(right.right_aligned());
-    lines
-}
-
-fn wrap_hints(hints: &[KeyHint], width: usize, state: &State) -> Vec<Line<'static>> {
-    let gap = if width < 72 { 2 } else { 3 };
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut used = 1;
-    for (i, hint) in hints.iter().enumerate() {
-        if i > start && used + gap + hint.width() > width {
-            lines.push(fit_hints(&hints[start..i], width, state));
-            start = i;
-            used = 1;
-        }
-        used += hint.width() + if i > start { gap } else { 0 };
-    }
-    if start < hints.len() {
-        lines.push(fit_hints(&hints[start..], width, state));
-    }
-    lines
-}
-
-fn key_hints(state: &State, width: usize, copy_available: bool) -> Vec<Line<'static>> {
-    let compact = width < 72;
-    let primary = primary_hints(state, compact);
-    let global = global_hints(state, compact, copy_available);
-    let mut lines = layout_key_hints(state, width, primary, global);
-    if !state.details && !state.downloads_supported() {
-        lines.push(Line::styled(
-            if state.recovery_search().is_none() {
-                " Playback only with this provider"
-            } else if state.typing() {
-                " Playback only / Esc then a"
-            } else if width < 44 {
-                " Playback only / a Alternatives"
-            } else {
-                " Playback only / a Search another provider"
-            },
-            muted(state),
-        ));
-    }
-    lines
-}
-
-fn layout_key_hints(
-    state: &State,
-    width: usize,
-    mut primary: Vec<KeyHint>,
-    mut global: Vec<KeyHint>,
-) -> Vec<Line<'static>> {
-    if width >= 120 {
-        return wide_key_hints(state, width, primary, global);
-    }
-
-    if state.typing() && state.request_blocks_list() {
-        let mut lines = vec![fit_hints(&primary, width, state)];
-        lines.extend(wrap_hints(&global, width, state));
-        return lines;
-    }
-
-    let compact = width < 72;
-    let help_index = global
-        .iter()
-        .position(|hint| hint.action == HintAction::Help)
-        .unwrap();
-    if compact {
-        let help = global.remove(help_index);
-        let after_retry = usize::from(
-            global
-                .first()
-                .is_some_and(|hint| hint.action == HintAction::RetryActivity),
-        );
-        global.insert(after_retry, help);
-    }
-
-    if compact && !state.details && state.focus == Focus::List && !state.request_blocks_list() {
-        if state.screen == Screen::Episodes && !state.episodes.items.is_empty() {
-            let help_index = global
-                .iter()
-                .position(|hint| hint.action == HintAction::Help)
-                .unwrap();
-            let help = global.remove(help_index);
-            let (marking, mut actions): (Vec<_>, Vec<_>) = primary.into_iter().partition(|hint| {
-                matches!(
-                    hint.action,
-                    HintAction::Submit | HintAction::MarkEpisode | HintAction::EnterRange
-                )
-            });
-            actions.push(help);
-            return vec![
-                fit_hints(&marking, width, state),
-                fit_hints(&actions, width, state),
-                fit_hints(&global, width, state),
-            ];
-        }
-
-        if state.screen == Screen::Search && state.selected_anime().is_some() {
-            let search_index = primary
-                .iter()
-                .position(|hint| hint.action == HintAction::Search)
-                .unwrap();
-            let search = primary.remove(search_index);
-            let after_help = global
-                .iter()
-                .position(|hint| hint.action == HintAction::Help)
-                .unwrap()
-                + 1;
-            global.insert(after_help, search);
-        }
-    }
-
-    vec![
-        fit_hints(&primary, width, state),
-        fit_hints(&global, width, state),
-    ]
 }
 
 fn series_item(title: &str, metadata: &str, width: usize, state: &State) -> ListItem<'static> {
@@ -1391,45 +913,27 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
     }
 
     if count == 0 {
-        let (title, hint) = if state.loading {
+        let title = if state.loading {
             if state.screen == Screen::Episodes {
-                ("Loading episodes...", "")
+                "Loading episodes..."
             } else {
-                ("Searching...", "")
+                "Searching..."
             }
-        } else if state.screen == Screen::History {
-            if state.history.entries().is_empty() {
-                ("No history yet", "H Home / Play to add history")
-            } else {
-                ("No matches", "/ Edit filter, Ctrl+u Clear")
-            }
-        } else if state.screen == Screen::Episodes {
-            (
-                "No episodes available",
-                if state.typing() {
-                    "Esc then R to retry or a for another provider"
-                } else {
-                    "R Retry / a Try another provider"
-                },
-            )
-        } else if state.search.query.text.trim().is_empty() {
-            ("Enter a title", "")
         } else {
-            (
-                "No matches",
-                if state.search.exact {
-                    "Alt+e Turn off exact match"
-                } else {
-                    "Try another title"
-                },
-            )
+            match state.screen {
+                Screen::History if state.history.entries().is_empty() => "No history yet",
+                Screen::Episodes => "No episodes available",
+                Screen::Search if state.search.query.text.trim().is_empty() => "Enter a title",
+                Screen::Search if state.search.exact => "No exact matches",
+                _ => "No matches",
+            }
         };
         let title = if state.loading {
             format!("{} {}", scan(state), title.trim_end_matches('.'))
         } else {
             title.to_owned()
         };
-        empty_message(frame, state, inner, &title, hint);
+        empty_message(frame, state, inner, &title);
         return;
     }
 
@@ -1572,15 +1076,8 @@ fn render_cover_view(frame: &mut Frame, state: &State, art: &Artwork, area: Rect
             } else {
                 "Loading cover..."
             },
-            "",
         );
     }
-    frame.render_widget(
-        Paragraph::new("Esc / click to close")
-            .centered()
-            .style(muted(state)),
-        Rect::new(area.x, area.bottom() - 1, area.width, 1),
-    );
 }
 
 fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rect) {
@@ -1621,27 +1118,23 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
             state,
             area.inner(Margin::new(2, 1)),
             "Choose a series",
-            "",
         );
         return;
     };
 
-    let retry_key = Shortcut::Refresh.label(state.typing());
     let cover_hit = if art.protocol.is_some() {
         render_cover_image(frame, art, cover)
     } else if cover.height > 0 {
-        let cover_error;
         let label = if !art.enabled {
             "Covers disabled"
         } else if art.error.is_some() {
-            cover_error = format!("Cover unavailable / {retry_key} Retry");
-            &cover_error
+            "Cover unavailable"
         } else if anime.cover.is_some() {
             "Loading cover..."
         } else {
             "No cover"
         };
-        empty_message(frame, state, cover, label, "");
+        empty_message(frame, state, cover, label);
         None
     } else {
         None
@@ -1723,13 +1216,9 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
     );
     details.extend(prose);
 
-    let synopsis_error;
     let feedback = match synopsis {
         Some(Synopsis::Loading) => Some(("Loading full synopsis...", palette(state).pending)),
-        Some(Synopsis::Failed) => {
-            synopsis_error = format!("! Synopsis unavailable / {retry_key} Retry");
-            Some((synopsis_error.as_str(), palette(state).error))
-        }
+        Some(Synopsis::Failed) => Some(("! Synopsis unavailable", palette(state).error)),
         _ => None,
     };
     if let Some((message, color)) = feedback {
@@ -1739,7 +1228,7 @@ fn render_preview(frame: &mut Frame, state: &mut State, art: &Artwork, area: Rec
         details.extend(
             wrap_prose(message, metadata.width as usize)
                 .into_iter()
-                .map(|line| hint_message(state, &line, Style::default().fg(color))),
+                .map(|line| Line::styled(line, Style::default().fg(color))),
         );
     }
 
@@ -2195,6 +1684,15 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Settings",
+        &[
+            ("Enter / Left/Right", "Edit or change the selected setting"),
+            ("R", "Restore the selected default"),
+            ("Delete", "Remove the selected player argument"),
+            ("Enter / Esc", "Save or cancel an edit"),
+        ],
+    ),
+    (
         "App controls",
         &[
             ("? / F1", "Help (Esc then ? while typing)"),
@@ -2281,11 +1779,13 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
             }
         }
     }
-    if !state.downloads_supported()
-        && help_matches(&query, "downloads playback only provider alternate a")
-    {
+    if !state.downloads_supported() && help_matches(&query, "downloads playback only provider") {
         lines.push(Line::default());
-        lines.extend(wrap_prose("Playback only with this provider. Press a to search another provider for downloads.", width).into_iter().map(|line| Line::styled(line, muted(state))));
+        lines.extend(
+            wrap_prose("Downloads are unavailable with this provider.", width)
+                .into_iter()
+                .map(|line| Line::styled(line, muted(state))),
+        );
     }
     if lines.is_empty() {
         lines.push(Line::styled("No matching shortcuts", muted(state)));
@@ -2319,13 +1819,11 @@ fn render_help(frame: &mut Frame, state: &mut State) {
     let block = panel(String::new(), state, true).style(base);
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
-    let [header, filter, _, body, _, footer] = Layout::vertical([
+    let [header, filter, _, body] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(u16::from(inner.height >= 18)),
-        Constraint::Length(1),
     ])
     .areas(inner);
     state.view.help_area = Some(body);
@@ -2381,56 +1879,16 @@ fn render_help(frame: &mut Frame, state: &mut State) {
         body,
     );
     render_scrollbar(frame, state, body, content_length, state.view.help_scroll);
-    let hints: &[(&str, &str)] = if state.help_filtering {
-        if footer.width >= 55 {
-            &[
-                ("Enter/Esc", "Done"),
-                ("Ctrl+u", "Clear"),
-                ("Down", "Scroll"),
-            ]
-        } else {
-            &[("Enter/Esc", "Done")]
-        }
-    } else if footer.width >= 64 {
-        &[
-            ("/", "Filter"),
-            ("j/k or Up/Down", "Scroll"),
-            ("Esc", "Close"),
-        ]
-    } else {
-        &[("/", "Filter"), ("j/k", "Move"), ("Esc", "Close")]
-    };
-    let mut spans = Vec::new();
-    for (key, action) in hints {
-        if !spans.is_empty() {
-            spans.push(Span::raw(if footer.width >= 55 { "   " } else { "  " }));
-        }
-        spans.extend(shortcut(state, key, action).spans);
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), footer);
 }
 
-fn empty_message(frame: &mut Frame, state: &State, area: Rect, title: &str, hint: &str) {
-    let lines: Vec<_> = [(title, accent(state)), (hint, muted(state))]
-        .into_iter()
-        .filter(|(text, _)| !text.is_empty())
-        .map(|(text, style)| hint_message(state, text, style))
-        .collect();
-    let caption_height = (lines.len() as u16
-        + u16::from(title.width() > usize::from(area.width))
-        + u16::from(hint.width() > usize::from(area.width)))
-    .min(area.height);
-    let caption = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
-    let caption_y = area.y + area.height.saturating_sub(caption_height) / 2;
-    frame.render_widget(
-        caption,
-        Rect::new(
-            area.x,
-            caption_y,
-            area.width,
-            area.bottom().saturating_sub(caption_y),
-        ),
-    );
+fn empty_message(frame: &mut Frame, state: &State, area: Rect, title: &str) {
+    let caption = Paragraph::new(title)
+        .style(accent(state))
+        .centered()
+        .wrap(Wrap { trim: true });
+    let height = caption.line_count(area.width) as u16;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    frame.render_widget(caption, Rect::new(area.x, y, area.width, area.bottom() - y));
 }
 
 pub fn input_window(text: &str, cursor: usize, width: usize) -> (String, usize) {
@@ -2463,7 +1921,7 @@ mod tests {
     use ratatui_image::picker::Picker;
 
     #[test]
-    fn disabled_covers_reclaim_space_and_primary_actions_stay_visible() {
+    fn disabled_covers_reclaim_space_for_the_selected_series() {
         for (width, height) in [(32, 12), (40, 16), (80, 24), (120, 40)] {
             let mut state = State::new(
                 "series".into(),
@@ -2484,7 +1942,7 @@ mod tests {
             );
             state.focus = Focus::List;
             let text = render_text(&mut state, width, height);
-            assert!(text.contains("Enter Open"), "{text}");
+            assert!(text.contains("A series"), "{text}");
             state.details = true;
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let art = Artwork::new(Picker::halfblocks(), "/tmp/unused-art".into(), false);
@@ -2494,22 +1952,6 @@ mod tests {
             assert_eq!(view.area.y, body.y + 1);
             assert_eq!(view.area.width, body.width.saturating_sub(4).min(72));
             assert!(state.view.cover.is_none());
-        }
-    }
-
-    #[test]
-    fn recovery_hint_names_destination_at_all_layout_widths() {
-        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
-        state.screen = Screen::Episodes;
-        state.focus = Focus::List;
-        state.episodes.anime = Some(Anime {
-            provider: crate::provider::Source::AnimeGg.id(),
-            title: "Probe".into(),
-            ..Default::default()
-        });
-        for width in [40, 80, 120] {
-            let text = render_text(&mut state, width, 24);
-            assert!(text.contains("a Search KAA"), "{text}");
         }
     }
 
@@ -2533,11 +1975,10 @@ mod tests {
             let text = render_text(&mut state, width, 24);
             assert!(!text.contains("Download"), "{text}");
             assert!(text.contains("Playback only"), "{text}");
-            assert!(text.contains("Enter Play"), "{text}");
+            let footer = text.lines().last().unwrap();
             assert!(
-                key_hints(&state, width as usize, false)
-                    .iter()
-                    .all(|line| line.width() <= width as usize)
+                footer.contains("Playback only") && footer.ends_with("? Help"),
+                "{text}"
             );
         }
         assert!(
@@ -2547,7 +1988,7 @@ mod tests {
         );
         state.search.source = crate::provider::Source::AnimeGg;
         state.episodes.anime.as_mut().unwrap().provider = crate::provider::Source::HiAnime.id();
-        assert!(render_text(&mut state, 80, 24).contains("Download"));
+        assert!(!render_text(&mut state, 80, 24).contains("Playback only"));
         assert!(
             help_lines(&state, 80)
                 .iter()
@@ -2585,7 +2026,7 @@ mod tests {
                         .take(area.width as usize)
                         .collect();
                     assert!(
-                        visible.contains(&format!("Alt+p {}", source.label())),
+                        visible.trim() == source.label(),
                         "{width} {screen:?}: {visible:?}\n{text}"
                     );
                     assert!(text.contains("DUB") && text.contains("1080p"), "{text}");
@@ -2727,16 +2168,11 @@ mod tests {
         assert!(status.contains("1080p") && status.contains("SUB"));
         assert_eq!(activity_height(&state), 1);
         let footer = text.lines().last().unwrap();
-        let positions: Vec<_> = ["Mark", "Range", "Download", "Details"]
-            .iter()
-            .map(|s| footer.find(s).unwrap())
-            .collect();
-        assert!(positions.windows(2).all(|p| p[0] < p[1]));
-        assert!(footer.contains("Enter Play") && !footer.contains("Esc Back"));
+        assert_eq!(footer.trim(), "? Help");
     }
 
     #[test]
-    fn responsive_screens_keep_primary_actions_and_cover_inside_terminal() {
+    fn responsive_screens_keep_help_and_cover_inside_terminal() {
         for (w, h) in [
             (140, 45),
             (120, 40),
@@ -2812,7 +2248,7 @@ mod tests {
                         state.history.replace_entries(entries);
                     }
                     let text = render_text(&mut state, width, height);
-                    for label in ["Search anime...", "DUB", "1080p", "Alt+h History", "? Help"] {
+                    for label in ["Search anime...", "DUB", "1080p", "? Help"] {
                         assert!(text.contains(label), "{width}x{height} {focus:?}: {text}");
                     }
                     assert!(!text.contains("History stays in History"));
@@ -2936,13 +2372,13 @@ mod tests {
             }
         }
         state.screen = Screen::Search;
-        let text = render_text(&mut state, 78, 19);
+        let text = render_text(&mut state, 78, 18);
         assert!(text.contains("A readable synopsis"));
-        assert_eq!(cover_area(&state, Rect::new(0, 0, 78, 19)), Rect::default());
+        assert_eq!(cover_area(&state, Rect::new(0, 0, 78, 18)), Rect::default());
     }
 
     #[test]
-    fn compact_episode_controls_and_details_remain_discoverable() {
+    fn browsing_shows_the_selection_and_a_single_help_hint_at_all_sizes() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
@@ -2963,8 +2399,17 @@ mod tests {
                     state.episodes.marked.insert(0);
                 }
                 let text = render_text(&mut state, w, h);
-                for label in ["Space Mark", ": Range", "i Details", "d Download", "? Help"] {
-                    assert!(text.contains(label), "{w}x{h}, missing {label}: {text}");
+                assert!(text.contains("The beginning"), "{w}x{h}: {text}");
+                assert_eq!(text.contains("1 marked"), marked, "{text}");
+                assert_eq!(text.lines().last().unwrap().trim(), "? Help");
+                for hint in [
+                    "Space Mark",
+                    ": Range",
+                    "i Details",
+                    "d Download",
+                    "Enter Play",
+                ] {
+                    assert!(!text.contains(hint), "{w}x{h}: {text}");
                 }
             }
         }
@@ -2972,9 +2417,11 @@ mod tests {
         state.search.query.set("series".into());
         state.accept_search(0, Ok(vec![state.episodes.anime.clone().unwrap()]));
         let text = render_text(&mut state, 32, 12);
-        for label in ["i Details", "/ Edit", "? Help"] {
-            assert!(text.contains(label), "{text}");
-        }
+        assert_eq!(text.lines().last().unwrap().trim(), "? Help");
+        assert!(
+            !text.contains("/ Edit") && !text.contains("i Details"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -3012,7 +2459,7 @@ mod tests {
                 state.activity.as_mut().unwrap().phase = phase;
                 for (w, h) in [(32, 12), (40, 18), (80, 24), (120, 40)] {
                     let text = render_text(&mut state, w, h);
-                    for label in ["Ep 2", "DUB", "? Help"] {
+                    for label in ["Ep 2", "DUB"] {
                         assert!(
                             text.contains(label),
                             "{phase:?} {w}x{h}, missing {label}: {text}"
@@ -3046,18 +2493,7 @@ mod tests {
             state.status = "Audio applies to the next queue.".into();
             state.focus = Focus::Audio;
             let text = render_text(&mut state, 32, 12);
-            for label in [
-                "Search anime...",
-                "Alt+h History",
-                if state.ascii {
-                    "</> Change"
-                } else {
-                    "←/→ Change"
-                },
-                "Ep 2",
-                "Alt+r Retry",
-                "? Help",
-            ] {
+            for label in ["Search anime...", "Ep 2", "Alt+r Retry queue"] {
                 assert!(text.contains(label), "{text}");
             }
             state.status.clear();
@@ -3167,9 +2603,7 @@ mod tests {
                         for label in [&scan(&state), "Ep 1 SUB", "? Help"] {
                             assert!(footer.contains(label), "{width}: {text}");
                         }
-                        if history {
-                            assert!(footer.contains("Alt+h History"), "{text}");
-                        }
+                        assert!(!footer.contains("Alt+h History"), "{text}");
                         assert_eq!(text.matches("Ep 1 SUB").count(), 1, "{text}");
                         assert!(footer.find("Ep 1 SUB") < footer.find("? Help"));
                     }
@@ -3248,7 +2682,7 @@ mod tests {
                 let text = render_text(&mut state, width, height);
                 assert!(text.contains(expected), "{text}");
                 assert!(
-                    text.contains("Keybindings") && text.contains("Enter/Esc Done"),
+                    text.contains("Keybindings") && text.contains("Esc finish filter"),
                     "{text}"
                 );
                 assert!(!text.contains("Terminal options"));
@@ -3334,105 +2768,7 @@ mod tests {
     }
 
     #[test]
-    fn footer_placement_is_independent_of_displayed_keys() {
-        let replacement = "abcdefghijklmnopqrstuvwxyz";
-        for screen in [
-            Screen::Home,
-            Screen::Search,
-            Screen::Episodes,
-            Screen::History,
-        ] {
-            for focus in [
-                Focus::Search,
-                Focus::List,
-                Focus::Range,
-                Focus::Audio,
-                Focus::Quality,
-            ] {
-                for flags in 0..8 {
-                    let mut state =
-                        State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
-                    let anime = Anime {
-                        id: "series".into(),
-                        title: "Series".into(),
-                        ..Default::default()
-                    };
-                    state.episodes.anime = Some(anime.clone());
-                    if flags & 4 != 0 {
-                        state.search.replace_results(vec![anime.clone()]);
-                        state
-                            .history
-                            .replace_entries(vec![crate::persistence::Entry {
-                                anime: anime.clone(),
-                                episode: "1".into(),
-                                mode: Mode::Sub,
-                                watched_at: 1,
-                            }]);
-                        state.episodes.items = vec![Episode {
-                            provider: Default::default(),
-                            id: "1".into(),
-                            number: "1".into(),
-                            title: "Opening".into(),
-                        }];
-                        state.episodes.marked.insert(0);
-                    }
-                    state.screen = screen;
-                    state.focus = focus;
-                    state.details = flags & 1 != 0;
-                    state.request_error = (flags & 2 != 0).then(|| "Offline".into());
-                    state.activity = Some(Activity {
-                        anime,
-                        episodes: state.episodes.items.clone(),
-                        index: 0,
-                        remaining: Default::default(),
-                        mode: Mode::Sub,
-                        quality: "best".into(),
-                        quality_note: String::new(),
-                        kind: JobKind::Download,
-                        phase: JobPhase::Failed,
-                        message: "Offline".into(),
-                    });
-
-                    for copy in [false, true] {
-                        for width in [32, 40, 71, 72, 119, 120, 160] {
-                            let mut primary = primary_hints(&state, width < 72);
-                            let mut global = global_hints(&state, width < 72, copy);
-                            let mut expected = key_hints(&state, width, copy);
-                            for line in &mut expected {
-                                for span in &mut line.spans {
-                                    if let Some(hint) = primary
-                                        .iter()
-                                        .chain(&global)
-                                        .find(|hint| hint.key == span.content)
-                                    {
-                                        span.content = replacement[..hint.key.width()].into();
-                                    }
-                                }
-                            }
-                            for hint in primary.iter_mut().chain(&mut global) {
-                                hint.key = &replacement[..hint.key.width()];
-                            }
-                            let actual = layout_key_hints(&state, width, primary, global);
-                            let text_and_alignment = |lines: Vec<Line<'static>>| {
-                                lines
-                                    .into_iter()
-                                    .map(|line| (line.alignment, line.to_string()))
-                                    .collect::<Vec<_>>()
-                            };
-                            assert_eq!(
-                                text_and_alignment(actual),
-                                text_and_alignment(expected),
-                                "{screen:?}/{focus:?}/{flags}/{copy}/{width}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn wide_footer_keeps_primary_actions_on_first_frame_after_resize() {
+    fn resizing_keeps_a_single_footer_line_and_hides_finished_playback() {
         let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
         state.screen = Screen::Episodes;
         state.focus = Focus::List;
@@ -3464,10 +2800,8 @@ mod tests {
         for width in [120, 133, 160] {
             state.view.text_view = None;
             let text = render_text(&mut state, width, 40);
-            for hint in ["? Help", "d Download", "Space Mark", ": Range"] {
-                assert!(text.contains(hint), "{width} missing {hint}: {text}");
-            }
-            assert!(text.contains("Enter Play") && !text.contains("Esc Back"));
+            assert_eq!(text.lines().last().unwrap().trim(), "? Help");
+            assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[5].height, 1);
             assert!(!text.contains("Finished"), "{text}");
             assert!(!text.contains("x Dismiss"), "{text}");
             assert_eq!(sections(&state, Rect::new(0, 0, width, 40))[4].height, 0);
@@ -3505,7 +2839,7 @@ mod tests {
         state.focus = Focus::List;
         let text = render_text(&mut state, 120, 30);
         let top = text.lines().next().unwrap();
-        assert!(!top.contains("H Home") && top.contains("s SUB") && top.contains("Q Best"));
+        assert!(top.contains("SUB / Best") && !top.contains("Q Best"));
     }
 
     #[test]
@@ -3604,14 +2938,12 @@ mod tests {
         state.accept_search(0, Err(anyhow::anyhow!("Service unavailable")));
         for (width, height) in [(32, 12), (80, 24), (120, 40)] {
             let text = render_text(&mut state, width, height);
-            for hint in [
-                "Search unavailable",
-                "Esc then R Retry",
-                "Esc then a Search AnimeGG",
-                "Esc then ? Help",
-            ] {
-                assert!(text.contains(hint), "{width}x{height}: {text}");
-            }
+            assert!(
+                text.contains("Search unavailable") && text.contains("Service unavailable"),
+                "{width}x{height}: {text}"
+            );
+            assert_eq!(text.lines().last().unwrap().trim(), "Esc then R Retry");
+            assert_eq!(text.matches("Retry").count(), 1);
             assert!(!text.contains("Enter Results") && !text.contains("Esc Done"));
             assert!(!text.contains("No matches"));
             assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
@@ -3639,7 +2971,7 @@ mod tests {
             let text = render_text(&mut state, w, h);
             assert!(text.contains("The beginning"), "{w}x{h}: {text}");
             assert!(text.contains("R Retry"));
-            assert!(text.contains("Space Mark"));
+            assert!(text.contains("1 marked"));
             assert!(!text.contains("Episodes unavailable"));
         }
         state.episodes.items.clear();
@@ -3677,7 +3009,8 @@ mod tests {
         state.status.clear();
         state.focus = Focus::List;
         let text = render_text(&mut state, 80, 24);
-        assert!(text.contains("Refresh failed / R Retry"));
+        assert!(text.contains("Refresh failed"));
+        assert_eq!(text.matches("R Retry").count(), 1);
         state.details = true;
         let text = render_text(&mut state, 80, 24);
         assert!(!text.contains("Refresh failed"));

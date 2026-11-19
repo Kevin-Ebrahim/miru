@@ -241,7 +241,7 @@ while not (root / token).exists():
             send(b"\x1bh")
             wait_for(lambda: requests.count("/original-1") == 1)
             wait_for(lambda: "A complete synopsis beyond the search snippet." in copied_text())
-            click_audio = pointer(0, 108, 1) + pointer(0, 108, 1, release=True)
+            click_audio = pointer(0, 111, 1) + pointer(0, 111, 1, release=True)
             send(click_audio)
             wait_for(lambda: json.loads(config.read_text())["audio"] == "dub")
             send(click_audio)
@@ -262,7 +262,7 @@ while not (root / token).exists():
             pump(0.3)
             output.clear()
             send(pointer(0, 50, 10) + pointer(0, 50, 10, release=True))
-            wait_for(lambda: b"Esc / click to close" in output)
+            wait_for(lambda: b"[x]" in output)
             assert not clipboard_texts(b"y"), "Cover viewer must block hidden synopsis copying"
             send(b"\x1b")
             assert copied_text(drag) == "Original Series", "Closing cover viewer must restore the preview"
