@@ -8,18 +8,11 @@
   <img src="https://img.shields.io/badge/Rust-1.90%2B-dea584?style=flat-square" alt="Requires Rust 1.90 or newer">
 </p>
 
-Miru has SUB/DUB selection, cover art, watch history and episode queues.
-Navigate with arrow keys or Vim bindings. Colours follow your terminal or
-Omarchy theme.
-
 ## Install
 
-You need Git, [Rust 1.90+ and Cargo](https://rustup.rs/),
-and [mpv](https://mpv.io/installation/) for playback.
-Install [ffmpeg](https://ffmpeg.org/download.html) if you want downloads.
-Playback and downloads require Linux and [bubblewrap](https://github.com/containers/bubblewrap)
-(`bwrap`) for media network isolation. Browsing, history and JSON exports do not
-require bubblewrap.
+Build Miru with Git and [Rust 1.90+ with Cargo](https://rustup.rs/).
+Playback and downloads require Linux and [bubblewrap](https://github.com/containers/bubblewrap).
+Install [mpv](https://mpv.io/installation/) to watch or [FFmpeg](https://ffmpeg.org/download.html) to download.
 
 ```sh
 git clone https://github.com/Kevin-Ebrahim/miru.git
@@ -28,71 +21,21 @@ cargo install --locked --path .
 miru
 ```
 
-If your shell cannot find `miru`, add Cargo's bin directory to your `PATH`:
+If your shell can't find `miru`, add `$HOME/.cargo/bin` to your `PATH`.
 
-```sh
-export PATH="$HOME/.cargo/bin:$PATH"
-```
+## Watch an episode
 
-## Watch something
+Type a title and press Enter to search. Pick a series with the arrow keys and
+press Enter to see its episodes. Press Enter on an episode to play it.
 
-1. Type a title on Home and press Enter.
-2. Select an anime and press Enter to open its episodes.
-3. Select an episode and press Enter to play it.
+Use Alt+a to switch between SUB and DUB, Alt+q to change quality, and Alt+h
+to open watch history. Press `?` for controls or Ctrl+C to quit. When typing,
+press Esc before `?`.
 
-On Home, Tab selects audio or quality. Left and Right change the selected value.
-Press `,` while browsing to open Settings for the download folder, playback
-defaults, and player options.
-Enter edits a setting, R restores its default, and Esc returns to browsing.
-Saved defaults apply to the next queue; command-line overrides remain temporary.
-Press Alt+p or click the provider name on Home or Search to switch between HiAnime,
-AnimeGG and KAA. HiAnime remains the default. AnimeGG supports playback only.
-KAA requires mpv; its media hosts need headers that VLC cannot apply.
-
-| Key | Action |
-| --- | --- |
-| ↑ / ↓ or `j` / `k` | Move through a list |
-| Esc | Go back or leave text input |
-| Alt+a | Switch SUB/DUB audio, including while typing |
-| Alt+q | Cycle playback quality, including while typing |
-| Alt+h | Open history |
-| `Space › d` | Mark episodes and download the selection |
-| Alt+p | Change search provider, including while typing |
-| `a` | Search the selected title on another provider |
-| `?` | Show all controls (`Esc › ?` while typing) |
-| Ctrl+C | Quit |
-
-History remembers the last episode launched, not playback position or completion.
-
-Downloads go to your system Downloads folder under `miru/` by default. Set a
-saved download folder in the [configuration file](docs/guide.md#download-location),
-or use `--download-dir PATH` to override it for one run.
-
-## From the command line
-
-```sh
-miru frieren
-miru --source animegg "Cowboy Bebop"
-miru --continue
-miru --play frieren -e 1-3 -q 720p
-miru --download frieren -e 1-3 --download-dir ./downloads
-```
-
-Run `miru --help` for all options. See the [guide](docs/guide.md) for controls,
-JSON output, configuration, history migration and development checks.
-
-## Troubleshooting
-
-- If covers render incorrectly, try `miru --images halfblocks` or `--images off`.
-- For plain output, use `miru --images off --ascii --no-animation`.
-- If a request fails, press `R` while browsing to refresh. Use Alt+r to retry a
-  failed queue. Provider outages and site changes can interrupt search or playback
-  in unofficial clients like Miru.
+See the [guide](docs/guide.md) for downloads, providers, settings and command-line examples.
 
 ## License and credits
 
-[GPL-3.0-only](LICENSE). Kyoto Dusk by [bas3line](https://github.com/bas3line)
-is bundled under its [MIT license](assets/kyoto-dusk/LICENSE).
-See the [sakura artwork notes](assets/sakura/README.md) for its reference.
-The shell workflow and provider integration draw on
-[ani-cli](https://github.com/pystardust/ani-cli).
+Miru uses the [GPL-3.0-only license](LICENSE). The [sakura artwork](assets/sakura/README.md)
+draws on [Kyoto Dusk by bas3line](assets/kyoto-dusk/LICENSE).
+[ani-cli](https://github.com/pystardust/ani-cli) inspired Miru's shell commands and provider integration.
