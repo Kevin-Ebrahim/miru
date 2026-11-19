@@ -25,12 +25,8 @@ If your shell can't find `miru`, add `$HOME/.cargo/bin` to your `PATH`.
 
 ## Watch an episode
 
-Type a title and press Enter to search. Pick a series with the arrow keys and
-press Enter to see its episodes. Press Enter on an episode to play it.
-
 Use Alt+a to switch between SUB and DUB, Alt+q to change quality, and Alt+h
-to open watch history. Press `?` for controls or Ctrl+C to quit. When typing,
-press Esc before `?`.
+to open watch history. Press `?` for controls or Ctrl+C to quit.
 
 See the [guide](docs/guide.md) for downloads, providers, settings and command-line examples.
 

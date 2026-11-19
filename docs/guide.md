@@ -83,17 +83,6 @@ Settings. Use an absolute path or one starting with `~/`. For one run,
 Miru respects `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME`.
 Use `MIRU_STATE_DIR` or `MIRU_CACHE_DIR` to override Miru's own directories.
 
-### Moving from ani-watch
-
-If you use the default state directory and have no Miru library yet, Miru
-copies your ani-watch history on first use. To import history from ani-cli,
-run the following command. Miru keeps the original file, imports compatible
-entries as SUB and skips duplicates.
-
-```sh
-miru --import-history ~/.local/state/ani-cli/ani-hsts
-```
-
 ## Troubleshooting
 
 - If covers look wrong, try `miru --images halfblocks`. For a plain interface, use `miru --images off --ascii --no-animation`. Use `--theme terminal` to choose terminal colors over the active Omarchy theme.
