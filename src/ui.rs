@@ -920,7 +920,17 @@ fn render_list(frame: &mut Frame, state: &mut State, area: Rect) {
         title.push_str("/ Cached ");
     }
 
-    let block = panel(title, state, state.focus == Focus::List);
+    let mut block = panel(title, state, state.focus == Focus::List);
+    if state.screen == Screen::History
+        && state.focus == Focus::List
+        && selected < count
+        && !state.help
+    {
+        let mut hint = Line::from(" ");
+        hint.spans.extend(shortcut(state, "Delete", "Remove").spans);
+        hint.push_span(" ");
+        block = block.title_bottom(hint.right_aligned());
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2029,6 +2039,45 @@ mod tests {
                 .iter()
                 .any(|line| line.to_string().contains("Download marked"))
         );
+    }
+
+    #[test]
+    fn history_shows_remove_only_for_a_selected_list_entry() {
+        let mut state = State::new(String::new(), Mode::Sub, "best".into(), false, false, false);
+        state.screen = Screen::History;
+        state.focus = Focus::List;
+        assert!(!render_text(&mut state, 32, 12).contains("Delete Remove"));
+
+        state
+            .history
+            .replace_entries(vec![crate::persistence::Entry {
+                anime: Anime {
+                    provider: crate::provider::Source::AnimeGg.id(),
+                    title: "Mushi-Shi".into(),
+                    ..Default::default()
+                },
+                episode: "1".into(),
+                mode: Mode::Sub,
+                watched_at: 1,
+            }]);
+        state.status = "History entry restored.".into();
+        for width in [32, 100] {
+            let text = render_text(&mut state, width, 12);
+            assert!(text.contains("Mushi-Shi"), "{text}");
+            assert_eq!(text.matches("Delete Remove").count(), 1, "{text}");
+            assert!(
+                text.contains("Playback only") && text.ends_with("? Help"),
+                "{text}"
+            );
+        }
+        state.focus = Focus::Search;
+        assert!(!render_text(&mut state, 32, 12).contains("Delete Remove"));
+        state.focus = Focus::List;
+        state.details = true;
+        assert!(!render_text(&mut state, 32, 12).contains("Delete Remove"));
+        state.details = false;
+        state.history.query.set("missing".into());
+        assert!(!render_text(&mut state, 32, 12).contains("Delete Remove"));
     }
 
     #[test]
