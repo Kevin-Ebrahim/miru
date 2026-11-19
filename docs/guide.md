@@ -34,7 +34,8 @@ See the [README](../README.md) for installation and first use.
 
 Printable keys enter text while an input has focus. Inputs support readline
 shortcuts such as Ctrl+a/e, Ctrl+w and Ctrl+u/k. Press Esc to leave a search,
-filter, or episode range before using a browsing shortcut such as `?` or `,`.
+filter, or episode range before using a browsing shortcut. For example,
+`Esc › ?` means press Esc, release it, and press `?` to open Help.
 
 F1–F6 remain available as aliases for Help, change provider, search another
 provider, Settings, refresh, and retry queue, respectively.

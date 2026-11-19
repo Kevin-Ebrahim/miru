@@ -40,7 +40,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 2. Select an anime and press Enter to open its episodes.
 3. Select an episode and press Enter to play it.
 
-Use Tab on Home to select audio or quality, then the arrow keys to change it.
+On Home, Tab selects audio or quality. The arrow keys change the selected value.
 Press `,` while browsing to open Settings for the download folder, playback
 defaults, and player options.
 Enter edits a setting, R restores its default, and Esc returns to browsing.
@@ -55,10 +55,10 @@ KAA requires mpv; its media hosts need headers that VLC cannot apply.
 | Esc | Go back or leave text input |
 | `s` / Shift+Q | Change audio / quality |
 | Alt+h | Open history |
-| Space, then `d` | Mark episodes, then download them |
+| `Space › d` | Mark episodes and download the selection |
 | Alt+p | Change search provider, including while typing |
 | `a` | Search the selected title on another provider |
-| `?` | Show all controls (Esc then `?` while typing) |
+| `?` | Show all controls (`Esc › ?` while typing) |
 | Ctrl+C | Quit |
 
 History remembers the last episode launched, not playback position or completion.

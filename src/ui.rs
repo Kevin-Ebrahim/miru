@@ -34,11 +34,16 @@ fn key_style(state: &State) -> Style {
     Style::default().fg(palette(state).text).bold()
 }
 
-fn shortcut(state: &State, key: &str, action: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(key.to_owned(), key_style(state)),
-        Span::styled(format!(" {action}"), muted(state)),
-    ])
+fn shortcut(state: &State, key: &'static str, action: &str) -> Line<'static> {
+    let mut line = Line::default();
+    for step in key.split(" › ") {
+        if !line.spans.is_empty() {
+            line.push_span(Span::styled(symbol(state, " › ", " > "), muted(state)));
+        }
+        line.push_span(Span::styled(step, key_style(state)));
+    }
+    line.push_span(Span::styled(format!(" {action}"), muted(state)));
+    line
 }
 
 fn accent(state: &State) -> Style {
@@ -389,17 +394,9 @@ fn footer_hint(state: &State) -> Line<'static> {
         && (state.request_blocks_list()
             || (state.status.is_empty() && episode_refresh_error(state).is_some()))
     {
-        shortcut(
-            state,
-            if state.typing() { "Esc then R" } else { "R" },
-            "Retry",
-        )
+        shortcut(state, if state.typing() { "Esc › R" } else { "R" }, "Retry")
     } else {
-        shortcut(
-            state,
-            if state.typing() { "Esc then ?" } else { "?" },
-            "Help",
-        )
+        shortcut(state, if state.typing() { "Esc › ?" } else { "?" }, "Help")
     }
 }
 
@@ -1695,8 +1692,8 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "App controls",
         &[
-            ("? / F1", "Help (Esc then ? while typing)"),
-            (", / F4", "Open Settings (Esc then , while typing)"),
+            ("? / F1", "Help (Esc › ? while typing)"),
+            (", / F4", "Open Settings (Esc › , while typing)"),
             ("q", "Close Help/Details"),
             ("Ctrl+c", "Quit from anywhere"),
         ],
@@ -1728,7 +1725,7 @@ fn help_key_aliases(keys: &str) -> String {
 }
 
 fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
-    let query = state.help_query.text.to_lowercase();
+    let query = state.help_query.text.to_lowercase().replace('>', "›");
     let mut lines = Vec::new();
     let key_style = key_style(state);
     for (group, entries) in HELP_GROUPS {
@@ -1755,8 +1752,10 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
         }
         lines.push(Line::styled(group, accent(state)));
         for (key, action) in entries {
+            let action = action.replace('›', symbol(state, "›", ">"));
             if width >= 64 {
-                for (index, description) in wrap_prose(action, width - 29).into_iter().enumerate() {
+                for (index, description) in wrap_prose(&action, width - 29).into_iter().enumerate()
+                {
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("{:<29}", if index == 0 { key } else { "" }),
@@ -1772,7 +1771,7 @@ fn help_lines(state: &State, width: usize) -> Vec<Line<'static>> {
                         .map(|text| Line::styled(text, key_style)),
                 );
                 lines.extend(
-                    wrap_prose(action, width.saturating_sub(2))
+                    wrap_prose(&action, width.saturating_sub(2))
                         .into_iter()
                         .map(|text| Line::styled(format!("  {text}"), muted(state))),
                 );
@@ -2251,6 +2250,12 @@ mod tests {
                     for label in ["Search anime...", "DUB", "1080p", "? Help"] {
                         assert!(text.contains(label), "{width}x{height} {focus:?}: {text}");
                     }
+                    let hint = match (focus, ascii) {
+                        (Focus::Search, true) => "Esc > ? Help",
+                        (Focus::Search, false) => "Esc › ? Help",
+                        _ => "? Help",
+                    };
+                    assert_eq!(text.lines().last().unwrap().trim(), hint);
                     assert!(!text.contains("History stays in History"));
                     assert!(!text.contains("Ctrl+c Quit"));
                     assert!(!text.contains("/ Search  s Audio  Q Quality"));
@@ -2942,7 +2947,7 @@ mod tests {
                 text.contains("Search unavailable") && text.contains("Service unavailable"),
                 "{width}x{height}: {text}"
             );
-            assert_eq!(text.lines().last().unwrap().trim(), "Esc then R Retry");
+            assert_eq!(text.lines().last().unwrap().trim(), "Esc › R Retry");
             assert_eq!(text.matches("Retry").count(), 1);
             assert!(!text.contains("Enter Results") && !text.contains("Esc Done"));
             assert!(!text.contains("No matches"));
